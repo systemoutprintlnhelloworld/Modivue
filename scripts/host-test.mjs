@@ -90,6 +90,11 @@ if (mode !== "--worker") {
       await save("activation.json", await driver("activate", pid));
       check("details-closed-on-launch", !initial.some(w => w.kCGWindowBounds.Width > 800), initial);
       let ax = await driver("elements", pid); await save("initial-ax.json", ax);
+      for (let attempt = 0; !ax.some(row => /^(Open dashboard|打开详细窗口)$/.test(row.AXDescription || "")) && attempt < 30; attempt++) {
+        await delay(200); ax = await driver("elements", pid);
+      }
+      let englishUI = ax.some(row => row.AXDescription === "Open dashboard");
+      const l = (zh, en) => englishUI ? en : zh;
       await delay(400);
       await driver("screenshot", join(jobDirectory, "initial.png"));
       const ps = await run("/bin/ps", ["-axo", "pid=,ppid=,comm="]);
@@ -109,14 +114,14 @@ if (mode !== "--worker") {
       }
       const center = row => [row.position.x + row.size.width/2, row.position.y + row.size.height/2];
       if (task === "drag") {
-        let open = ax.find(row => row.AXDescription === "打开详细窗口");
+        let open = ax.find(row => row.AXDescription === l("打开详细窗口", "Open dashboard"));
         // The native panel can appear a few hundred milliseconds before its
         // WebKit accessibility tree is populated. Wait for the actual
         // control instead of treating that normal load race as UNTESTED.
         for (let attempt = 0; !open && attempt < 20; attempt++) {
           await delay(250);
           ax = await driver("elements", pid);
-          open = ax.find(row => row.AXDescription === "打开详细窗口");
+          open = ax.find(row => row.AXDescription === l("打开详细窗口", "Open dashboard"));
         }
         if (!open) throw new Error("UNTESTED: no accessible details trigger");
         await driver("click", ...center(open));
@@ -125,13 +130,14 @@ if (mode !== "--worker") {
       if (["ui", "hover"].includes(task)) {
         await driver("move", 100, 100); await delay(500);
         ax = await driver("elements", pid);
-        let model = ax.find(row=>row.AXDescription?.includes("：核验") && row.position?.x > 0);
+        let model = ax.find(row=>/：核验|: verification/i.test(row.AXDescription || "") && row.position?.x > 0);
         for (let attempt = 0; !model && attempt < 20; attempt++) {
           await delay(250);
           ax = await driver("elements", pid);
-          model = ax.find(row=>row.AXDescription?.includes("：核验") && row.position?.x > 0);
+          model = ax.find(row=>/：核验|: verification/i.test(row.AXDescription || "") && row.position?.x > 0);
         }
         check("runtime-model-node", Boolean(model), model?.AXDescription);
+        englishUI = /: verification/i.test(model.AXDescription);
         const geometry = JSON.parse(await readFile(join(jobDirectory, "native-geometry.json"), "utf8"));
         const panel = (await windows()).find(w=>w.kCGWindowBounds.Width < 800 && w.kCGWindowBounds.Height > 100).kCGWindowBounds;
         const rect = geometry.models[0].rect;
@@ -150,8 +156,8 @@ if (mode !== "--worker") {
         check("hover-expands-native-panel", hovered.some(w=>w.kCGWindowBounds.Width >= 500 && w.kCGWindowBounds.Width < 800), hovered);
         check("hover-does-not-open-details", !hovered.some(w=>w.kCGWindowBounds.Width > 800), hovered);
         const history = (await driver("elements", pid)).filter(row => ["AXButton", "AXCheckBox"].includes(row.AXRole)
-          && /^(模型核验|Cache|TTFT) /.test(row.AXTitle || ""));
-        check("native-history-three-metrics", ["模型核验", "Cache", "TTFT"].every(metric => history.some(row => row.AXTitle.startsWith(metric + " "))), history);
+          && /^(模型核验|Verification|Cache|TTFT) /.test(row.AXTitle || ""));
+        check("native-history-three-metrics", [l("模型核验", "Verification"), "Cache", "TTFT"].every(metric => history.some(row => row.AXTitle.startsWith(metric + " "))), history);
         const expandedGeometry = JSON.parse(await readFile(join(jobDirectory, "native-geometry.json"), "utf8"));
         const popup = expandedGeometry.popoverRect;
         check("native-history-not-clipped", popup.x >= 0 && popup.y >= 0
@@ -191,10 +197,10 @@ if (mode !== "--worker") {
         }
         await driver("click", ...modelPoint); await delay(900);
         check("click-opens-details", (await windows()).some(w=>w.kCGWindowBounds.Width > 800));
-        const selectedLabel = model.AXDescription.split("：核验")[0];
+        const selectedLabel = model.AXDescription.split(l("：核验", ": verification"))[0];
         let selection;
         for (let attempt = 0; attempt < 30; attempt++) {
-          selection = (await driver("elements", pid)).find(row => row.AXValue?.startsWith(`${selectedLabel} · 最近`));
+          selection = (await driver("elements", pid)).find(row => row.AXValue?.startsWith(`${selectedLabel} · ${l("最近", "Last")}`));
           if (selection) break;
           await delay(200);
         }
@@ -204,7 +210,7 @@ if (mode !== "--worker") {
         await driver("screenshot", join(jobDirectory, "details.png"));
         ax = await driver("elements", pid);
         await save("details-ax.json", ax);
-        check("details-overview-triple-ring", ax.some(row => row.AXDescription === "模型核验、Cache 与 TTFT 三环"),
+        check("details-overview-triple-ring", ax.some(row => row.AXDescription === l("模型核验、Cache 与 TTFT 三环", "Verification, cache and TTFT rings")),
           ax.filter(row => row.AXDescription?.includes("模型核验")));
         for (const [surface, metric] of [["focus", "cache"], ["focus", "ttft"], ["focus", "quality"], ["popover", "cache"]]) {
           await driver("move", 100, 100); await delay(900);
@@ -216,7 +222,7 @@ if (mode !== "--worker") {
           geometry = JSON.parse(await readFile(join(jobDirectory, "native-geometry.json"), "utf8"));
           const currentFrame = (await windows()).find(isIslandWindow).kCGWindowBounds;
           ax = await driver("elements", pid);
-          const title = { cache: "Cache", ttft: "TTFT", quality: "模型核验" }[metric];
+          const title = { cache: "Cache", ttft: "TTFT", quality: l("模型核验", "Verification") }[metric];
           const control = ax.find(row => row.AXRole === "AXButton" && (surface === "focus"
             ? row.AXTitle?.startsWith(selectedLabel + " · " + title + " ") && row.position.x >= currentFrame.X + geometry.rail.x
             : row.AXTitle?.startsWith(title + " ") && row.position.x >= currentFrame.X && row.position.x < currentFrame.X + geometry.rail.x));
@@ -232,39 +238,61 @@ if (mode !== "--worker") {
         }
         await driver("move", 100, 100); await delay(900);
         ax = await driver("elements", pid);
-        const settingsTab = ax.find(row=>row.AXRole === "AXButton" && row.AXTitle?.endsWith(" 设置"));
+        const settingsTab = ax.find(row=>row.AXRole === "AXButton" && row.AXTitle?.endsWith(l(" 设置", " Settings")));
         check("native-settings-tab-present", Boolean(settingsTab));
         await driver("press", pid, settingsTab.path); await delay(400);
         ax = await driver("elements", pid);
-        check("native-settings-replaces-overview", ax.some(row=>row.AXValue === "监测设置")
-          && !ax.some(row=>row.AXValue === "今天的模型状态"));
+        check("native-settings-replaces-overview", ax.some(row=>row.AXValue === l("监测设置", "Monitoring settings"))
+          && !ax.some(row=>row.AXValue === l("今天的模型状态", "Model activity today")));
         const mainLayout = JSON.parse(await readFile(join(jobDirectory, "main-geometry.json"), "utf8"));
         check("native-content-below-titlebar", mainLayout.mainWebFrame.height <= mainLayout.mainContentLayout.height + 1
           && mainLayout.mainWebFrame.y >= mainLayout.mainContentLayout.y - 1, mainLayout);
         check("native-theme-synchronized", mainLayout.theme === "light" ? !mainLayout.mainAppearance.includes("Dark")
           : mainLayout.theme === "system" || mainLayout.mainAppearance.includes("Dark"), mainLayout.mainAppearance);
         await save("settings-categories-ax.json", ax);
-        const verificationTab = ax.find(row => (row.AXTitle || row.AXValue || "") === "核验" && row.AXRole !== "AXStaticText");
+        const verificationTab = ax.find(row => (row.AXTitle || row.AXValue || "") === l("核验", "Verification") && row.AXRole !== "AXStaticText");
         check("native-verification-category-present", Boolean(verificationTab), verificationTab);
         if (verificationTab) { await driver("press", pid, verificationTab.path); await delay(300); ax = await driver("elements", pid); }
         // Calibration is method-specific and hidden while the default Meow
         // method is selected; the verification category itself remains the
         // visible settings surface.
-        check("native-verification-settings", ax.some(row=>row.AXValue === "核验方式与采样")
-          || ax.some(row=>row.AXValue === "核验校准档案"));
+        check("native-verification-settings", ax.some(row=>row.AXValue === l("核验方式与采样", "Method and sampling"))
+          || ax.some(row=>row.AXValue === l("核验校准档案", "Calibration archive")));
+        const logTab = ax.find(row => row.AXRole === "AXButton" && /日志$|Logs$/.test(row.AXTitle || ""));
+        check("native-log-tab", Boolean(logTab));
+        if (logTab) {
+          await driver("press", pid, logTab.path); await delay(350);
+          ax = await driver("elements", pid);
+          const exportButton = ax.find(row => row.AXRole === "AXButton" && /导出 JSONL|Export JSONL/.test(row.AXTitle || ""));
+          check("native-export-action", Boolean(exportButton));
+          if (exportButton) {
+            await driver("press", pid, exportButton.path); await delay(650);
+            ax = await driver("elements", pid); await save("export-panel-ax.json", ax);
+            const saveButton = ax.find(row => row.AXRole === "AXButton" && /^(存储|保存|Save)$/.test(row.AXTitle || ""));
+            check("native-save-panel", Boolean(saveButton));
+            if (saveButton) {
+              await driver("press", pid, saveButton.path); await delay(500);
+              const exported = await readFile(join(jobDirectory, "modivue-samples.jsonl"), "utf8");
+              check("native-jsonl-export-saved", exported.trim() === "" || exported.trim().split("\n").every(line => Boolean(JSON.parse(line))));
+            }
+          }
+        }
         const detailsWindow = (await windows()).find(w=>w.kCGWindowBounds.Width > 800);
         await driver("screenshot-window", join(jobDirectory, "settings-window.png"), detailsWindow.kCGWindowNumber);
-        const tourButton = ax.find(row => row.AXRole === "AXButton" && row.AXTitle === "灵动岛引导");
+        ax = await driver("elements", pid);
+        const settingsAgain = ax.find(row => row.AXRole === "AXButton" && row.AXTitle?.endsWith(l(" 设置", " Settings")));
+        if (settingsAgain) { await driver("press", pid, settingsAgain.path); await delay(300); ax = await driver("elements", pid); }
+        const tourButton = ax.find(row => row.AXRole === "AXButton" && row.AXTitle === l("灵动岛引导", "Island tour"));
         check("native-island-tour-launch", Boolean(tourButton));
         await driver("press", pid, tourButton.path);
         for (let step = 1; step <= 4; step++) {
           await delay(1000);
           const tourGeometry = JSON.parse(await readFile(join(jobDirectory, "native-geometry.json"), "utf8"));
-          check(`native-island-tour-${step}`, tourGeometry.tour?.title === `灵动岛 ${step}/4`
+          check(`native-island-tour-${step}`, tourGeometry.tour?.title === `${l("灵动岛", "Island")} ${step}/4`
             && tourGeometry.tour.rect.x >= 0 && tourGeometry.tour.rect.bottom <= tourGeometry.viewport.height, tourGeometry);
           await driver("screenshot-window", join(jobDirectory, `native-tour-${step}.png`), (await windows()).find(isIslandWindow).kCGWindowNumber);
           ax = await driver("elements", pid);
-          const next = ax.find(row => row.AXRole === "AXButton" && row.AXTitle === (step === 4 ? "完成" : "下一步"));
+          const next = ax.find(row => row.AXRole === "AXButton" && row.AXTitle === (step === 4 ? l("完成", "Done") : l("下一步", "Next")));
           check(`native-island-tour-next-${step}`, Boolean(next));
           await driver("press", pid, next.path);
         }
@@ -375,7 +403,7 @@ if (mode !== "--worker") {
         await driver("right-click", ...center(icon)); await delay(400);
         ax = await driver("elements", pid); await save("menu-ax.json", ax);
         await driver("screenshot", join(jobDirectory, "menu.png"));
-        const quit = ax.find(row=>row.AXTitle === "退出 Modivue" && row.size?.height > 0);
+        const quit = ax.find(row=>row.AXTitle === l("退出 Modivue", "Quit Modivue") && row.size?.height > 0);
         check("right-click-quit-visible", Boolean(quit), quit);
         await driver("press", pid, quit.path); await delay(800);
         let alive = true; try { process.kill(pid,0); } catch { alive=false; }

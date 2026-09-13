@@ -28,6 +28,8 @@ internal sealed class MonitorContext : ApplicationContext
     private readonly WebView2 mainWeb = new() { Dock = DockStyle.Fill };
     private readonly WebView2 islandWeb = new() { Dock = DockStyle.Fill, DefaultBackgroundColor = Color.Transparent };
     private readonly NotifyIcon tray = new() { Text = "Modivue", Icon = SystemIcons.Application, Visible = true };
+    private readonly ContextMenuStrip trayMenu = new();
+    private readonly ToolStripItem menuOpen, menuIsland, menuExit;
     private readonly System.Windows.Forms.Timer pointer = new() { Interval = 16 };
     private readonly Uri origin;
     private RectangleF rail = new(6, 18, 100, 220), buffer;
@@ -35,6 +37,8 @@ internal sealed class MonitorContext : ApplicationContext
     private Point dragStart, windowStart;
     private Point? snapStart, snapEnd;
     private long snapAt;
+    private bool interfaceEnglish = !System.Globalization.CultureInfo.CurrentUICulture.TwoLetterISOLanguageName.Equals("zh", StringComparison.OrdinalIgnoreCase);
+    private string Localized(string chinese, string english) => interfaceEnglish ? english : chinese;
     [DllImport("user32.dll")] private static extern short GetAsyncKeyState(int key);
 
     public MonitorContext()
@@ -48,15 +52,16 @@ internal sealed class MonitorContext : ApplicationContext
         start.ArgumentList.Add(Path.Combine(root, "app", "server.mjs"));
         start.Environment["MODIVUE_PORT"] = port.ToString();
         start.Environment["MODIVUE_DATA_DIR"] = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Modivue");
-        service = Process.Start(start) ?? throw new InvalidOperationException("Cannot start the local Modivue service.");
+        start.Environment["MODIVUE_LANGUAGES"] = System.Globalization.CultureInfo.CurrentUICulture.Name;
+        service = Process.Start(start) ?? throw new InvalidOperationException(Localized("无法启动 Modivue 本地服务。", "Cannot start the local Modivue service."));
         main.Controls.Add(mainWeb); island.Controls.Add(islandWeb);
         main.FormClosing += (_, e) => { if (!exiting) { e.Cancel = true; main.Hide(); } };
         island.FormClosing += (_, e) => { if (!exiting) { e.Cancel = true; island.Hide(); } };
-        var menu = new ContextMenuStrip();
-        menu.Items.Add("Modivue", null, (_, _) => { main.Show(); main.Activate(); });
-        menu.Items.Add("Island / 灵动岛", null, (_, _) => island.Show());
-        menu.Items.Add("Exit / 退出", null, (_, _) => ExitThread());
-        tray.ContextMenuStrip = menu; tray.DoubleClick += (_, _) => { main.Show(); main.Activate(); };
+        menuOpen = trayMenu.Items.Add("Modivue", null, (_, _) => { main.Show(); main.Activate(); });
+        menuIsland = trayMenu.Items.Add("", null, (_, _) => island.Show());
+        menuExit = trayMenu.Items.Add("", null, (_, _) => ExitThread());
+        tray.ContextMenuStrip = trayMenu; UpdateTrayMenu(System.Globalization.CultureInfo.CurrentUICulture.Name);
+        tray.DoubleClick += (_, _) => { main.Show(); main.Activate(); };
         pointer.Tick += async (_, _) => await TickPointer();
         main.Show(); island.Show();
         var area = Screen.PrimaryScreen!.WorkingArea; island.Location = new(area.Right - island.Width, area.Top + 120);
@@ -73,13 +78,13 @@ internal sealed class MonitorContext : ApplicationContext
                 if (ready) break;
                 await Task.Delay(250);
             }
-            if (!ready) throw new InvalidOperationException("Local service failed to start.");
+            if (!ready) throw new InvalidOperationException(Localized("本地服务未能启动。", "Local service failed to start."));
             var profile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Modivue", "WebView2");
             var environment = await CoreWebView2Environment.CreateAsync(null, profile);
             await Prepare(mainWeb, environment, "main"); await Prepare(islandWeb, environment, "island");
             pointer.Start();
         } catch (Exception error) {
-            MessageBox.Show($"{error.Message}\nWindows requires Microsoft Edge WebView2 Runtime.", "Modivue"); ExitThread();
+            MessageBox.Show($"{error.Message}\n{Localized("Windows 需要 Microsoft Edge WebView2 Runtime。", "Windows requires Microsoft Edge WebView2 Runtime.")}", "Modivue"); ExitThread();
         }
     }
 
@@ -97,6 +102,26 @@ internal sealed class MonitorContext : ApplicationContext
             using var message = JsonDocument.Parse(e.WebMessageAsJson); var body = message.RootElement;
             if (!body.TryGetProperty("type", out var type)) return;
             switch (type.GetString()) {
+                case "notification-permission":
+                    await Reply(web, body.GetProperty("requestId").GetString()!, new { granted = true });
+                    break;
+                case "notify":
+                    tray.ShowBalloonTip(5000, body.GetProperty("title").GetString()!, body.GetProperty("body").GetString()!, ToolTipIcon.Info);
+                    if (body.TryGetProperty("requestId", out var notificationId)) await Reply(web, notificationId.GetString()!, new { sent = true });
+                    break;
+                case "export":
+                    var requestId = body.GetProperty("requestId").GetString()!;
+                    using (var dialog = new SaveFileDialog { FileName = Path.GetFileName(body.GetProperty("filename").GetString()), RestoreDirectory = true }) {
+                        if (dialog.ShowDialog(main) != DialogResult.OK) await Reply(web, requestId, new { cancelled = true });
+                        else try {
+                            await File.WriteAllTextAsync(dialog.FileName!, body.GetProperty("text").GetString(), new System.Text.UTF8Encoding(false));
+                            await Reply(web, requestId, new { saved = true });
+                        } catch (Exception error) { await Reply(web, requestId, new { error = error.Message }); }
+                    }
+                    break;
+                case "locale":
+                    UpdateTrayMenu(body.GetProperty("locale").GetString()!);
+                    break;
                 case "island-layout":
                     rail = Rect(body);
                     if (body.TryGetProperty("buffer", out var b)) buffer = Rect(b);
@@ -116,6 +141,21 @@ internal sealed class MonitorContext : ApplicationContext
             }
         };
         web.Source = new Uri(origin, $"/?desktop={mode}");
+    }
+
+    private static Task<string> Reply(WebView2 web, string requestId, object result)
+    {
+        var payload = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(JsonSerializer.Serialize(result))!;
+        payload["requestId"] = JsonSerializer.SerializeToElement(requestId);
+        return web.ExecuteScriptAsync($"window.modivueNativeReply?.({JsonSerializer.Serialize(payload)})");
+    }
+
+    private void UpdateTrayMenu(string locale)
+    {
+        interfaceEnglish = !locale.StartsWith("zh", StringComparison.OrdinalIgnoreCase);
+        menuOpen.Text = Localized("打开分析窗口", "Open Dashboard");
+        menuIsland.Text = Localized("显示灵动岛", "Show Island");
+        menuExit.Text = Localized("退出 Modivue", "Quit Modivue");
     }
 
     private static RectangleF Rect(JsonElement value) => new(value.GetProperty("x").GetSingle(), value.GetProperty("y").GetSingle(), value.GetProperty("width").GetSingle(), value.GetProperty("height").GetSingle());

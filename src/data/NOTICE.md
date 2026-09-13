@@ -13,3 +13,8 @@ Modivue independently implements the published cosine / natural-log JS divergenc
 mode-distance formula in src/core/evaluator-hlwy.mjs. It uses strict integer parsing
 and an 80% validity requirement; it does not adopt the upstream identity verdicts
 when the reference reasoning effort is unspecified.
+
+KBF reference probes and domain definitions are adapted from Ooo0ption/KBF
+commit 481c78da14df4f2b02b43d344dae7199ae08cea0 under Apache-2.0.
+See KBF-LICENSE.txt. Modivue aggregates reference fields and ports parsing,
+CP99 and binomial calculations to JavaScript; screen mode is a Modivue option.

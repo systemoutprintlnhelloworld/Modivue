@@ -1,6 +1,7 @@
 import { registerEvaluator } from "./quality.mjs";
 import { getSettings, loadBazaarlinkJobs, saveBazaarlinkJobs, listQualityRuns, saveQualityRun } from "./storage.mjs";
 import { modelIdentity } from "./model-identity.js";
+import { resolveLocale } from "./i18n.js";
 
 const origin = "https://bazaarlink.ai";
 const method = "bazaarlink-probe";
@@ -113,7 +114,8 @@ export function startBazaarlink(target, { fetchImpl = fetch } = {}) {
     const result = await remote("/api/probe/run", { baseUrl: target.baseUrl, apiKey: target.apiKey,
       modelId: target.observedModel, ...(target.canonicalModelId ? { claimedModel: target.canonicalModelId } : {}),
       upstreamFormat: target.protocol, quickMode: job.mode === "quick", identityOnly: job.mode === "quick",
-      runContextCheck: job.mode === "context", sync: false, lang: getSettings().locale === "en" ? "en" : "zh" }, fetchImpl);
+      runContextCheck: job.mode === "context", sync: false,
+      lang: resolveLocale(getSettings().locale, process.env.MODIVUE_LANGUAGES?.split(",")) === "en" ? "en" : "zh" }, fetchImpl);
     if (typeof result.runId !== "string" || !/^[a-zA-Z0-9-]{8,100}$/.test(result.runId)) throw new Error("missing runId");
     job.runId = result.runId; job.status = "running";
     persist();

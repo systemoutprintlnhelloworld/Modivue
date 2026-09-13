@@ -285,7 +285,8 @@ async function routeRequest(request, response) {
   if (url.pathname.startsWith("/proxy/openai/") || url.pathname.startsWith("/proxy/anthropic/")) {
     const route = resolveProxyRoute(url.pathname, url.search);
     await proxyStream({ request, response, upstreamUrl: route?.upstreamUrl, baseUrl: route?.baseUrl,
-      protocol: route?.protocol, saveSample, agent: request.headers["x-modivue-agent"] || "unknown" });
+      protocol: route?.protocol, saveSample, agent: request.headers["x-modivue-agent"] || "unknown",
+      timeoutMs: /^\d+$/.test(request.headers["x-modivue-timeout-ms"] || "") ? Math.max(30000, Math.min(900000, Number(request.headers["x-modivue-timeout-ms"]))) : undefined });
     return;
   }
   // Browsers request /favicon.ico automatically even when the document does
@@ -301,7 +302,7 @@ async function routeRequest(request, response) {
     return;
   }
   const requested = url.pathname === "/" ? "/index.html" : url.pathname;
-  if (!/^\/src\/data\/agent-icons\/[a-z-]+\.svg$/.test(requested) && !["/index.html", "/styles.css", "/app.js", "/src/core/metrics.js", "/src/core/model-match.js", "/src/core/quality-summary.js", "/src/core/answer-comparison.js", "/src/core/model-identity.js", "/src/core/agent-activity.js", "/src/core/island-state.js", "/src/core/island-display.js", "/src/core/preferences.js", "/src/core/i18n.js", "/src/core/hlwy-reference.js", "/src/data/question-tests.js", "/src/data/app-icon.png", "/src/data/meow-contract.json"].includes(requested)) {
+  if (!/^\/src\/data\/agent-icons\/[a-z-]+\.svg$/.test(requested) && !["/index.html", "/styles.css", "/app.js", "/src/core/metrics.js", "/src/core/model-match.js", "/src/core/quality-summary.js", "/src/core/answer-comparison.js", "/src/core/calibration-export.js", "/src/core/model-identity.js", "/src/core/agent-activity.js", "/src/core/island-state.js", "/src/core/island-display.js", "/src/core/preferences.js", "/src/core/i18n.js", "/src/core/hlwy-reference.js", "/src/data/question-tests.js", "/src/data/app-icon.png", "/src/data/meow-contract.json"].includes(requested)) {
     response.writeHead(404).end("Not found");
     return;
   }

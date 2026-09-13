@@ -1,7 +1,7 @@
 import { comparableAnswer } from "./answer-comparison.js";
 import { modelIdentity } from "./model-identity.js";
 
-export const verificationVersions = Object.freeze({ "probability-probe": "2.0.0", juice: "4.0.0", "hlwy-fingerprint": "1.1.0", "meow-fingerprint": "4.5.3-modivue.3", "custom-question": "1.0.0", ztest: "1.0.0", "bazaarlink-probe": "1.0.0" });
+export const verificationVersions = Object.freeze({ "probability-probe": "2.0.0", juice: "4.0.0", "hlwy-fingerprint": "1.1.0", "meow-fingerprint": "4.5.4-modivue.1", "custom-question": "1.0.0", ztest: "1.0.0", "bazaarlink-probe": "1.0.0", "knowledge-boundary": "1.0.0", "one-token": "1.0.0", "astra-community": "1.0.0" });
 
 export const questionConditionsId = question => JSON.stringify(["question:v1", question.id, question.prompt, question.answer, question.match]);
 
@@ -83,7 +83,7 @@ export function summarizeVerification(runs = [], preferredMethod = "meow-fingerp
   };
   const matchPercent = valid("hlwy-fingerprint", "value");
   const juice = valid("juice", "reportedJuice");
-  const jsd = valid("probability-probe", "jsd");
+  const jsd = valid(selectedMethod === "one-token" ? "one-token" : "probability-probe", "jsd");
   const declaredMatch = valid("meow-fingerprint", "declaredMatch");
   const directionScore = selectedMethod === "meow-fingerprint" ? declaredMatch : valid(selectedMethod, "directionScore");
   const directedModel = usable ? selected.metadata?.directedModel || null : null;
@@ -93,7 +93,7 @@ export function summarizeVerification(runs = [], preferredMethod = "meow-fingerp
       numeric = { value: declaredMatch, label: "申报模型匹配度", unit: "%", method: selectedMethod };
     else if (selectedMethod === "hlwy-fingerprint" && matchPercent !== null)
       numeric = { value: matchPercent, label: "HLWY 匹配度", unit: "%", method: selectedMethod };
-    else if (selectedMethod === "probability-probe" && jsd !== null)
+    else if (["probability-probe", "one-token"].includes(selectedMethod) && jsd !== null)
       numeric = { value: jsd, label: "分布 JSD", unit: "", method: selectedMethod };
     else if (selectedMethod === "juice" && juice !== null)
       numeric = { value: juice, label: "Juice 原始值", unit: "", method: "juice" };

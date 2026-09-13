@@ -1,3 +1,17 @@
+## 2026-09-13 — 0.4.0 当前改动
+
+核验折叠/滚动采用原位更新；设置 PATCH 队列和版本检查防止旧响应回写，下拉即时反馈、历史按记录独立选择。SVG 仅悬停播放，Spotlight 打开/关闭、切页/主题/环/折叠过渡，快速重开取消旧关闭动画。窄腰连接桥，删除重复 logo 和无效更多按钮；文字 80%–200%，主题强调色统一，指标阈值独立。
+
+单题默认 300 秒和 16384 输出 token，支持 30–900 秒和 512–65536。代理只向本机 Modivue 路由传递超时，再转上游时移除内部头。受控 46 秒真实 HTTP/SSE 水杯验收通过，证明仍人工复核；不再在 16000 字符截断答案。
+
+原生 macOS NSSavePanel / Windows SaveFileDialog 导出，浏览器下载文件；自动保存/核验/导出 toast。系统通知从常驻灵动岛发出，主窗口显示 toast，避免隐藏主窗漏通知。设置有发送测试通知。macOS 系统通知权限及横幅尚待实际授权验收。
+
+Meow 4.5.4 对应上游 bdb579f0496b70138f7c015344eb034a9f4c16e7，原协议 predictive.3 和 Chat chat.1 正式基准。192 组 Python/JS 对照通过，最大百分点误差 3.5527e-13。用户 zip 原件保留；7727 条 OpenRouter 样本按条件整理供参考分布展示，没有重新训练判定阈值。
+
+新增 KBF 16 个公开参考、4359 探针、一批试采及完整 CP99/单侧二项检验；One Token 10 类英文任务与 Astra 五组观测适配。后两者每题 10 次有效样本后可导出 v2 分布档案，再导入做同条件 JSD；导出阈值为 null。KBF full 正确/错误、参考档案往返、模型/协议隔离和推理排除均通过受控验收。Astra 缺作者精确题库/分布、One Token 四语言未全复刻，两篇指定 Juice 原文不可读。Ztest 仍为官网检测后的报告适配。
+
+运行记录：Runtime 25 PASS `.ui-artifacts/1789306639635-runtime/result.json`（包含水杯 46 秒）；JS/core/Swift 通过，Windows 编译 0 警告/0 错误。0.4.0 最终 Web/原生检查和发布状态见后续记录。完整 goal 保持 active，Windows 实机、GUI Agent 真正请求、多批真实基线等仍在 ROADMAP。
+
 ## 2026-09-13 19:49 — 0.3.0 本轮交付
 
 版本代码 `ff077bc` 已提交并推送 main 和 v0.3.0。标签流水线 https://github.com/systemoutprintlnhelloworld/Modivue/actions/runs/34755423096 成功；macOS arm64 和 Windows x64 ZIP 已自动构建并发布。下载 https://github.com/systemoutprintlnhelloworld/Modivue/releases/tag/v0.3.0 。本地最终 `dist/Modivue.app` 版本 0.3.0，构建与 codesign 校验通过。

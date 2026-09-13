@@ -10,6 +10,9 @@ import { listEvaluators, runEvaluator } from "./quality.mjs";
 import "./evaluator-coding.mjs";
 import "./evaluator-hlwy.mjs";
 import "./evaluator-meow.mjs";
+import "./evaluator-kbf.mjs";
+import "./evaluator-one-token.mjs";
+import "./evaluator-astra.mjs";
 import "./evaluator-ztest.mjs";
 import { bazaarlinkState } from "./evaluator-bazaarlink.mjs";
 import { createHash } from "node:crypto";
@@ -84,10 +87,10 @@ export async function runProbe(target, options = {}) {
   const settings = getSettings();
   const maxOutputTokens = options.maxOutputTokens ?? settings.probeMaxOutputTokens;
   const instruction = typeof options.instruction === "string" ? options.instruction : settings.probeInstruction;
-  if (!instruction?.trim() || instruction.length > 2000) throw new TypeError("探测指令无效");
+  if (!instruction?.trim() || instruction.length > 8100) throw new TypeError("探测指令无效");
   const conditionsId = options.conditionsId || `probe:custom:${createHash("sha256").update(JSON.stringify({ instruction, maxOutputTokens,
     reasoningEffort: target.reasoningEffort || null, wireApi: target.wireApi })).digest("hex").slice(0, 12)}`;
-  if (!Number.isSafeInteger(maxOutputTokens) || maxOutputTokens < 1 || maxOutputTokens > 4096) throw new TypeError("探测输出 token 上限无效");
+  if (!Number.isSafeInteger(maxOutputTokens) || maxOutputTokens < 1 || maxOutputTokens > 65536) throw new TypeError("探测输出 token 上限无效");
   const dedupKey = JSON.stringify([target.protocol, normalizeBaseUrl(target.baseUrl), target.keyGroup,
     target.canonicalModelId || target.observedModel, target.wireApi, target.reasoningEffort || null, maxOutputTokens, conditionsId]);
   if (active.has(dedupKey)) return active.get(dedupKey);
@@ -115,11 +118,15 @@ export async function runProbe(target, options = {}) {
       ? { model: observedModel, input: instruction, max_output_tokens: maxOutputTokens, stream: true, store: false }
       : { model: observedModel, messages: [{ role: "user", content: instruction }],
         ...(protocol === "anthropic" ? { max_tokens: maxOutputTokens } : { max_completion_tokens: maxOutputTokens, stream_options: { include_usage: true } }), stream: true };
+    if (protocol === "openai" && wireApi === "chat.completions" && options.chatTokenField === "max_tokens") {
+      delete body.max_completion_tokens; body.max_tokens = maxOutputTokens;
+    }
     const effort = options.reasoningEffort ?? target.reasoningEffort;
     if (effort) {
-      if (protocol === "gemini") body.generationConfig.thinkingConfig = { thinkingLevel: effort };
+      if (protocol === "gemini") body.generationConfig.thinkingConfig = effort === "none" ? { thinkingBudget: 0 } : { thinkingLevel: effort };
       else if (wireApi === "responses") body.reasoning = { effort };
       else if (protocol === "openai") body.reasoning_effort = effort;
+      else if (effort === "none") body.thinking = { type: "disabled" };
       else body.output_config = { effort };
     }
     if (typeof options.system === "string") {
@@ -145,7 +152,7 @@ export async function runProbe(target, options = {}) {
       lastProbeRequests.set(routeKey, Date.now());
       const sample = await proxyStream({ request, response: { writeHead() { return this; }, write() { return true; }, end() {} },
       upstreamUrl, baseUrl: target.baseUrl, protocol, observedModel, saveSample: options.saveSample || saveSample,
-      canonicalModelId: target.canonicalModelId, agent: "modivue-probe", conditionsId, onText: options.onText, onEvent: options.onEvent });
+      canonicalModelId: target.canonicalModelId, agent: "modivue-probe", conditionsId, timeoutMs: options.timeoutMs, onText: options.onText, onEvent: options.onEvent });
       if (target.probeStrategy && sample.status !== "ok") probeCooldowns.set(routeKey, Date.now() + Math.max(
         getSettings().probeCooldownSeconds * 1000, sample.measurement?.retryAfterMs || 0));
       return sample;
@@ -231,9 +238,13 @@ export async function runTargetVerification(target, evaluatorId, shouldContinue 
         qualityProgress.set(id, { ...qualityProgress.get(id), phase: "sampling", requestStartedAt: new Date().toISOString() });
         let text = "";
         const stream = options.strictResponse ? verificationStream(target.wireApi) : null;
-        let sample;
+        let sample, reasoningDetected = false;
         try {
-          sample = await runProbe(target, { ...options, checkContinue, instruction, onEvent: stream?.feed, onText: (chunk) => { if (text.length < 16000) text += chunk; } });
+          sample = await runProbe(target, { ...options, checkContinue, instruction, onEvent: event => {
+            stream?.feed(event);
+            if (options.rejectReasoning && (/reasoning|thinking/.test(event?.type || "") || event?.choices?.some(choice => choice.delta?.reasoning_content || choice.delta?.reasoning)
+              || event?.content_block?.type === "thinking" || Number(event?.usage?.completion_tokens_details?.reasoning_tokens || event?.response?.usage?.output_tokens_details?.reasoning_tokens) > 0)) reasoningDetected = true;
+          }, onText: (chunk) => { if (text.length + chunk.length > 1024 * 1024) throw new Error("核验回答超过 1 MiB"); text += chunk; } });
         } catch (error) {
           if (["target_inactive", "monitoring_paused", "budget_exhausted"].includes(error.code)) throw error;
           // Keep transport failures in the report's attempt count. They do
@@ -249,7 +260,10 @@ export async function runTargetVerification(target, evaluatorId, shouldContinue 
         if (sample.status !== "ok") throw Object.assign(new Error(sample.error || "核验请求失败"),
           { code: [401, 403].includes(sample.measurement?.httpStatus) ? "authentication_failed" : "request_failed",
             retryAfterMs: sample.measurement?.retryAfterMs });
-        try { return stream ? stream.finish() : text; }
+        try {
+          if (reasoningDetected) throw new Error("上游未关闭推理，该回答不计入单词分布");
+          return stream ? stream.finish() : text;
+        }
         catch (error) { record.status = "error"; record.error = error.message; throw error; }
       } });
     } catch (error) {
@@ -264,7 +278,7 @@ export async function runTargetVerification(target, evaluatorId, shouldContinue 
       metadata: { ...result.metadata, ...(evaluatorId === "custom-question" && !result.metadata?.question ? (() => {
         const question = listQuestions().find(item => item.id === (options.questionId || getSettings().defaultQuestionId));
         return question ? { question, conditionsId: questionConditionsId(question) } : {};
-      })() : {}), reasoningEffort: target.reasoningEffort || null,
+      })() : {}), reasoningEffort: target.reasoningEffort || null, wireApi: target.wireApi,
         requestAttempts: requests.length, requests } };
     saveQualityRun(run);
     return run;

@@ -42,7 +42,6 @@ button { border: 0; color: inherit; cursor: pointer; }
 .nav-item.active span { color: var(--blue); }
 .nav-badge { margin-left: auto; min-width: 18px; padding: 2px 5px; border-radius: 5px; color: #ffb8c2; background: rgba(255, 111, 134, .15); font-size: calc(10px * var(--font-scale, 1)); text-align: center; }
 .sidebar-footer { display: flex; align-items: center; gap: 8px; margin-top: auto; padding: 13px 10px 0; border-top: 1px solid var(--line); color: var(--subtle); font-size: calc(10px * var(--font-scale, 1)); }
-.sidebar-footer .icon-button { margin-left: auto; }
 .status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--mint); box-shadow: 0 0 12px var(--mint); }
 .main-content { width: min(1180px, calc(100vw - 236px)); margin: 0 auto; padding: 28px 224px 28px 38px; transition: padding-right .32s cubic-bezier(.2, .75, .2, 1); }
 .topbar, .hero-row, .panel-header, .metric-head, .metric-foot { display: flex; align-items: center; justify-content: space-between; }
@@ -371,7 +370,6 @@ body.desktop-island .hover-popover { position: absolute; width: 332px; }
 .island.expanded { width: 88px; padding: 12px 8px; border-radius: 34px 12px 12px 34px; }
 .island-grip { width: 20px; height: 3px; margin: 0 auto 3px; border: 0; border-radius: 2px; background: rgba(255, 255, 255, .22); box-shadow: none; }
 .model-logo { display: block; width: 24px; height: 24px; object-fit: contain; }
-.detail-app-icon { display: block; width: 26px; height: 26px; border-radius: 7px; object-fit: contain; box-shadow: 0 2px 8px rgba(0,0,0,.24); }
 body:not(.light) .model-logo, .desktop-island .model-logo { filter: invert(1); }
 .provider-orb { border: 0; background: transparent; box-shadow: none; }
 .model-chip .provider-orb { border: 0; border-radius: 0; background: transparent; box-shadow: none; }
@@ -676,14 +674,14 @@ body.desktop-island .main-content { display: none; }
 @media (max-width: 700px) { .verification-metrics { grid-template-columns: 1fr; gap: 18px; } }
 .focus-metric-icon { position: absolute; inset: 19px; z-index: 2; color: var(--ring-color); pointer-events: none; transition: color .6s ease; }
 .focus-metric-icon svg { width: 100%; height: 100%; }
-/* Animate each symbol internally while focus is visible, also with a stationary native pointer. */
-body[data-island-mode="focus"] .focus-model[data-focus-metric="quality"] .focus-metric-icon path { animation: thought-spark 2s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
-body[data-island-mode="focus"] .focus-model[data-focus-metric="quality"] .focus-metric-icon path:nth-child(2) { animation-delay: .35s; }
-body[data-island-mode="focus"] .focus-model[data-focus-metric="quality"] .focus-metric-icon path:nth-child(3) { animation-delay: .7s; }
-body[data-island-mode="focus"] .focus-model[data-focus-metric="cache"] .focus-metric-icon ellipse { animation: cache-flow 1.8s ease-in-out infinite; }
-body[data-island-mode="focus"] .focus-model[data-focus-metric="ttft"] .focus-metric-icon path { animation: response-spark 1.8s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
-body[data-island-mode="focus"] #island-focus .ring-track { animation: focus-ring-arrive 1.2s ease-out; }
-body[data-island-mode="focus"] #island-focus .ring-value { animation: focus-ring-arrive 1.2s ease-out; }
+/* Only the attended metric animates; native pointer hit-testing sets is-hovered. */
+body[data-island-mode="focus"] .focus-model[data-focus-metric="quality"]:is(:hover, .is-hovered) .focus-metric-icon path { animation: thought-spark 2s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+body[data-island-mode="focus"] .focus-model[data-focus-metric="quality"]:is(:hover, .is-hovered) .focus-metric-icon path:nth-child(2) { animation-delay: .35s; }
+body[data-island-mode="focus"] .focus-model[data-focus-metric="quality"]:is(:hover, .is-hovered) .focus-metric-icon path:nth-child(3) { animation-delay: .7s; }
+body[data-island-mode="focus"] .focus-model[data-focus-metric="cache"]:is(:hover, .is-hovered) .focus-metric-icon ellipse { animation: cache-flow 1.8s ease-in-out infinite; }
+body[data-island-mode="focus"] .focus-model[data-focus-metric="ttft"]:is(:hover, .is-hovered) .focus-metric-icon path { animation: response-spark 1.8s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+body[data-island-mode="focus"] #island-focus .focus-model:is(:hover, .is-hovered) .ring-track { animation: focus-ring-arrive 1.2s ease-out; }
+body[data-island-mode="focus"] #island-focus .focus-model:is(:hover, .is-hovered) .ring-value { animation: focus-ring-arrive 1.2s ease-out; }
 @keyframes thought-spark { 0%,100% { transform: scale(.85); opacity: .5; } 45% { transform: scale(1.12); opacity: 1; } }
 @keyframes cache-flow { 0%,100% { transform: translateY(0); opacity: 1; } 60% { transform: translateY(10px); opacity: .3; } }
 @keyframes response-spark { 0%,100% { transform: scale(.9); fill: transparent; } 40% { transform: scale(1.08); fill: currentColor; filter: drop-shadow(0 0 2px currentColor); } }
@@ -927,3 +925,27 @@ body.desktop-main .main-content { padding-top: 14px; }
 
 .bazaarlink-panel > p { margin: 12px 0; color: var(--muted); line-height: 1.6; }
 .question-form input[type="checkbox"] { width: auto; margin-right: 6px; }
+
+/* Shared accent follows the chosen theme; metric thresholds retain their own palette. */
+.primary-button, .text-button, .eyebrow, .app-footer a { color: var(--mint); }
+.primary-button { border-color: color-mix(in srgb, var(--mint) 50%, transparent); background: color-mix(in srgb, var(--mint) 12%, transparent); }
+.switch input:checked + span { border-color: color-mix(in srgb, var(--mint) 60%, transparent); background: color-mix(in srgb, var(--mint) 25%, transparent); }
+.switch input:checked + span::after { box-shadow: 0 0 10px color-mix(in srgb, var(--mint) 60%, transparent); }
+body.desktop-island #island-bridge path { stroke: color-mix(in srgb, var(--line-bright) 55%, transparent); stroke-width: .8; filter: drop-shadow(0 0 3px color-mix(in srgb, var(--line-bright) 22%, transparent)); }
+body, .main-content, .primary-button, .text-button, .nav-item, .settings-tab, .eyebrow, select, a { transition: color .25s ease, background-color .25s ease, border-color .25s ease; }
+.primary-button, .text-button, .top-actions { flex-shrink: 0; }
+.top-actions, .panel-header, .question-actions, .view-header { flex-wrap: wrap; }
+.primary-button, .text-button { white-space: nowrap; }
+body.large-text .setting-row { grid-template-columns: minmax(0, 1fr) minmax(160px, .6fr); }
+body.large-text .view-columns { grid-template-columns: 1fr; }
+body.large-text .topbar { flex-wrap: wrap; gap: 16px; }
+body.large-text .report-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+body.large-text .settings-tabs { flex-wrap: wrap; }
+@media (max-width: 700px) { body.large-text .setting-row { grid-template-columns: 1fr; } }
+@supports (interpolate-size: allow-keywords) {
+  details { interpolate-size: allow-keywords; }
+  details::details-content { block-size: 0; overflow: clip; opacity: 0; transition: block-size .24s ease, opacity .24s ease, content-visibility .24s allow-discrete; }
+  details[open]::details-content { block-size: auto; opacity: 1; }
+}
+body.reduced-motion *, body.reduced-motion *::before, body.reduced-motion *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }

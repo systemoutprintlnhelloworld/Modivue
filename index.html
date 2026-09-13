@@ -26,13 +26,13 @@
           <button class="nav-item" data-view="logs"><span>≡</span>日志</button>
           <button class="nav-item" data-view="settings"><span>⚙</span>设置</button>
         </nav>
-        <div class="sidebar-footer"><span class="status-dot"></span><span>本地采集服务运行中</span><button class="icon-button" title="打开服务状态">⋯</button></div>
+        <div class="sidebar-footer"><span class="status-dot"></span><span>本地采集服务运行中</span></div>
       </aside>
 
       <main class="main-content">
         <header class="topbar">
           <div><div class="eyebrow">MODEL OBSERVABILITY</div><h1 id="page-title">概览</h1></div>
-          <div class="top-actions"><button id="search-launcher" class="search-launcher" type="button" aria-haspopup="dialog">搜索功能与设置 <kbd>⌘ K</kbd></button><div class="live-pill" id="live-status" data-tone="loading" aria-live="polite"><span class="status-dot"></span><span>正在连接</span></div><label class="select-wrap"><span>时间范围</span><select id="range-select"><option value="1">最近 1 小时</option><option value="6">最近 6 小时</option><option value="24">最近 24 小时</option><option value="168">最近 7 天</option></select></label><button class="icon-button" id="theme-toggle" title="切换主题" aria-label="切换明暗主题" aria-pressed="false">☼</button><img class="detail-app-icon" src="/src/data/app-icon.png" width="26" height="26" alt="Modivue" title="Modivue"></div>
+          <div class="top-actions"><button id="search-launcher" class="search-launcher" type="button" aria-haspopup="dialog">搜索功能与设置 <kbd>⌘ K</kbd></button><div class="live-pill" id="live-status" data-tone="loading" aria-live="polite"><span class="status-dot"></span><span>正在连接</span></div><label class="select-wrap"><span>时间范围</span><select id="range-select"><option value="1">最近 1 小时</option><option value="6">最近 6 小时</option><option value="24">最近 24 小时</option><option value="168">最近 7 天</option></select></label><button class="icon-button" id="theme-toggle" title="切换主题" aria-label="切换明暗主题" aria-pressed="false">☼</button></div>
         </header>
 
         <div class="global-filters" id="global-filters" role="group" aria-label="统计筛选">
@@ -49,7 +49,7 @@
         </section>
 
         <section class="model-strip" id="model-strip"></section>
-        <section id="cost-summary" class="cost-summary" aria-label="当前对象核验费用"></section>
+        <section id="cost-summary" class="cost-summary" aria-label="当前对象核验费用" data-i18n-attribute="aria-label"></section>
 
         <div class="overview-metrics overview-only">
         <section class="panel health-panel overview-only"><div class="panel-header"><div><h3>实时核心指标</h3><p class="muted">当前选中模型 · 等待真实样本</p></div><span class="health-status"><span class="status-dot"></span>本地服务</span></div><div class="rings"></div><div class="health-meta"><span><i class="status-dot"></i>采集服务正常</span><span>无真实样本</span></div></section>
@@ -70,7 +70,7 @@
           <article class="panel events-panel"><div class="panel-header"><div><h3>最近事件</h3><p class="muted">异常变化与采集日志</p></div><button class="text-button" data-view-link="logs">查看日志 →</button></div><div class="event-list"><div class="empty-state">暂无事件 · 真实代理调用后将在此显示</div></div></article>
         </section>
         <section class="view-content" id="view-content" hidden></section>
-        <footer class="app-footer"><span>Modivue 0.3.0 · 本地模式</span><span>标准目录：<a href="https://models.dev" target="_blank" rel="noreferrer">models.dev</a> · <span id="catalog-footer">同步中</span></span></footer>
+        <footer class="app-footer"><span>Modivue 0.4.0 · 本地模式</span><span>标准目录：<a href="https://models.dev" target="_blank" rel="noreferrer">models.dev</a> · <span id="catalog-footer">同步中</span></span></footer>
       </main>
 
       <aside class="island" id="quick-island" aria-label="模型实时指标"><button class="island-grip" id="island-expand" aria-label="打开详细窗口" aria-expanded="false"></button><button id="island-buffer" aria-label="返回全部 Agent" title="点击返回全部 Agent · 拖动移动窗口">全部</button><div class="island-stage"><div id="island-models"></div><div id="island-focus" aria-label="专注指标" inert></div></div><button class="island-model island-command" id="island-settings" title="打开设置" aria-label="打开设置"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="m9 3-1 3-3 1v4l-2 1 2 3v3l3 1 1 2h6l1-2 3-1v-3l2-3-2-1V7l-3-1-1-3Z"/><circle cx="12" cy="12" r="3.5"/></svg></button></aside>

@@ -27,9 +27,12 @@ function validModel(record) {
   if (!record.probability && !record.juice) return false;
   if (record.probability) {
     const p = record.probability;
+    if (p.method !== undefined && !["one-token:en:v1", "astra-community:adapted:v1"].includes(p.method)) return false;
+    if (p.system !== undefined && (typeof p.system !== "string" || p.system.length > 2000)) return false;
+    if (p.method && !p.cells?.every(cell => Number.isSafeInteger(cell.sampleCount) && cell.sampleCount >= 10)) return false;
     if (!isRecord(p) || !Array.isArray(p.cells) || !p.cells.length || p.cells.length > 60
       || !p.cells.every((cell) => prompt(cell.prompt) && validDistribution(cell.distribution))
-      || !Number.isSafeInteger(p.repetitions) || p.repetitions < 16 || p.repetitions > 100
+      || !Number.isSafeInteger(p.repetitions) || p.repetitions < (p.method ? 10 : 16) || p.repetitions > 100
       || !(p.temperature === null || Number.isFinite(p.temperature) && p.temperature > 0 && p.temperature <= 2)
       || !(p.maxJsd === null || Number.isFinite(p.maxJsd) && p.maxJsd >= 0 && p.maxJsd <= 1)) return false;
   }

@@ -2,6 +2,7 @@ import AppKit
 import Darwin
 import Foundation
 import WebKit
+import UserNotifications
 
 final class IslandPanel: NSPanel {
     override var canBecomeKey: Bool { true }
@@ -129,7 +130,7 @@ final class IslandWebView: WKWebView {
 }
 
 @main
-final class ModivueApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
+final class ModivueApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler, UNUserNotificationCenterDelegate {
     private var serverProcess: Process?
     private var baseURL: URL!
     private var islandWindow: NSPanel?
@@ -157,6 +158,7 @@ final class ModivueApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNav
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        UNUserNotificationCenter.current().delegate = self
         NSApp.setActivationPolicy(.regular)
         configureStatusItem()
         do {
@@ -204,12 +206,12 @@ final class ModivueApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNav
     private func localizedMenuTitle(_ chinese: String, _ english: String) -> String { interfaceEnglish ? english : chinese }
 
     private func startServer() throws {
-        guard let resources = Bundle.main.resourceURL else { throw LaunchError("应用资源目录不可用") }
+        guard let resources = Bundle.main.resourceURL else { throw LaunchError(localizedMenuTitle("应用资源目录不可用", "Application resources are unavailable")) }
         let node = resources.appendingPathComponent("runtime/node")
         let application = resources.appendingPathComponent("app")
         let server = application.appendingPathComponent("server.mjs")
         guard FileManager.default.isExecutableFile(atPath: node.path), FileManager.default.fileExists(atPath: server.path) else {
-            throw LaunchError("应用包缺少监测运行时")
+            throw LaunchError(localizedMenuTitle("应用包缺少监测运行时", "The app bundle is missing the monitoring runtime"))
         }
 
         let support = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
@@ -229,6 +231,7 @@ final class ModivueApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNav
         environment["PATH"] = (searchPaths + ["/opt/homebrew/bin", "/usr/local/bin"].filter { !searchPaths.contains($0) }).joined(separator: ":")
         environment["MODIVUE_PORT"] = String(port)
         environment["MODIVUE_DATA_DIR"] = support.path
+        environment["MODIVUE_LANGUAGES"] = Locale.preferredLanguages.joined(separator: ",")
         process.environment = environment
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
@@ -262,7 +265,7 @@ final class ModivueApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNav
     private func waitForServer(attempt: Int) {
         guard !isQuitting else { return }
         guard attempt < 80 else {
-            showLaunchError("本地监测服务未能启动")
+            showLaunchError(localizedMenuTitle("本地监测服务未能启动", "The local monitoring service failed to start"))
             return
         }
         URLSession.shared.dataTask(with: baseURL.appendingPathComponent("api/config")) { [weak self] _, response, _ in
@@ -488,6 +491,17 @@ final class ModivueApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNav
         if notification.object as? NSWindow === islandWindow { layoutIslandSurface() }
     }
 
+    private func reply(_ webView: WKWebView?, requestID: String, result: [String: Any]) {
+        var payload = result; payload["requestId"] = requestID
+        guard let data = try? JSONSerialization.data(withJSONObject: payload), let json = String(data: data, encoding: .utf8) else { return }
+        DispatchQueue.main.async { webView?.evaluateJavaScript("window.modivueNativeReply?.(\(json))") }
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
+                                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler([.banner, .sound, .list])
+    }
+
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
         guard message.name == "modivue", let body = message.body as? [String: Any], let type = body["type"] as? String else { return }
         if type == "ui-evidence", let directory = ProcessInfo.processInfo.environment["MODIVUE_UI_ARTIFACTS"] {
@@ -530,7 +544,36 @@ final class ModivueApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNav
             }
             return
         }
+        guard message.frameInfo.isMainFrame, message.frameInfo.request.url?.host == "127.0.0.1",
+              message.frameInfo.request.url?.port == baseURL.port else { return }
         switch type {
+        case "notification-permission":
+            guard let id = body["requestId"] as? String else { return }
+            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
+                self.reply(message.webView, requestID: id, result: error.map { ["error": $0.localizedDescription] } ?? ["granted": granted])
+            }
+        case "notify":
+            let content = UNMutableNotificationContent()
+            content.title = body["title"] as? String ?? "Modivue"
+            content.body = body["body"] as? String ?? ""
+            content.sound = .default
+            UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: body["id"] as? String ?? UUID().uuidString, content: content, trigger: nil)) { error in
+                if let id = body["requestId"] as? String { self.reply(message.webView, requestID: id, result: error.map { ["error": $0.localizedDescription] } ?? ["sent": true]) }
+            }
+        case "export":
+            guard let id = body["requestId"] as? String, let text = body["text"] as? String,
+                  let name = body["filename"] as? String, let window = message.webView?.window else { return }
+            let panel = NSSavePanel()
+            panel.nameFieldStringValue = URL(fileURLWithPath: name).lastPathComponent
+            panel.canCreateDirectories = true
+            if let directory = ProcessInfo.processInfo.environment["MODIVUE_UI_ARTIFACTS"] { panel.directoryURL = URL(fileURLWithPath: directory) }
+            panel.beginSheetModal(for: window) { response in
+                guard response == .OK, let url = panel.url else { self.reply(message.webView, requestID: id, result: ["cancelled": true]); return }
+                do {
+                    try text.write(to: url, atomically: true, encoding: .utf8)
+                    self.reply(message.webView, requestID: id, result: ["saved": true])
+                } catch { self.reply(message.webView, requestID: id, result: ["error": error.localizedDescription]) }
+            }
         case "locale":
             interfaceEnglish = body["locale"] as? String == "en"
             for item in statusItem?.menu?.items ?? [] {
@@ -666,7 +709,7 @@ final class ModivueApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNav
     private func showLaunchError(_ message: String) {
         let alert = NSAlert()
         alert.alertStyle = .critical
-        alert.messageText = "Modivue 无法启动"
+        alert.messageText = localizedMenuTitle("Modivue 无法启动", "Modivue could not start")
         alert.informativeText = message
         alert.runModal()
         NSApp.terminate(nil)

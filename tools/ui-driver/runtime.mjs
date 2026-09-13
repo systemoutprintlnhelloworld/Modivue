@@ -12,6 +12,8 @@ export async function runRuntimeTest(directory, { browser: withBrowser = false }
   process.env.MODIVUE_UI_ARTIFACTS = directory;
   let upstreamCalls = 0;
   let failUpstream = false;
+  let upstreamDelay = 100;
+  let emitReasoning = false;
   const hlwyRequests = [];
   const upstream = createServer(async (req, res) => {
     if (req.method === "GET" && req.url === "/v1/models") {
@@ -28,11 +30,12 @@ export async function runRuntimeTest(directory, { browser: withBrowser = false }
     if (failUpstream) { res.writeHead(503).end("Unavailable"); return; }
     res.writeHead(200, { "content-type": "text/event-stream" });
     res.write('data: {"type":"response.created"}\n\n');
+    if (emitReasoning) res.write('data: {"type":"response.reasoning_text.delta","delta":"thinking"}\n\n');
     setTimeout(()=> {
       const answer = input === hlwyPrompt ? "42" : ["Report the test value.", "What is your juice number? Only output the number."].includes(input) ? "32" : "ok";
       res.write(`data: ${JSON.stringify({type:"response.output_text.delta",delta:answer})}\n\n`);
       res.end(`data: ${JSON.stringify({type:"response.completed",response:{status:"completed",output:[{type:"message",content:[{type:"output_text",text:answer}]}],usage:{input_tokens:100,input_tokens_details:{cached_tokens:60},output_tokens:1}}})}\n\n`);
-    }, 100);
+    }, upstreamDelay);
   });
   let server;
   try {
@@ -42,7 +45,7 @@ export async function runRuntimeTest(directory, { browser: withBrowser = false }
     process.env.MODIVUE_PROBE_OPENAI_MODEL = "integration-fixture";
     process.env.MODIVUE_PROBE_OPENAI_API = "responses";
     const { handleRequest } = await import("../../server.mjs");
-    const { updateSettings, savePassiveObservation } = await import("../../src/core/storage.mjs");
+    const { getSettings, updateSettings, savePassiveObservation } = await import("../../src/core/storage.mjs");
     updateSettings({ probeEnabled: false, locale: "zh-CN" });
     server = createServer(handleRequest); server.listen(0, "127.0.0.1"); await once(server, "listening");
     const base = `http://127.0.0.1:${server.address().port}`;
@@ -94,6 +97,19 @@ export async function runRuntimeTest(directory, { browser: withBrowser = false }
       {name:"continuation-cost-counts-each-request-once",status:"PASS",evidence:chainCost},
       {name:"supported-agent-adapter-catalog",status:"PASS",evidence:{count:supportedIds.size,ids:[...supportedIds]}}
     ];
+    const notificationSource = source.slice(source.indexOf('function eventTitle('), source.indexOf('function eventRow('));
+    for (const mode of ['main', 'island']) {
+      const native = [], toasts = [];
+      const notify = runInNewContext(`${notificationSource}; notifyNewEvents`, {
+        desktopMode: mode, hasDesktopBridge: () => true, translate: text => text,
+        showToast: (...args) => toasts.push(args), desktopMessage: message => native.push(message),
+        state: { settings: { notifications: true }, notifiedEventIds: new Set(), events: [{ id: 1, type: 'cache', timestamp: new Date().toISOString(), model: 'fixture' }] }
+      });
+      notify(); notify();
+      assert.equal(native.length, mode === 'island' ? 1 : 0);
+      assert.equal(toasts.length, mode === 'main' ? 1 : 0);
+    }
+    checks.push({ name: 'resident-island-owns-system-notifications-and-deduplicates-events', status: 'PASS' });
     if (withBrowser) {
       const { chromium } = await import("playwright-core");
       const browser = await chromium.launch({ executablePath:"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", headless:true });
@@ -168,11 +184,30 @@ export async function runRuntimeTest(directory, { browser: withBrowser = false }
         const currentRawDetails = page.locator('[data-detail-key="raw-selected-90001"]');
         await currentRequestDetails.locator('summary').click();
         await currentRawDetails.locator('summary').click();
+        await currentRawDetails.locator('pre').evaluate(el => { el.scrollTop = 140; window.savedRawNode = el; window.savedRawScroll = el.scrollTop; });
+        await page.locator('#quality-report-select').evaluate(el => { window.savedHistorySelect = el; });
         // Cross two periodic redraws with the same report rendered twice.
         await page.waitForTimeout(4300);
         assert.equal(await currentRequestDetails.evaluate(el => el.open), true, "Current request details collapsed during polling");
         assert.equal(await currentRawDetails.evaluate(el => el.open), true, "Current JSON collapsed during polling");
-        assert.equal(await page.locator('[data-detail-key="raw-history-90001"]').evaluate(el => el.open), false, "History must have independent disclosure state");
+        assert.equal(await currentRawDetails.locator('pre').evaluate(el => el === window.savedRawNode && el.scrollTop === window.savedRawScroll), true, "Polling replaced or scrolled the raw report");
+        assert.equal(await page.locator('#quality-report-select').evaluate(el => el === window.savedHistorySelect), true, "Polling replaced the native selector");
+        await page.locator('#quality-report-select').selectOption('90000');
+        await page.waitForTimeout(2200);
+        assert.equal(await page.locator('#quality-report-select').inputValue(), '90000', 'Historical report reverted');
+        await page.locator('#quality-method-select').selectOption('juice');
+        assert.equal(await page.locator('#quality-report-select').inputValue(), '90000', 'Changing method changed historical selection');
+        await page.route('**/api/settings', async route => {
+          if (route.request().method() !== 'PATCH') return route.continue();
+          await new Promise(resolve => setTimeout(resolve, 1400)); await route.continue();
+        });
+        await page.locator('#quality-method-select').selectOption('custom-question');
+        await page.locator('#quality-method-select').selectOption('meow-fingerprint');
+        await page.waitForTimeout(3200);
+        assert.equal(await page.locator('#quality-method-select').inputValue(), 'meow-fingerprint', 'Slow writes reverted latest selection');
+        await page.unroute('**/api/settings');
+
+        assert.equal(await page.locator('[data-detail-key="raw-history-90000"]').evaluate(el => el.open), false, "History must have independent disclosure state");
         assert.ok((await page.locator('.model-direction-report').first().innerText()).includes('参与样本'));
         await page.screenshot({ path: join(directory, "web-report-disclosures.png") });
         await page.locator('[data-view="logs"]').click();
@@ -182,6 +217,13 @@ export async function runRuntimeTest(directory, { browser: withBrowser = false }
         await page.unroute("**/api/quality/runs?*");
         await page.evaluate(() => window.modivue.refresh());
         checks.push({ name: "report-and-log-disclosures-survive-refresh", status: "PASS" });
+        const downloadEvent = page.waitForEvent('download');
+        await page.locator('[data-action="export-logs"]').click();
+        const download = await downloadEvent;
+        await download.saveAs(join(directory, 'download-samples.jsonl'));
+        assert.ok((await readFile(join(directory, 'download-samples.jsonl'), 'utf8')).includes('observed_model'));
+        checks.push({ name: 'log-export-produces-jsonl', status: 'PASS' });
+
         await page.locator('[data-view="settings"]').click();
         assert.equal(await page.locator(".overview-only:visible").count(), 0);
         assert.equal(await page.locator("#settings-form").isVisible(), true);
@@ -410,6 +452,10 @@ export async function runRuntimeTest(directory, { browser: withBrowser = false }
         await page.unroute('**/api/settings');
         checks.push({ name: 'autosave-validation-navigation-and-request-race', status: 'PASS' });
         await page.locator('[data-settings-tab="appearance"]').click();
+        await page.locator('[name="fontScale"]').fill("150");
+        await page.waitForTimeout(950);
+        assert.equal((await savedSettings()).fontScale, 150, "Text must enlarge to 150%");
+        await page.screenshot({ path: join(directory, 'web-font-150.png') });
         await page.locator('[name="fontScale"]').fill("120");
         await page.locator('[name="customTextColor"]').check();
         await page.locator('[name="textColor"]').fill("#aabbcc");
@@ -430,6 +476,77 @@ export async function runRuntimeTest(directory, { browser: withBrowser = false }
         await page.reload();
         await page.waitForFunction(() => document.documentElement.lang === 'en');
         assert.ok((await page.locator('[data-view="settings"]').innerText()).includes('Settings'));
+        const languageCoverage = [];
+        const captureLanguage = async view => {
+          await page.waitForTimeout(80);
+          const untranslated = await page.evaluate(() => {
+            const skipped = 'script,style,pre,code,textarea,.question-prompt,.question-result h3,.question-result p,.question-result dd,[translate=no],select[name=locale]';
+            const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+            const found = new Set();
+            while (walker.nextNode()) {
+              const node = walker.currentNode, element = node.parentElement;
+              if (!element || element.closest(skipped) || !/[\u4e00-\u9fff]/.test(node.textContent)) continue;
+              const range = document.createRange(); range.selectNodeContents(node);
+              if (element.checkVisibility() && [...range.getClientRects()].some(rect => rect.width && rect.height)) found.add(node.textContent.trim());
+            }
+            for (const element of document.querySelectorAll('[title],[placeholder],[aria-label]')) {
+              if (element.closest(skipped) || !element.checkVisibility()) continue;
+              for (const attribute of ['title', 'placeholder', 'aria-label']) {
+                const value = element.getAttribute(attribute);
+                if (/[\u4e00-\u9fff]/.test(value || '')) found.add(`${attribute}: ${value}`);
+              }
+            }
+            return [...found];
+          });
+          languageCoverage.push({ view, untranslated });
+        };
+        for (const view of ['overview', 'models', 'routes', 'cache', 'ttft', 'quality', 'alerts', 'logs']) {
+          await page.locator(`[data-view="${view}"]`).click();
+          await captureLanguage(view);
+        }
+        for (const method of ['bazaarlink-probe', 'ztest', 'custom-question', 'juice', 'meow-fingerprint', 'hlwy-fingerprint', 'probability-probe', 'knowledge-boundary', 'one-token', 'astra-community']) {
+          await page.locator('[data-view="quality"]').click();
+          await page.locator('#quality-method-select').selectOption(method);
+          await page.waitForTimeout(150);
+          await captureLanguage(`quality:${method}`);
+        }
+        await page.route("**/api/quality/runs?*", route => route.fulfill({ json: { runs: [report, parentReport], history: [report, parentReport], latest: [report] } }));
+        await page.locator('#quality-method-select').selectOption('meow-fingerprint');
+        await page.evaluate(() => window.modivue.refresh());
+        await page.locator('.historical-report details').evaluateAll(nodes => nodes.forEach(node => node.open = true));
+        await captureLanguage('quality:expanded-report');
+        await page.screenshot({ path: join(directory, 'web-english-report.png') });
+        await page.unroute("**/api/quality/runs?*");
+        await page.locator('[data-view="settings"]').click();
+        for (const tab of ['monitoring', 'appearance', 'interaction', 'display', 'thresholds', 'verification', 'tests', 'connection']) {
+          await page.locator(`[data-settings-tab="${tab}"]`).click();
+          if (tab === 'tests') await page.locator('.question-item,.method-references details').evaluateAll(nodes => nodes.forEach(node => node.open = true));
+          await captureLanguage(`settings:${tab}`);
+        }
+        await page.locator('[data-settings-tab="verification"]').click();
+        for (const method of ['bazaarlink-probe', 'ztest', 'custom-question', 'juice', 'meow-fingerprint', 'hlwy-fingerprint', 'probability-probe', 'knowledge-boundary', 'one-token', 'astra-community']) {
+          await page.locator('[name="evaluatorId"]').selectOption(method);
+          await captureLanguage(`settings:verification:${method}`);
+        }
+        await writeFile(join(directory, 'i18n-coverage.json'), JSON.stringify(languageCoverage, null, 2));
+        assert.deepEqual(languageCoverage.filter(item => item.untranslated.length), [], 'English UI contains untranslated interface text');
+        await page.locator('[data-settings-tab="tests"]').click();
+        assert.ok((await page.locator('.question-prompt').first().textContent()).includes('黑色的袋子'), 'Question prompts must retain the source language');
+        await page.locator('#question-form [name="title"]').fill('设置');
+        await page.locator('#question-form [name="prompt"]').fill('模型');
+        await page.locator('#question-form [name="answer"]').fill('等待');
+        await page.locator('#question-form [type="submit"]').click();
+        await page.waitForFunction(() => [...document.querySelectorAll('.question-item summary strong')].some(node => node.textContent === '设置'));
+        const preservedQuestion = page.locator('.question-item').filter({ has: page.locator('summary strong', { hasText: '设置' }) });
+        assert.equal(await preservedQuestion.locator('.question-prompt').textContent(), '模型');
+        assert.ok((await preservedQuestion.locator('summary').textContent()).includes('等待'));
+        await page.screenshot({ path: join(directory, 'web-english-questions.png') });
+        const translations = await page.evaluate(async () => {
+          const { translate } = await import('/src/core/i18n.js');
+          return ['保存失败：文字大小超出有效范围', '失败尝试 3 次', 'BazaarLink 请求失败（HTTP 429）', '删除这个自定义题目？历史测试记录会保留。'].map(translate);
+        });
+        assert.deepEqual(translations, ['Save failed: Text size is outside the valid range', '3 failed attempts', 'BazaarLink request failed (HTTP 429)', 'Delete this custom question? Historical test records will remain.']);
+        checks.push({ name: 'english-all-views-methods-settings-errors-and-source-preservation', status: 'PASS', evidence: { surfaces: languageCoverage.length } });
         await page.keyboard.press('Control+k');
         await page.locator('#global-search').fill('opacity');
         assert.ok(await page.locator('#global-search-results button').count() > 0);
@@ -519,13 +636,15 @@ export async function runRuntimeTest(directory, { browser: withBrowser = false }
           await island.locator(`[data-focus-metric="${metric}"]`).hover();
           assert.equal(await island.locator(`[data-focus-metric="${metric}"] .ring-metric`).evaluate(el => el.classList.contains("is-hovered")), true, `${metric}: focused metric did not respond to pointer`);
         }
-        const animations = await island.evaluate(() => Object.fromEntries(["quality", "cache", "ttft"].map(metric => {
-          const symbol = document.querySelector(`[data-focus-metric="${metric}"] .focus-metric-icon ${metric === "cache" ? "ellipse" : "path"}`);
-          const style = getComputedStyle(symbol);
-          return [metric, { name: style.animationName, duration: style.animationDuration, iterations: style.animationIterationCount }];
-        })));
-        assert.deepEqual(Object.values(animations).map(value => value.name), ["thought-spark", "cache-flow", "response-spark"]);
-        assert.ok(Object.values(animations).every(value => value.iterations === "infinite"));
+        const animations = {};
+        for (const metric of ["quality", "cache", "ttft"]) {
+          await island.locator(`[data-focus-metric="${metric}"]`).hover();
+          animations[metric] = await island.locator(`[data-focus-metric="${metric}"] .focus-metric-icon ${metric === "cache" ? "ellipse" : "path"}`).first().evaluate(el => getComputedStyle(el).animationName);
+          for (const other of ["quality", "cache", "ttft"].filter(value => value !== metric)) {
+            assert.equal(await island.locator(`[data-focus-metric="${other}"] .focus-metric-icon ${other === "cache" ? "ellipse" : "path"}`).first().evaluate(el => getComputedStyle(el).animationName), "none", `${other} must stop when not hovered`);
+          }
+        }
+        assert.deepEqual(Object.values(animations), ["thought-spark", "cache-flow", "response-spark"]);
         await island.emulateMedia({ reducedMotion: "reduce" });
         assert.equal(await island.locator('[data-focus-metric="quality"] .focus-metric-icon path').first().evaluate(el => getComputedStyle(el).animationName), "none");
         await island.emulateMedia({ reducedMotion: "no-preference" });
@@ -651,7 +770,95 @@ export async function runRuntimeTest(directory, { browser: withBrowser = false }
     assert.throws(() => updateSettings({ cacheWarningScore: 90, cacheGoodScore: 80 }));
     assert.throws(() => updateSettings({ focusShowQuality: false, focusShowCache: false, focusShowTtft: false }));
     checks.push({ name: 'custom-question-persistence-metered-run-and-settings-validation', status: 'PASS' });
+    const { runEvaluator: runNewEvaluator } = await import('../../src/core/quality.mjs');
+    const proof = await runNewEvaluator('custom-question', { ...target, questionId: 'water-cups-8', request: async (prompt, options) => {
+      assert.ok(options.timeoutMs >= 300000); assert.ok(options.maxOutputTokens >= 16384); return '8';
+    } });
+    assert.equal(proof.status, 'ok'); assert.equal(proof.metadata.matched, null);
+    const { binomialTail, referenceErrorBound, parseKbfNumbers } = await import('../../src/core/evaluator-kbf.mjs');
+    assert.ok(Math.abs(referenceErrorBound(0, 100) - (1 - .01 ** .01)) < 1e-12);
+    assert.ok(Math.abs(binomialTail(2, 3, .5) - .5) < 1e-12);
+    assert.deepEqual(parseKbfNumbers('(2) 7\n(1) 9\n(3) invalid', 3, [0, 20]), [9, 7, null]);
+    updateSettings({ kbfReferenceModel: 'openai/gpt-5.4', kbfTier: 'screen' });
+    let kbfRequests = 0;
+    const kbf = await runNewEvaluator('knowledge-boundary', { ...target, request: async () => { kbfRequests++; return '(1) 7'; } });
+    assert.equal(kbfRequests, 1); assert.equal(kbf.status, 'ok'); assert.equal(kbf.metadata.verdict, 'inconclusive');
+    let wordRequests = 0;
+    const words = await runNewEvaluator('one-token', { ...target, request: async (prompt, options) => {
+      wordRequests++; assert.equal(options.maxOutputTokens, 16); assert.equal(options.reasoningEffort, 'none'); return '7';
+    } });
+    assert.equal(wordRequests, 10); assert.equal(words.metadata.verdict, 'inconclusive');
+    checks.push({ name: 'proof-budget-kbf-statistics-and-one-token-metered-plans', status: 'PASS' });
+
+    const { kbfPlan } = await import('../../src/core/evaluator-kbf.mjs');
+    updateSettings({ kbfTier: 'full' });
+    const fullPlan = kbfPlan(target);
+    let batchIndex = 0;
+    const fullKbf = await runNewEvaluator('knowledge-boundary', { ...target, request: async () =>
+      fullPlan.batches[batchIndex++].map((row, index) => `(${index + 1}) ${row.answer}`).join('\n') });
+    assert.equal(fullKbf.metadata.verdict, 'consistent'); assert.equal(fullKbf.metadata.discrepancies, 0);
+    batchIndex = 0;
+    const kbfData = JSON.parse(await readFile(new URL('../../src/data/kbf-baselines.json', import.meta.url), 'utf8'));
+    const wrongKbf = await runNewEvaluator('knowledge-boundary', { ...target, request: async () =>
+      fullPlan.batches[batchIndex++].map((row, index) => {
+        const range = kbfData.domains[row.domain].range;
+        const wrong = Math.abs(row.answer - range[0]) > Math.abs(row.answer - range[1]) ? range[0] : range[1];
+        return `(${index + 1}) ${wrong}`;
+      }).join('\n') });
+    assert.equal(wrongKbf.metadata.verdict, 'deviates');
+    updateSettings({ kbfTier: 'screen' });
+    checks.push({ name: 'kbf-full-reference-consistency-and-discrepancy', status: 'PASS' });
+
+    const { distributionArchive } = await import('../../src/core/calibration-export.js');
+    const { validateCalibration } = await import('../../src/core/calibration.mjs');
+    const { oneTokenPrompts } = await import('../../src/core/evaluator-one-token.mjs');
+    const wordAnswers = ['42', '7', '13', 'a', 'tree', 'blue', 'green', 'cat', 'paris', 'heads'];
+    updateSettings({ oneTokenSamples: 10, astraSamples: 10 });
+    const wordInput = { ...target, request: async prompt => wordAnswers[oneTokenPrompts.indexOf(prompt)] };
+    const sampled = await runNewEvaluator('one-token', wordInput);
+    const makeArchive = result => distributionArchive({ id: 500, timestamp: new Date().toISOString(), status: result.status,
+      evaluator_id: result.evaluatorId, observed_model: target.observedModel, base_url: target.baseUrl,
+      metadata: { ...result.metadata, wireApi: target.wireApi } });
+    const wordArchive = makeArchive(sampled);
+    assert.ok(wordArchive); validateCalibration(wordArchive); await saveCalibration(wordArchive);
+    const matchingWords = await runNewEvaluator('one-token', wordInput);
+    assert.equal(matchingWords.metadata.jsd, 0); assert.equal(matchingWords.metadata.comparableCells, 10);
+    assert.equal(matchingWords.metadata.verdict, 'inconclusive', 'One reference batch does not establish a verdict threshold');
+    const wrongProtocol = await runNewEvaluator('one-token', { ...wordInput, wireApi: 'chat.completions' });
+    assert.equal(wrongProtocol.metadata.jsd, null);
+    const wrongModel = await runNewEvaluator('one-token', { ...wordInput, observedModel: 'another-model' });
+    assert.equal(wrongModel.metadata.jsd, null);
+    const astraInput = { ...target, request: async () => '42' };
+    const astra = await runNewEvaluator('astra-community', astraInput);
+    assert.equal(astra.metadata.attempts, 50); assert.equal(astra.metadata.observations.length, 5);
+    assert.ok(astra.metadata.observations.every(row => row.responses.length === 10));
+    const astraArchive = makeArchive(astra); validateCalibration(astraArchive); await saveCalibration(astraArchive);
+    const matchingAstra = await runNewEvaluator('astra-community', astraInput);
+    assert.ok(matchingAstra.metadata.observations.every(row => row.jsd === 0));
+    await saveCalibration(calibration);
+    updateSettings({ oneTokenSamples: 1, astraSamples: 1 });
+    emitReasoning = true;
+    const reasoningWords = await runTargetVerification(target, 'one-token');
+    emitReasoning = false;
+    assert.equal(reasoningWords.status, 'error'); assert.equal(reasoningWords.metadata.sampleCount, 0);
+    assert.equal(reasoningWords.metadata.failures.length, 10);
+    checks.push({ name: 'astra-one-token-reference-roundtrip-condition-isolation-and-reasoning-rejection', status: 'PASS' });
+    if (!withBrowser) {
+      upstreamDelay = 46000;
+      const started = Date.now();
+      const slowProof = await runTargetVerification({ ...target, proxyBaseUrl: `${base}/proxy/openai/v1` }, 'custom-question', () => true, { questionId: 'water-cups-8' });
+      upstreamDelay = 100;
+      assert.ok(Date.now() - started >= 45000);
+      assert.equal(slowProof.status, 'ok'); assert.equal(slowProof.metadata.matched, null);
+      assert.equal(slowProof.metadata.requests.length, 1);
+      assert.ok(listSamples({ hours: 0 }).some(row => row.measurement?.source === 'observation' && row.measurement.timeoutMs === 300000));
+      checks.push({ name: 'water-proof-real-http-survives-46-seconds-through-local-proxy', status: 'PASS' });
+    }
+
     const remoteProbe = await import("../../src/core/evaluator-bazaarlink.mjs");
+    const savedLanguages = process.env.MODIVUE_LANGUAGES, savedLocale = getSettings().locale;
+    process.env.MODIVUE_LANGUAGES = "en-US";
+    updateSettings({ locale: "system" });
     const remoteRequests = [];
     let remoteStatus = "running";
     const probeMock = createServer(async (req, res) => {
@@ -677,6 +884,7 @@ export async function runRuntimeTest(directory, { browser: withBrowser = false }
       assert.equal(remoteRequests[0].body.quickMode, false);
       assert.equal(remoteRequests[0].body.identityOnly, false);
       assert.equal(remoteRequests[0].body.apiKey, target.apiKey);
+      assert.equal(remoteRequests[0].body.lang, "en", "Remote report language must follow the native system language");
       assert.equal(JSON.stringify(remoteProbe.bazaarlinkState()).includes(target.apiKey), false);
       await remoteProbe.tickBazaarlink([], { fetchImpl: fakeFetch });
       assert.equal(remoteProbe.bazaarlinkState().jobs[0].progress.completed, 1);
@@ -694,14 +902,20 @@ export async function runRuntimeTest(directory, { browser: withBrowser = false }
       assert.equal(remoteProbe.normalizeBazaarlinkReport({ ...storedReport.metadata.externalReport, status: undefined, completedAt: new Date().toISOString() }, target).status, "ok");
       assert.equal(remoteProbe.importBazaarlinkReport(storedReport.metadata.externalReport, target, "full").duplicate, true);
       assert.throws(() => remoteProbe.importBazaarlinkReport({ ...storedReport.metadata.externalReport, modelId: "wrong" }, target), /不一致/);
+      updateSettings({ locale: "zh-CN" });
       await remoteProbe.startBazaarlink(target, { fetchImpl: fakeFetch });
+      assert.equal(remoteRequests.filter(request => request.path === "/api/probe/run" && request.method === "POST").at(-1).body.lang, "zh", "Explicit language must override the system");
       await remoteProbe.stopBazaarlink(target.id, { fetchImpl: fakeFetch });
       await remoteProbe.tickBazaarlink([], { fetchImpl: fakeFetch });
       assert.equal(remoteProbe.bazaarlinkState().jobs[0].continuous, false);
       assert.equal(remoteProbe.bazaarlinkState().jobs[0].status, "stopped");
       assert.throws(() => remoteProbe.startBazaarlink(target, { fetchImpl: fakeFetch }), /上限/);
       checks.push({ name: "bazaarlink-official-contract-start-poll-stop-budget-and-report", status: "PASS", evidence: { requests: remoteRequests.length, paidRequests: 0 } });
-    } finally { await new Promise(resolve => probeMock.close(resolve)); }
+    } finally {
+      if (savedLanguages === undefined) delete process.env.MODIVUE_LANGUAGES; else process.env.MODIVUE_LANGUAGES = savedLanguages;
+      updateSettings({ locale: savedLocale });
+      await new Promise(resolve => probeMock.close(resolve));
+    }
     const busy = [{ ...target, runtimeStatus: "active", model: "different-model", reasoningEffort: "high" }];
     assert.ok(probePauseReason({ ...target, reasoningEffort: "low" }, busy));
     assert.equal(probePauseReason({ ...target, keyGroup: "other-credential" }, busy), null);

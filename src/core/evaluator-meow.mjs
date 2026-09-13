@@ -2,10 +2,15 @@ import { registerEvaluator } from "./quality.mjs";
 import { verificationVersions, verificationRunLabel } from "./quality-summary.js";
 import gptBaseline from "../data/meow-gpt.json" with { type: "json" };
 import claudeBaseline from "../data/meow-claude.json" with { type: "json" };
+import gptChatBaseline from "../data/meow-gpt-chat.json" with { type: "json" };
+import claudeChatBaseline from "../data/meow-claude-chat.json" with { type: "json" };
+import oldGptBaseline from "../data/meow-gpt-predictive2.json" with { type: "json" };
+import oldClaudeBaseline from "../data/meow-claude-predictive2.json" with { type: "json" };
 import casefold from "../data/meow-casefold.json" with { type: "json" };
+import openrouterBaseline from "../data/meow-openrouter-baseline.json" with { type: "json" };
 
 export const meowVersion = verificationVersions["meow-fingerprint"];
-const source = "https://github.com/chen-006/meow-llm-detector/tree/4108256d0cdc151de3cebec2bd0f5cbbcb2def36";
+const source = "https://github.com/chen-006/meow-llm-detector/tree/bdb579f0496b70138f7c015344eb034a9f4c16e7";
 const engine = "meow-fingerprint-v3-predictive";
 const unseen = "__UNSEEN_IN_TRAINING__";
 const other = "other_known_external";
@@ -100,7 +105,7 @@ export function scoreMeow(baseline, observations, tierName, claimedModel) {
 export function meowReportDetails(run) {
   const metadata = run.metadata || {};
   if (run.evaluator_id !== "meow-fingerprint" || metadata.scoringVersion !== engine || !metadata.observations?.length) return null;
-  const baseline = [gptBaseline, claudeBaseline].find(baseline => baseline.version === metadata.revision
+  const baseline = [gptBaseline, claudeBaseline, gptChatBaseline, claudeChatBaseline, oldGptBaseline, oldClaudeBaseline].find(baseline => baseline.version === metadata.revision
     && baseline.fitted.models.includes(metadata.claimedModel));
   if (!baseline || !(metadata.tier === "screen" || baseline.tiers[metadata.tier])) return null;
   const score = scoreMeow(baseline, metadata.observations, metadata.tier, metadata.claimedModel);
@@ -115,12 +120,13 @@ export function meowReportDetails(run) {
 }
 
 async function run(input) {
-  const baseline = input.protocol === "anthropic" ? claudeBaseline : input.protocol === "openai" ? gptBaseline : null;
-  const claimedModel = baseline?.models.find((model) => !model.reference_only
-    && [input.canonicalModelId, input.observedModel].some((name) => modelKey(name) === modelKey(model.id)))?.id;
-  if (!claimedModel) return { status: "unsupported", rationale: "Meow 当前基准未覆盖该申报模型", metadata: { verdict: "inconclusive", source, reasonCode: "baseline_missing" } };
-  if (input.protocol === "openai" && input.wireApi !== "responses") return { status: "unsupported",
-    rationale: "此 Meow GPT 基准使用 Responses 协议，当前会话协议不匹配", metadata: { verdict: "inconclusive", source, reasonCode: "protocol_mismatch" } };
+  const chat = input.wireApi === "chat.completions";
+  const candidates = chat ? [gptChatBaseline, claudeChatBaseline] : input.protocol === "anthropic" ? [claudeBaseline] : input.wireApi === "responses" ? [gptBaseline] : [];
+  const baseline = candidates.find(item => item.models.some(model => !model.reference_only
+    && [input.canonicalModelId, input.observedModel].some(name => modelKey(name) === modelKey(model.id))));
+  const claimedModel = baseline?.models.find(model => !model.reference_only
+    && [input.canonicalModelId, input.observedModel].some(name => modelKey(name) === modelKey(model.id)))?.id;
+  if (!claimedModel) return { status: "unsupported", rationale: "Meow 当前基准未覆盖该申报模型或协议", metadata: { verdict: "inconclusive", source, reasonCode: "baseline_missing" } };
   const tierName = input.meowTier || "screen";
   const tier = tierName === "screen"
     ? { counts: Object.fromEntries(baseline.probes.map((probe) => [probe.id, 1])), thresholds: {} }
@@ -165,12 +171,12 @@ async function run(input) {
       observation.attempts++;
       try {
         const answer = normalizeMeowAnswer(await input.request(cell.prompt, {
-          maxOutputTokens: cell.parameters.max_output_tokens, system: cell.system,
+          maxOutputTokens: cell.parameters.max_output_tokens, chatTokenField: cell.parameters.chat_token_field, system: cell.system,
           reasoningEffort: cell.effort, adaptiveThinking: input.protocol === "anthropic", strictResponse: true,
-          userAgent: input.protocol === "anthropic" ? "claude-cli/2.1.251 (external, cli)"
+          userAgent: chat ? undefined : input.protocol === "anthropic" ? "claude-cli/2.1.251 (external, cli)"
             : "Codex Desktop/0.147.0-alpha.1.2 (Windows 10.0.26200; x86_64) unknown (codex_exec; 0.147.0-alpha.1.2)",
           conditionsId: resumeId }));
-        if (!answer || Buffer.byteLength(answer, "utf8") > 4096) throw new Error("invalid_answer_length");
+        if (!answer || [...answer].length > 4096) throw new Error("invalid_answer_length");
         observation.counts[answer] = (observation.counts[answer] || 0) + 1;
         observation.sampleCount++;
         consecutiveFailures = 0;
@@ -197,12 +203,19 @@ async function run(input) {
     probeReasoningEffort: "low", conditionsId: resumeId, plannedSamples: total,
     continuedFrom: canResume ? previousRun.id : null,
     observations: observations.map(({ cell, ...row }) => ({ ...row, planned: tier.counts[row.id], reference: scored.cells[row.id]?.reference, referenceKind: "fitted-predictive", referenceModel: claimedModel })), numericLabel: "申报模型匹配度", unit: "%",
-    conditionNotice: "Meow 基准探针使用 low 推理档位；候选分数为相对最强对手的证据优势，不是身份后验概率，合计不必为 100%。" } };
+    conditionNotice: "Meow 基准探针使用 low 推理档位；候选分数为相对最强对手的证据优势，不是身份后验概率，合计不必为 100%。",
+    referenceDataset: { source: openrouterBaseline.source, revision: openrouterBaseline.revision, sourceKind: openrouterBaseline.sourceKind,
+      validSamples: openrouterBaseline.validSamples, distinctModels: openrouterBaseline.distinctModels, distinctQuestions: openrouterBaseline.distinctQuestions,
+      notice: openrouterBaseline.notice,
+      distributions: openrouterBaseline.distributions.filter(reference => observations.some(row => row.id === reference.cell && row.cell.system === reference.system && row.cell.profile === reference.profile && row.cell.effort === reference.reasoningEffort)) } } };
 }
 
 registerEvaluator({ id: "meow-fingerprint", label: "Meow 模型指向", version: meowVersion, conditionsId: "meow:v1", run,
-  requirements: Object.fromEntries([["responses", gptBaseline], ["messages", claudeBaseline]].map(([wireApi, baseline]) => [wireApi, {
-    models: baseline.models.filter(model => !model.reference_only).map(model => model.id),
-    samples: { screen: baseline.probes.length, ...Object.fromEntries(Object.entries(baseline.tiers)
-      .map(([tier, plan]) => [tier, Object.values(plan.counts).reduce((sum, count) => sum + count, 0)])) }
+  requirements: Object.fromEntries([["responses", [gptBaseline]], ["messages", [claudeBaseline]], ["chat.completions", [gptChatBaseline, claudeChatBaseline]]].map(([wireApi, baselines]) => [wireApi, {
+    families: baselines.map(baseline => ({
+      models: baseline.models.filter(model => !model.reference_only).map(model => model.id),
+      revision: baseline.version,
+      samples: { screen: baseline.probes.length, ...Object.fromEntries(Object.entries(baseline.tiers)
+        .map(([tier, plan]) => [tier, Object.values(plan.counts).reduce((sum, count) => sum + count, 0)])) }
+    }))
   }])) });

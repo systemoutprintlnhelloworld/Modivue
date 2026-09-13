@@ -55,7 +55,7 @@ function observationConditionsId(source, wireApi, parameters, supplied) {
   return `${source}:${wireApi}:${digest}`;
 }
 
-export async function proxyStream({ request, response, upstreamUrl, baseUrl = upstreamUrl, protocol, saveSample, observedModel, canonicalModelId, agent, conditionsId, onText, onEvent }) {
+export async function proxyStream({ request, response, upstreamUrl, baseUrl = upstreamUrl, protocol, saveSample, observedModel, canonicalModelId, agent, conditionsId, timeoutMs = agent === "modivue-probe" ? 45000 : 120000, onText, onEvent }) {
   if (request.method !== "POST") { response.writeHead(405, { Allow: "POST", "Content-Type": "application/json" }).end(JSON.stringify({ error: "代理只接受 POST 请求" })); return; }
   if (!upstreamUrl) { response.writeHead(503, { "Content-Type": "application/json" }).end(JSON.stringify({ error: `未配置 ${protocol} 上游地址` })); return; }
   const timestamp = new Date().toISOString();
@@ -92,7 +92,7 @@ export async function proxyStream({ request, response, upstreamUrl, baseUrl = up
   const requestParameters = Object.fromEntries(["temperature", "top_p", "max_tokens", "max_completion_tokens", "max_output_tokens", "reasoning", "reasoning_effort", "thinking", "output_config", "service_tier", "generationConfig"].filter((key) => key in parsedBody).map((key) => [key, parsedBody[key]]));
   const measurement = { version: 2, wireApi, source,
     conditionsId: observationConditionsId(source, wireApi, requestParameters, conditionsId || requestConditionsId),
-    requestParameters,
+    requestParameters, timeoutMs,
     usageEvents: [] };
   const mergeUsage = (value) => {
     if (!value || typeof value !== "object") return;
@@ -134,11 +134,12 @@ export async function proxyStream({ request, response, upstreamUrl, baseUrl = up
   const chunks = [];
   let responseBytes = 0;
   try {
-    // Verification/probe calls are short control-plane requests. A stalled
-    // relay must release the serial queue promptly so later samples can retry;
-    // foreground agent traffic keeps the longer timeout.
-    const timeoutMs = agent === "modivue-probe" ? 45000 : 120000;
-    const upstream = await fetch(upstreamUrl, { method: "POST", headers: forwardedHeaders(request), body,
+    const outboundHeaders = forwardedHeaders(request);
+    const destination = new URL(upstreamUrl);
+    if (agent === "modivue-probe" && ["localhost", "127.0.0.1", "[::1]"].includes(destination.hostname) && destination.pathname.startsWith("/proxy/")) {
+      outboundHeaders.set("x-modivue-timeout-ms", String(timeoutMs));
+    }
+    const upstream = await fetch(upstreamUrl, { method: "POST", headers: outboundHeaders, body,
       redirect: "manual", signal: AbortSignal.any([controller.signal, AbortSignal.timeout(timeoutMs)]) });
     measurement.httpStatus = upstream.status;
     const retryAfter = upstream.headers.get("retry-after");

@@ -385,7 +385,7 @@ export function updateSettings(patch) {
     } else if (key === "probeInstruction") {
       if (typeof value !== "string" || !value.trim() || value.length > 2000) throw new TypeError("探测指令必须为 1–2000 个字符");
     } else if (key === "evaluatorId") {
-      if (!["meow-fingerprint", "hlwy-fingerprint", "probability-probe", "juice", "custom-question", "ztest", "bazaarlink-probe"].includes(value)) throw new TypeError("核验方案无效");
+      if (!["meow-fingerprint", "hlwy-fingerprint", "probability-probe", "juice", "custom-question", "ztest", "bazaarlink-probe", "knowledge-boundary", "one-token", "astra-community"].includes(value)) throw new TypeError("核验方案无效");
     } else if (key === "defaultQuestionId") {
       if (!listQuestions().some(question => question.id === value)) throw new TypeError("请选择已有的单问题测试题目");
     } else if (key === "meowTier") {

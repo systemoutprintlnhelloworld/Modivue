@@ -10,10 +10,10 @@ export const builtInQuestions = [
 ];
 
 export const verificationReferences = [
-  { title: "Astra 社区五组指纹", url: "https://linux.do/t/topic/2861517", status: "待评估", detail: "随机动物、随机鸟、海卫二周期为第一组；随机国家、土卫八周期为辅助组。帖子每题默认 10 次，共 50 次，参考数据覆盖 Astra、Sol、Terra、Luna。尚未获取可验证的原始基准。" },
-  { title: "One Token Is Enough", url: "https://arxiv.org/abs/2607.10252", status: "待评估", detail: "2861517 引用的短答案分布指纹方向；需固定提示词与同条件多批次基线。论文尚未独立复核。" },
-  { title: "Knowledge Boundary as Fingerprint", url: "https://arxiv.org/abs/2605.29524", status: "待评估", detail: "2861517 引用的知识边界数值指纹方向；需验证周期题答案分布稳定性，不能混用数值单位。论文尚未独立复核。" },
-  { title: "gpt56apidetector", url: "https://github.com/chen-006/gpt56apidetector", status: "待评估", detail: "2861517 引用的上游；待检查许可、协议、评分条件与可复现性。" },
+  { title: "Astra 社区五组指纹", url: "https://linux.do/t/topic/2861517", status: "已接入观测适配", detail: "五组任务已可执行：动物、鸟、海卫二周期为主组；国家、土卫八周期为辅助组。默认每组 1 次，可设每组 10 次共 50 次。原帖未公开精确提示词与原始分布，本适配使用独立提示词并保留每条回答，不冒用原帖强指向基准。", evaluatorId: "astra-community" },
+  { title: "One Token Is Enough", url: "https://arxiv.org/abs/2607.10252", status: "已接入英文任务", detail: "按论文表 I 接入 10 类英文任务，温度 1、关闭推理、16 token 上限；默认每题 1 次预览，可增加至每题 10 次以上并导入同条件分布计算 JSD。四语言原始题库未包含在此适配中。", evaluatorId: "one-token" },
+  { title: "Knowledge Boundary as Fingerprint", url: "https://github.com/Ooo0ption/KBF", status: "已接入", detail: "16 个公开参考模型、4359 个数值探针；每批最多 10 题。默认试采一批；完整模式按 CP99 自校准与单侧二项检验判断，保留逐题答案、容差和解析覆盖率。", evaluatorId: "knowledge-boundary" },
+  { title: "gpt56apidetector", url: "https://github.com/chen-006/gpt56apidetector", status: "已接入后续版本", detail: "原仓库地址当前返回 404。Meow 的许可声明将 gpt56_api_detector 列为原始项目；本应用使用后续 Meow 4.5.4 的正式基准与评分引擎。", evaluatorId: "meow-fingerprint" },
   { title: "Juice 社区方案 2555348", url: "https://linux.do/t/topic/2555348", status: "待补资料", detail: "2026-09-13 公开访问返回页面不存在或私有；暂未取得方法正文。现有 Juice 单次观测与可信校准对照仍可独立使用。" },
   { title: "Juice 社区方案 24576294", url: "https://linux.do/t/topic/24576294", status: "待补资料", detail: "2026-09-13 公开访问返回页面不存在或私有；待取得原始提示词、条件和判定依据后评估接入。" }
 ];

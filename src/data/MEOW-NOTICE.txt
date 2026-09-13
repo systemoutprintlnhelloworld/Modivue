@@ -1,6 +1,7 @@
-Meow verification uses the 4.5.3-predictive.2 published benchmarks and a
+Meow verification uses the 4.5.3-predictive.3 and 4.5.4-chat.1 published benchmarks
+(4.5.3-predictive.2 is retained for historical report details) and a
 JavaScript port of predictive.py from:
-https://github.com/chen-006/meow-llm-detector/tree/4108256d0cdc151de3cebec2bd0f5cbbcb2def36
+https://github.com/chen-006/meow-llm-detector/tree/bdb579f0496b70138f7c015344eb034a9f4c16e7
 
 PolyForm Noncommercial License 1.0.0
 https://polyformproject.org/licenses/noncommercial/1.0.0
@@ -11,3 +12,8 @@ Modivue adaptation: integer-count log-gamma recurrence, protocol adapter,
 local scheduling and reports. The benchmark and derived scoring code remain
 subject to the upstream license. Modivue is not the upstream application.
 meow-casefold.json contains Python Unicode casefold exceptions to lowercase.
+
+The user-supplied OpenRouter archive (2026-09-13) is aggregated separately
+by question, model and request profile in meow-openrouter-baseline.json.
+It supplements raw reference evidence; it does not change upstream fitted
+parameters or thresholds. Historical unconfirmed endpoints are excluded.
