@@ -4,6 +4,12 @@ Modivue 是面向 coding agent 的本地模型监测工具，按模型、渠道�
 
 [下载预览版](https://github.com/systemoutprintlnhelloworld/Modivue/releases) · [构建状态](https://github.com/systemoutprintlnhelloworld/Modivue/actions)
 
+## 0.4.1
+
+- 补齐三环、灵动岛、悬停提示与无障碍标签的英文；无数值时环上显示 `--`，完整状态在详情显示，避免英文长状态溢出。灵动岛控件参与翻译，不再整块跳过。
+- 翻译脚本新增三种方法的展开报告及极简／普通／专注三种灵动岛状态，连同提示和无障碍标签共检查 44 个场景（包含中英往返切换）。
+- One Token 历史报告的分布档案完成实际下载和 JSON 内容校验；参考采样参数与监控目标档位分别保存。
+
 ## 0.4.0
 
 - 修复核验页轮询重建控件与设置保存竞态：折叠、内部滚动和当前选择保持稳定，历史报告可跨检测方法查看。

@@ -195,7 +195,15 @@ if (mode !== "--worker") {
           const expanded = await waitForPanelWidth(570);
           check(`hover-cycle-${cycle+1}-expand`, expanded.some(w=>w.kCGWindowBounds.Width === 570), expanded);
         }
-        await driver("click", ...modelPoint); await delay(900);
+        await delay(500);
+        ax = await driver("elements", pid);
+        const attended = ax.find(row => row.AXRole === "AXButton" && / · (模型核验|Verification) /.test(row.AXTitle || ""));
+        check("native-attended-metric-ready", Boolean(attended), attended);
+        const islandElement = ax.find(row => row.AXRole === "AXWindow" && row.size?.width <= 570 && row.size?.height > 100);
+        if (islandElement) await driver("raise", pid, islandElement.path);
+        await save("before-details-click-ax.json", ax);
+        await driver("click", ...center(attended)); await delay(900);
+        await save("after-details-click-windows.json", await windows());
         check("click-opens-details", (await windows()).some(w=>w.kCGWindowBounds.Width > 800));
         const selectedLabel = model.AXDescription.split(l("：核验", ": verification"))[0];
         let selection;

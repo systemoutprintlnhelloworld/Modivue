@@ -822,7 +822,7 @@ function metricRing(radius, progress, color, label, value, range, minimum, maxim
     <circle class="ring-value" cx="30" cy="30" r="${radius}" pathLength="100" opacity="${Number.isFinite(progress) ? 1 : 0}" stroke-dasharray="${ringProgress(progress)} 100" transform="rotate(-90 30 30)"/>
     ${marker(minimum, "最小值", "min")}${marker(maximum, "最大值", "max")}
     <g class="ring-min-icon" transform="translate(${low.x} ${low.y})" visibility="${Number.isFinite(minimum) ? "visible" : "hidden"}"><title>最小值 · ${escapeHtml(range)}</title><circle r="3.1"/><g transform="translate(-2.4 -2.4) scale(.2)">${metricSymbol(kind).replace('<svg ', '<svg width="24" height="24" ')}</g></g>
-    <g class="ring-end-label" transform="translate(${clamp(end.x, 18, 42)} ${clamp(end.y, 8, 52)})"><rect x="-18" y="-6" width="36" height="12" rx="3"/><text text-anchor="middle" dominant-baseline="central">${escapeHtml(value)}</text></g></g>`;
+    <g class="ring-end-label" transform="translate(${clamp(end.x, 18, 42)} ${clamp(end.y, 8, 52)})"><rect x="-18" y="-6" width="36" height="12" rx="3"/><text text-anchor="middle" dominant-baseline="central">${Number.isFinite(progress) ? escapeHtml(value) : "--"}</text></g></g>`;
 }
 
 function sessionLabel(model) {
@@ -914,7 +914,7 @@ function renderModelSelectors() {
     const compactVisible = working.some((item) => item.id === model.id);
     const selectedMetric = state.settings[islandState.mode === "compact" ? "compactMetric" : "normalMetric"];
     const metric = modelMetrics(model).find(metric => metric.kind === selectedMetric) || modelMetrics(model)[0];
-    return `<button translate="no" class="island-model ${model.id === selected?.id ? "active" : ""} ${compactVisible ? "compact-visible" : ""}" data-model-index="${index}" data-island-model aria-label="${escapeHtml(model.label)}：核验 ${qualityDisplay}，Cache ${cacheDisplay}，TTFT ${ttftDisplay}" aria-pressed="${model.id === selected?.id}">
+    return `<button class="island-model ${model.id === selected?.id ? "active" : ""} ${compactVisible ? "compact-visible" : ""}" data-model-index="${index}" data-island-model aria-label="${escapeHtml(model.label)}：核验 ${qualityDisplay}，Cache ${cacheDisplay}，TTFT ${ttftDisplay}" aria-pressed="${model.id === selected?.id}">
       <span class="metric-rings">
         <svg class="ring-svg" viewBox="0 0 60 60" style="visibility:${selectedMetric === "none" ? "hidden" : "visible"}">
           ${metricRing(27, metric.progress, metric.health.color, metric.name, metric.value, metric.range, metric.min, metric.max, metric.kind)}
@@ -1271,7 +1271,7 @@ function updateMetricRing(ring, metric) {
     $(".ring-peak", ring).setAttribute("visibility", metric.max > 0 ? "visible" : "hidden");
     ring.setAttribute("aria-label", `${metric.name} ${metric.value} · ${metric.health.label} · ${metric.range}`);
     $("title", ring).textContent = ring.getAttribute("aria-label");
-    $(".ring-end-label text", ring).textContent = metric.value;
+    $(".ring-end-label text", ring).textContent = Number.isFinite(metric.progress) ? metric.value : "--";
     const end = ringPoint(metric.radius, metric.progress);
     $(".ring-end-label", ring).setAttribute("transform", `translate(${clamp(end.x, 18, 42)} ${clamp(end.y, 8, 52)})`);
     const low = ringPoint(metric.radius, metric.min);

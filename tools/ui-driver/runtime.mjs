@@ -232,7 +232,7 @@ export async function runRuntimeTest(directory, { browser: withBrowser = false }
         assert.equal(await page.locator('[name="verificationIntervalMinutes"]').inputValue(), "15");
         await page.locator('[name="verificationIntervalMinutes"]').fill("20");
         await page.locator('#settings-form button[type="submit"]:visible').click();
-        await page.waitForFunction(()=>document.querySelector("#toast")?.textContent.includes("设置已保存"));
+        await page.waitForFunction(()=>/设置已保存|所有更改已保存/.test(document.querySelector("#toast")?.textContent || ""));
         assert.equal((await (await fetch(`${base}/api/settings`)).json()).settings.ttftThresholdMs,2500);
         assert.equal((await (await fetch(`${base}/api/settings`)).json()).settings.verificationIntervalMinutes,20);
         const customization = page.locator('#customization-form');
@@ -261,7 +261,7 @@ export async function runRuntimeTest(directory, { browser: withBrowser = false }
         await page.locator('[data-settings-tab="verification"]').click();
         await page.locator('[name="evaluatorId"]').selectOption('probability-probe');
         await page.locator('#settings-form button[type="submit"]:visible').click();
-        await page.waitForFunction(() => document.querySelector('#toast')?.textContent.includes('设置已保存'));
+        await page.waitForFunction(() => /设置已保存|所有更改已保存/.test(document.querySelector('#toast')?.textContent || ''));
         await page.locator("#calibration-json").fill(JSON.stringify(calibration));
         await page.locator('#calibration-form [type="submit"]').click();
         await page.waitForFunction(()=>document.querySelector("#calibration-message")?.textContent.includes("已导入 1 个模型"));
@@ -367,7 +367,7 @@ export async function runRuntimeTest(directory, { browser: withBrowser = false }
         await page.locator('[data-settings-tab="verification"]').click();
         await page.locator('[name="evaluatorId"]').selectOption('custom-question');
         await page.locator('#settings-form button[type="submit"]:visible').click();
-        await page.waitForFunction(() => document.querySelector('#toast')?.textContent.includes('设置已保存'));
+        await page.waitForFunction(() => /设置已保存|所有更改已保存/.test(document.querySelector('#toast')?.textContent || ''));
         await page.locator('[data-settings-tab="tests"]').click();
         const createdQuestion = (await (await fetch(`${base}/api/questions`)).json()).questions.find(question => question.title === 'UI question');
         assert.ok(createdQuestion?.id, 'custom question was not persisted');
@@ -477,9 +477,9 @@ export async function runRuntimeTest(directory, { browser: withBrowser = false }
         await page.waitForFunction(() => document.documentElement.lang === 'en');
         assert.ok((await page.locator('[data-view="settings"]').innerText()).includes('Settings'));
         const languageCoverage = [];
-        const captureLanguage = async view => {
-          await page.waitForTimeout(80);
-          const untranslated = await page.evaluate(() => {
+        const captureLanguage = async (view, surface = page) => {
+          await surface.waitForTimeout(80);
+          const untranslated = await surface.evaluate(() => {
             const skipped = 'script,style,pre,code,textarea,.question-prompt,.question-result h3,.question-result p,.question-result dd,[translate=no],select[name=locale]';
             const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
             const found = new Set();
@@ -516,6 +516,30 @@ export async function runRuntimeTest(directory, { browser: withBrowser = false }
         await page.locator('.historical-report details').evaluateAll(nodes => nodes.forEach(node => node.open = true));
         await captureLanguage('quality:expanded-report');
         await page.screenshot({ path: join(directory, 'web-english-report.png') });
+        const { runEvaluator: runLanguageEvaluator } = await import('../../src/core/quality.mjs');
+        const { oneTokenPrompts } = await import('../../src/core/evaluator-one-token.mjs');
+        const wordAnswers = ['42', '7', '13', 'a', 'tree', 'blue', 'green', 'cat', 'paris', 'heads'];
+        updateSettings({ oneTokenSamples: 10, astraSamples: 10, kbfReferenceModel: 'openai/gpt-5.4' });
+        for (const method of ['one-token', 'astra-community', 'knowledge-boundary']) {
+          const result = await runLanguageEvaluator(method, { observedModel: sample.observed_model, wireApi: 'responses', request: async prompt => wordAnswers[oneTokenPrompts.indexOf(prompt)] || '42' });
+          const languageReport = { ...report, evaluator_id: method, evaluator_version: result.evaluatorVersion, status: result.status,
+            rationale: result.rationale, metadata: { ...result.metadata, reasoningEffort: null, wireApi: 'responses' } };
+          await page.unroute('**/api/quality/runs?*');
+          await page.route('**/api/quality/runs?*', route => route.fulfill({ json: { history: [languageReport], runs: [languageReport] } }));
+          await page.evaluate(() => window.modivue.refresh());
+          await page.waitForFunction(method => document.querySelector('#quality-report-select')?.textContent.includes(method), method);
+          await page.locator('.historical-report details').evaluateAll(nodes => nodes.forEach(node => node.open = true));
+          await captureLanguage(`quality:expanded-${method}`);
+          if (method === 'one-token') {
+            assert.equal(await page.locator('[data-action="export-distribution"]').isEnabled(), true);
+            const [download] = await Promise.all([page.waitForEvent('download'), page.locator('[data-action="export-distribution"]').click()]);
+            const archive = JSON.parse(await readFile(await download.path(), 'utf8'));
+            assert.equal(archive.version, 2);
+            assert.equal(Object.values(archive.models)[0].probability.method, 'one-token:en:v1');
+            assert.equal(Object.values(archive.models)[0].reasoningEffort, 'none');
+          }
+        }
+        updateSettings({ oneTokenSamples: 1, astraSamples: 1 });
         await page.unroute("**/api/quality/runs?*");
         await page.locator('[data-view="settings"]').click();
         for (const tab of ['monitoring', 'appearance', 'interaction', 'display', 'thresholds', 'verification', 'tests', 'connection']) {
@@ -714,6 +738,29 @@ export async function runRuntimeTest(directory, { browser: withBrowser = false }
         await island.mouse.move(limitedRail.x + 3, limitedRail.y + 20);
         await island.screenshot({path:join(directory,'web-island-one-slot.png')});
         checks.push({name:'island-height-limit-and-edge-scroll',status:'PASS'});
+        updateSettings({ locale: 'en', islandMaxAgents: 5 });
+        await island.mouse.move(0, 0);
+        await island.reload();
+        await island.waitForFunction(() => document.documentElement.lang === 'en' && document.querySelectorAll('[data-island-model]').length === 2);
+        await captureLanguage('island:compact', island);
+        const englishRail = await island.locator('#quick-island').boundingBox();
+        await island.mouse.move(englishRail.x + 3, englishRail.y + 45);
+        await island.waitForTimeout(450);
+        await captureLanguage('island:normal', island);
+        const englishNode = await island.locator('[data-island-model]').first().boundingBox();
+        await island.mouse.move(englishNode.x + englishNode.width / 2, englishNode.y + englishNode.height / 2);
+        await island.waitForFunction(() => document.body.dataset.islandMode === 'focus');
+        await captureLanguage('island:focus', island);
+        assert.equal(await island.locator('[data-focus-metric="quality"] .ring-end-label text').textContent(), '--', 'Missing metrics must not overflow the numeric ring label with a long status');
+        await island.evaluate(async () => (await import('/src/core/i18n.js')).setLocale('zh-CN'));
+        assert.ok((await island.locator('[data-focus-metric="quality"]').getAttribute('aria-label')).includes('模型核验'));
+        await island.evaluate(async () => (await import('/src/core/i18n.js')).setLocale('en'));
+        await captureLanguage('island:locale-roundtrip', island);
+        await island.screenshot({ path: join(directory, 'web-island-english.png') });
+        await writeFile(join(directory, 'i18n-coverage.json'), JSON.stringify(languageCoverage, null, 2));
+        assert.deepEqual(languageCoverage.filter(item => item.untranslated.length), [], 'English island contains untranslated interface text');
+        checks.push({ name: 'english-native-island-all-states-and-accessible-labels', status: 'PASS', evidence: { surfaces: languageCoverage.length } });
+        updateSettings({ locale: 'zh-CN' });
         assert.deepEqual(errors,[]);
         checks.push({name:"browser-real-metrics-and-settings",status:"PASS"},{name:"browser-compact-normal-focus-transitions",status:"PASS"},{name:"browser-console",status:"PASS",evidence:errors});
       } catch (error) {
