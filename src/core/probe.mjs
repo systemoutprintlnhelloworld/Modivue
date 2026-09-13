@@ -72,9 +72,10 @@ export function probePauseReason(target, connections) {
   const sameTarget = session => normalizeBaseUrl(session.baseUrl) === normalizeBaseUrl(target.baseUrl)
     && session.keyGroup === target.keyGroup && session.model === target.observedModel
     && (session.reasoningEffort || null) === (target.reasoningEffort || null);
-  if (target.sessionId && !connections.some(session => sameTarget(session) && (strategy === "idle"
+  const matchingSessions = connections.filter(sameTarget);
+  if (matchingSessions.length && !matchingSessions.some(session => (strategy === "idle"
     ? session.runtimeStatus === "idle" && canProbeSession({ ...session, status: "idle" }, Date.now(), getSettings().idleGraceSeconds * 1000)
-    : session.runtimeStatus === "active" || session.runtimeStatus === "idle" && (!session.idleSince
+    : session.runtimeStatus === "active" || session.runtimeStatus === "running" || session.runtimeStatus === "idle" && (!session.idleSince
       || Date.now() - Date.parse(session.idleSince) >= getSettings().idleGraceSeconds * 1000))))
     return "Agent 工作中、已结束或切换渠道；待命目标可核验";
   if (connections.some((session) => session.runtimeStatus === "active"
@@ -261,7 +262,7 @@ export async function runTargetVerification(target, evaluatorId, shouldContinue 
           // not vote in the evaluator and have no cost unless the provider
           // returned a usage-bearing sample.
           samples.push({ timestamp: new Date().toISOString(), durationMs: null,
-            costUsd: null, costStatus: "unknown", status: "error", error: error.message || "请求失败", upstreamError: null });
+            costUsd: null, costStatus: "unknown", status: "error", error: error.message || "请求失败", upstreamError: error.upstreamError || { message: error.message || "请求失败", code: error.code || "upstream_error" } });
           error.partialText = text;
           throw error;
         }
