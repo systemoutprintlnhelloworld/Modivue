@@ -55,6 +55,8 @@ const english = {
 
   "界面语言": "Language", "简体中文": "简体中文", "跟随系统": "System", "英文": "English",
   "模型质量监测": "Model observability", "工作台": "Workspace", "概览": "Overview", "模型": "Models", "路由": "Routes",
+  "私人渠道排行榜": "Private route leaderboard", "排序": "Sort", "最近活跃": "Recent activity", "核验": "Verification", "样本量": "Sample count",
+  "插队核验": "Priority verification", "连接线动态风格": "Bridge animation style", "悬浮详情与灵动岛之间的连接线": "Bridge between popover and island", "柔和丝带": "Soft ribbon", "水流": "Flowing water", "呼吸脉冲": "Breathing pulse", "选择四元组": "Select route",
   "模型核验": "Verification", "系统": "System", "告警": "Alerts", "日志": "Logs", "设置": "Settings",
   "本地采集服务运行中": "Local collector running", "搜索功能与设置": "Search features and settings",
   "搜索功能或设置 · ⌘K": "Search features or settings · ⌘K", "搜索结果": "Search results", "功能": "Feature",
