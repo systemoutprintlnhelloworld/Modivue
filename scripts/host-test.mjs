@@ -206,20 +206,27 @@ if (mode !== "--worker") {
         await save("after-details-click-windows.json", await windows());
         check("click-opens-details", (await windows()).some(w=>w.kCGWindowBounds.Width > 800));
         const selectedLabel = model.AXDescription.split(l("：核验", ": verification"))[0];
+        // A verification ring opens Quality, not Overview. Check the exact
+        // tuple and destination instead of Overview text hidden on that page.
         let selection;
         for (let attempt = 0; attempt < 30; attempt++) {
-          selection = (await driver("elements", pid)).find(row => row.AXValue?.startsWith(`${selectedLabel} · ${l("最近", "Last")}`));
-          if (selection) break;
+          selection = JSON.parse(await readFile(join(jobDirectory, "main-geometry.json"), "utf8").catch(error => {
+            if (error.code !== "ENOENT") throw error;
+            return "null";
+          }));
+          if (selection?.selectedId === geometry.models[0].id && selection.view === "quality") break;
           await delay(200);
         }
-        check("first-details-open-keeps-clicked-model", Boolean(selection), selectedLabel);
+        check("first-details-open-keeps-clicked-model", selection?.selectedId === geometry.models[0].id, selection);
+        check("first-details-open-keeps-clicked-metric", selection?.view === "quality", selection);
         await driver("move", 100, 100); await delay(750);
         await driver("activate", pid);
+        ax = await driver("elements", pid);
         await driver("screenshot", join(jobDirectory, "details.png"));
         ax = await driver("elements", pid);
         await save("details-ax.json", ax);
-        check("details-overview-triple-ring", ax.some(row => row.AXDescription === l("模型核验、Cache 与 TTFT 三环", "Verification, cache and TTFT rings")),
-          ax.filter(row => row.AXDescription?.includes("模型核验")));
+        check("details-quality-view-rendered", ax.some(row => row.AXValue === l("模型核验", "Model verification")
+          || row.AXTitle?.startsWith(l("模型核验", "Model verification"))), ax.filter(row => row.AXValue || row.AXTitle));
         for (const [surface, metric] of [["focus", "cache"], ["focus", "ttft"], ["focus", "quality"], ["popover", "cache"]]) {
           await driver("move", 100, 100); await delay(900);
           const frame = (await windows()).find(isIslandWindow).kCGWindowBounds;
