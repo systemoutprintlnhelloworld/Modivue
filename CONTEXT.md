@@ -1,3 +1,21 @@
+## 2026-09-13 19:49 — 0.3.0 本轮交付
+
+版本代码 `ff077bc` 已提交并推送 main 和 v0.3.0。标签流水线 https://github.com/systemoutprintlnhelloworld/Modivue/actions/runs/34755423096 成功；macOS arm64 和 Windows x64 ZIP 已自动构建并发布。下载 https://github.com/systemoutprintlnhelloworld/Modivue/releases/tag/v0.3.0 。本地最终 `dist/Modivue.app` 版本 0.3.0，构建与 codesign 校验通过。
+
+本轮已实现：官方 BazaarLink 异步检测和持续计划、每目标同意与每日轮数、重启继续读取原 runId、停止重试与报告持久化；单题默认 60 秒且可设 5–3600 秒，每轮一次请求，按题目版本／四元组／时间窗口共享统计；默认跟随本机语言、补英文文案、80%–140% 文字缩放与独立正文颜色；三种 SVG 内部动画、普通到专注环高亮；macOS 主题标题栏和内容布局约束。修复轮询重置远程表单、环说明溢出、未完成报告导入。
+
+验证：
+- 原生 `.ui-artifacts/1789299137509-ui/result.json` 97/97 PASS，用户解锁后完成；原生悬停、拖动、吸附、跨窗口导航、引导、主题标题栏和内容区通过，details/hover 截图已审阅。不再要求解锁或重复原生回归。
+- 网页 `.ui-artifacts/1789299505308-web/result.json` 40/40 PASS，main/BazaarLink 截图已审阅。覆盖独立单题调度、版本隔离、远程合约、表单保留、自动保存、语言、字体、SVG 动画与减少动态效果。
+- `.ui-artifacts/question-window-20260913.json`：5010 条窗口全部计数，报告列表仍保持 5000 条上限。
+- `.ui-artifacts/bazaarlink-resume-20260913.json`：跨进程按原 runId 恢复、进度 404 后读取历史，无重复 POST；启动确认丢失转 start-unknown 并关闭自动续测。
+- `.ui-artifacts/bazaarlink-boundary-20260913.json`：报告不返回目标 Key，运行中报告拒绝导入，无 status 但有有效 completedAt 的历史报告可导入，停止失败持久化原 runId 并重试。5 项 PASS。
+- JS/core/macOS 类型检查通过；最终 macOS 打包和签名通过；Windows 0.3.0 交叉编译 0 警告、0 错误。本轮隔离验收新增真实付费请求 0。
+
+费用依据：BazaarLink `/probe-api-skill.md` 说明检测服务不另收费，token 由目标 Key 计费；`/solutions/byok` 说明自有上游零加价，默认平台回退按平台价收费，可用严格模式关闭。官方当前已移除综合总分；本适配保留逐题证据、不合成 IQ，也不把报告签名当模型身份认证。尚未对 Veridrop 作独立实现或漏洞结论。
+
+完整 goal 仍进行中。Windows 实机／多 DPI／Hook，Cline/Roo/Continue GUI 实际请求，真实渠道同条件多批基线，以及部分动态错误和备选资料英文仍未完成。Juice 两篇指定原文公开不可读，保留待补；Ztest 当前为官网检测后导入报告。后续任务见 ROADMAP.md。
+
 # Modivue 术语
 
 | 术语 | 定义 |
