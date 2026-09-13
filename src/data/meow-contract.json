@@ -1,0 +1,14 @@
+{
+  "source": "https://github.com/chen-006/meow-llm-detector",
+  "version": "4.5.3",
+  "license": "PolyForm Noncommercial License 1.0.0",
+  "scoringVersion": "meow-fingerprint-v3-predictive",
+  "completionRatio": 0.6,
+  "modes": {
+    "gpt": {"cells": 6, "tiers": {"low": 6, "medium": 12, "high": 18}},
+    "claude": {"cells": 6, "tiers": {"low": 10, "medium": 15, "high": 20}}
+  },
+  "interpretation": "相对最强候选的平均证据优势 sigmoid 展示；不是身份后验概率。只有唯一候选超过冻结判定线才给强指向。",
+  "requestContract": {"system": ".", "history": [], "tools": false, "temperature": null, "stream": true},
+  "integrationStatus": "predictive scoring port; see MEOW-NOTICE.txt for bundled baseline and license"
+}

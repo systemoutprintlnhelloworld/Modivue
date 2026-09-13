@@ -1,0 +1,13 @@
+Meow verification uses the 4.5.3-predictive.2 published benchmarks and a
+JavaScript port of predictive.py from:
+https://github.com/chen-006/meow-llm-detector/tree/4108256d0cdc151de3cebec2bd0f5cbbcb2def36
+
+PolyForm Noncommercial License 1.0.0
+https://polyformproject.org/licenses/noncommercial/1.0.0
+
+Required Notice: Copyright 2026 chen-006 and contributors. Original project: https://github.com/chen-006/gpt56_api_detector
+
+Modivue adaptation: integer-count log-gamma recurrence, protocol adapter,
+local scheduling and reports. The benchmark and derived scoring code remain
+subject to the upstream license. Modivue is not the upstream application.
+meow-casefold.json contains Python Unicode casefold exceptions to lowercase.

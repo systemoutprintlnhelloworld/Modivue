@@ -1,0 +1,14 @@
+.DS_Store
+.local/
+.env
+.env.*
+!.env.example
+node_modules/
+dist/
+.ui-artifacts/
+.trellis/.developer
+.trellis/.runtime/
+.playwright-mcp/
+desktop/windows/bin/
+desktop/windows/obj/
+*.log

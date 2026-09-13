@@ -1,0 +1,40 @@
+{
+  "name": "modivue",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.5"
+  },
+  "scripts": {
+    "ui:test": "node scripts/host-test.mjs ui",
+    "ui:inspect": "node scripts/host-test.mjs inspect",
+    "ui:test:hover": "node scripts/host-test.mjs hover",
+    "ui:test:drag": "node scripts/host-test.mjs drag",
+    "ui:test:menu": "node scripts/host-test.mjs menu",
+    "runtime:test": "node scripts/host-test.mjs runtime",
+    "cli:test": "node scripts/host-test.mjs cli",
+    "ui:test:web": "node scripts/host-test.mjs web",
+    "test:core": "node scripts/core-test.mjs",
+    "dev": "node server.mjs",
+    "start": "node server.mjs",
+    "desktop:build": "bash scripts/build-macos-app.sh",
+    "desktop": "npm run desktop:build && dist/Modivue.app/Contents/MacOS/Modivue",
+    "check:desktop": "swiftc -parse-as-library -typecheck -framework AppKit -framework WebKit desktop/ModivueApp.swift && swiftc -typecheck -framework CoreGraphics -framework ImageIO -framework UniformTypeIdentifiers scripts/make-macos-icon.swift",
+    "check": "node --check server.mjs && node --check app.js && node --check src/core/metrics.js && node --check src/core/model-match.js && node --check src/core/storage.mjs && node --check src/core/proxy.mjs && node --check src/core/upstreams.mjs && node --check src/core/agents.mjs && node --check src/core/quality.mjs && node --check src/core/evaluator-coding.mjs && node --check src/core/evaluator-meow.mjs && node --check src/core/evaluator-hlwy.mjs && node --check src/core/verification-stream.mjs && node --check cli/statusline.mjs && node --check cli/agent-session.mjs && npm run check:desktop",
+    "check:js": "node scripts/check-js.mjs",
+    "windows:build": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows.ps1",
+    "cli": "node cli/modivue.mjs"
+  },
+  "dependencies": {
+    "echarts": "^6.1.0",
+    "eventsource-parser": "3.1.0",
+    "json5": "^2.2.3",
+    "motion": "^13.2.0",
+    "smol-toml": "1.6.0",
+    "yaml": "^2.9.1"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.63.0"
+  }
+}
