@@ -73,6 +73,7 @@ export function probePauseReason(target, connections) {
     && session.keyGroup === target.keyGroup && session.model === target.observedModel
     && (session.reasoningEffort || null) === (target.reasoningEffort || null);
   const matchingSessions = connections.filter(sameTarget);
+  if (target.sessionId && connections.length && !matchingSessions.length) return "Agent 工作中、已结束或切换渠道；待命目标可核验";
   if (matchingSessions.length && !matchingSessions.some(session => (strategy === "idle"
     ? session.runtimeStatus === "idle" && canProbeSession({ ...session, status: "idle" }, Date.now(), getSettings().idleGraceSeconds * 1000)
     : session.runtimeStatus === "active" || session.runtimeStatus === "running" || session.runtimeStatus === "idle" && (!session.idleSince
