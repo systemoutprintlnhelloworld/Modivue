@@ -71,6 +71,7 @@ final class IslandWebView: WKWebView {
         guard dragging else {
             let titleClick = pendingDrag
             pendingDrag = false
+            dragPhase = "idle"
             evaluateJavaScript("window.modivue?.nativeDrag?.('idle', \(bufferGesture))")
             if titleClick { if bufferGesture { onBufferClick?() } else { onTitleClick?() } }
             else { super.mouseUp(with: event) }
@@ -316,7 +317,10 @@ final class ModivueApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNav
         let view = webView(mode: "island")
         (view as? IslandWebView)?.onDragMoved = { [weak self] origin in self?.islandWindow?.setFrameOrigin(origin) }
         (view as? IslandWebView)?.onDragEnded = { [weak self] pointer in self?.snapIsland(pointer: pointer) }
-        (view as? IslandWebView)?.onTitleClick = { [weak self] in self?.openDashboard() }
+        (view as? IslandWebView)?.onTitleClick = { [weak self] in
+            self?.pendingView = "overview"
+            self?.openDashboard()
+        }
         (view as? IslandWebView)?.onBufferClick = { [weak self] in
             self?.islandWebView?.evaluateJavaScript("window.modivue?.showAllAgents?.()")
         }
