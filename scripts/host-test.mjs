@@ -136,6 +136,15 @@ if (mode !== "--worker") {
           ax = await driver("elements", pid);
           model = ax.find(row=>/：核验|: verification/i.test(row.AXDescription || "") && row.position?.x > 0);
         }
+        // Compact mode intentionally hides idle sessions. Reveal them through
+        // the buffer before exercising their rings, including after collapse.
+        const revealIdleModels = !model;
+        const bufferControl = ax.find(row => row.AXDescription === l("返回全部 Agent", "Show all agents"));
+        if (revealIdleModels && bufferControl) {
+          await driver("move", ...center(bufferControl)); await delay(500);
+          ax = await driver("elements", pid);
+          model = ax.find(row=>/：核验|: verification/i.test(row.AXDescription || "") && row.position?.x > 0);
+        }
         check("runtime-model-node", Boolean(model), model?.AXDescription);
         englishUI = /: verification/i.test(model.AXDescription);
         const geometry = JSON.parse(await readFile(join(jobDirectory, "native-geometry.json"), "utf8"));
@@ -143,6 +152,7 @@ if (mode !== "--worker") {
         const rect = geometry.models[0].rect;
         const modelPoint = [panel.X + rect.x + rect.width/2, panel.Y + rect.y + rect.height/2];
         const moveToModel = async () => {
+          if (revealIdleModels) { await driver("move", ...center(bufferControl)); await delay(250); }
           const actual = await driver("move", ...modelPoint);
           await save("hover-pointer.json", {model, target: modelPoint, actual});
           if (Math.abs(actual.pointerX - modelPoint[0]) > 3 || Math.abs(actual.pointerY - modelPoint[1]) > 3) {
@@ -221,12 +231,17 @@ if (mode !== "--worker") {
         check("first-details-open-keeps-clicked-metric", selection?.view === "quality", selection);
         await driver("move", 100, 100); await delay(750);
         await driver("activate", pid);
-        ax = await driver("elements", pid);
         await driver("screenshot", join(jobDirectory, "details.png"));
         ax = await driver("elements", pid);
         await save("details-ax.json", ax);
-        check("details-quality-view-rendered", ax.some(row => row.AXValue === l("模型核验", "Model verification")
-          || row.AXTitle?.startsWith(l("模型核验", "Model verification"))), ax.filter(row => row.AXValue || row.AXTitle));
+        check("details-quality-view-rendered", ax.some(row => row.AXRole === "AXHeading" && row.AXTitle === l("模型核验", "Verification")),
+          ax.filter(row => row.AXRole === "AXHeading"));
+        const overviewTab = ax.find(row => row.AXRole === "AXButton" && row.AXTitle?.endsWith(l(" 概览", " Overview")));
+        check("native-overview-tab-present", Boolean(overviewTab), overviewTab);
+        await driver("press", pid, overviewTab.path); await delay(400);
+        ax = await driver("elements", pid);
+        check("details-overview-triple-ring", ax.some(row => row.AXDescription === l("模型核验、Cache 与 TTFT 三环", "Verification, cache and TTFT rings")));
+        await driver("screenshot", join(jobDirectory, "overview.png"));
         for (const [surface, metric] of [["focus", "cache"], ["focus", "ttft"], ["focus", "quality"], ["popover", "cache"]]) {
           await driver("move", 100, 100); await delay(900);
           const frame = (await windows()).find(isIslandWindow).kCGWindowBounds;
