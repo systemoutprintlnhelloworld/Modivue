@@ -791,8 +791,6 @@ body.desktop-island .island-command:hover { background: rgba(71,128,180,.32); bo
 body.desktop-island #island-buffer::after { content: ""; position: absolute; inset: 0 4px; border-radius: 99px; background: #8e96a0; transition: background .2s ease; }
 
 body.desktop-island #island-buffer:hover::after, body.desktop-island .island-grip:hover::after { background: #d3d9df; }
-body.desktop-island #island-buffer::before { content: "点击返回全部 Agent"; position: absolute; right: calc(100% + 8px); white-space: nowrap; padding: 4px 7px; border: 1px solid var(--line-bright); border-radius: 6px; color: var(--text); background: var(--popover-bg, #101217); font-size: calc(9px * var(--font-scale, 1)); opacity: 0; pointer-events: none; transform: translateX(4px); transition: opacity .18s ease, transform .18s ease; }
-body.desktop-island #island-buffer:hover::before, body.desktop-island #island-buffer:focus-visible::before { opacity: 1; transform: translateX(0); }
 body.desktop-island #island-buffer:active::after, body.desktop-island .island-grip:active::after,
 body.desktop-island #island-buffer.pressed::after, body.desktop-island .island-grip.pressed::after { background: #fff; box-shadow: 0 0 0 2px rgba(220,226,232,.24); }
 body.island-dragging #quick-island { cursor: grabbing; }
@@ -932,6 +930,12 @@ body.desktop-main .main-content { padding-top: 14px; }
 .switch input:checked + span { border-color: color-mix(in srgb, var(--mint) 60%, transparent); background: color-mix(in srgb, var(--mint) 25%, transparent); }
 .switch input:checked + span::after { box-shadow: 0 0 10px color-mix(in srgb, var(--mint) 60%, transparent); }
 body.desktop-island #island-bridge path { stroke: color-mix(in srgb, var(--line-bright) 55%, transparent); stroke-width: .8; filter: drop-shadow(0 0 3px color-mix(in srgb, var(--line-bright) 22%, transparent)); }
+body.desktop-island #island-bridge[data-style="flow"] path { stroke-dasharray: 10 7; animation: bridge-flow 1.8s linear infinite; }
+body.desktop-island #island-bridge[data-style="pulse"] path { animation: bridge-pulse 1.6s ease-in-out infinite; }
+body.desktop-island #island-bridge[data-style="ribbon"] path { filter: drop-shadow(0 0 5px color-mix(in srgb, var(--line-bright) 30%, transparent)); }
+@keyframes bridge-flow { to { stroke-dashoffset: -34; } }
+@keyframes bridge-pulse { 0%,100% { opacity:.55 } 50% { opacity:1 } }
+body.reduced-motion.desktop-island #island-bridge path { animation: none !important; }
 body, .main-content, .primary-button, .text-button, .nav-item, .settings-tab, .eyebrow, select, a { transition: color .25s ease, background-color .25s ease, border-color .25s ease; }
 .primary-button, .text-button, .top-actions { flex-shrink: 0; }
 .top-actions, .panel-header, .question-actions, .view-header { flex-wrap: wrap; }

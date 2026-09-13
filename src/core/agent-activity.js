@@ -23,14 +23,14 @@ export function claudeTranscriptStatus(records = []) {
   return "running";
 }
 
-export function canProbeSession(session, now = Date.now()) {
+export function canProbeSession(session, now = Date.now(), graceMs = 3000) {
   if (session.endedAt || session.parentSessionId) return false;
   if (isAgentWorking(session)) return true;
-  if (!["idle", "done", "waiting"].includes(normalizeAgentStatus(session))) return false;
-  // Only a known recent turn opens a background window. Discovering an
-  // already idle pane is not itself evidence of recent work.
-  const lastActive = Date.parse(session.lastActiveAt || "");
+  if (!["idle", "done", "waiting", "running"].includes(normalizeAgentStatus(session))) return false;
+  // An open, configured session is eligible before its first turn and while
+  // waiting. Only a known recent transition needs the configured grace period.
   const idleSince = Date.parse(session.idleSince || "");
-  return Number.isFinite(lastActive) && Number.isFinite(idleSince)
-    && now - idleSince >= 3000 && now - idleSince < 15 * 60000;
+  if (!Number.isFinite(idleSince)) return !Number.isFinite(Date.parse(session.lastActiveAt || ""))
+    && !Number.isFinite(Date.parse(session.lastSeenAt || ""));
+  return now - idleSince >= graceMs && now - idleSince < 15 * 60000;
 }

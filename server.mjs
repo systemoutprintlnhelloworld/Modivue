@@ -172,8 +172,9 @@ async function routeRequest(request, response) {
       && (target.observedModel === input.observedModel || target.canonicalModelId && target.canonicalModelId === input.canonicalModelId));
     if (!probeTarget) { response.writeHead(409, { "Content-Type": "application/json" }).end(JSON.stringify({ error: "该模型没有运行中的 Agent 或可用凭据" })); return; }
     if (input.questionId && !listQuestions().some(question => question.id === input.questionId)) throw new TypeError("题目不存在");
-    const run = await requestTargetVerification(probeTarget, evaluator.id, { questionId: input.questionId });
-    scheduleProbes();
+    if (input.priority !== undefined && typeof input.priority !== "boolean") throw new TypeError("插队参数必须为布尔值");
+    const run = await requestTargetVerification(probeTarget, evaluator.id, { questionId: input.questionId, priority: input.priority === true });
+    scheduleProbes({ immediate: input.priority === true });
     response.writeHead(202, { "Content-Type": "application/json; charset=utf-8" }).end(JSON.stringify(run));
     return;
   }

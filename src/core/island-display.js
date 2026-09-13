@@ -5,9 +5,11 @@ import { isAgentWorking } from "./agent-activity.js";
  * A configured model without a concrete session must never appear as active UI.
  */
 export function liveIslandModels(models = []) {
+  const latestActivity = model => Math.max(0, ...model.sessions.map(session => Date.parse(session.lastActiveAt || session.idleSince || "") || 0));
   return models
     .filter((model) => model?.sessions?.some((session) => session?.sessionId && !session.parentSessionId))
-    .sort((a, b) => Number(b.sessions.some(isAgentWorking)) - Number(a.sessions.some(isAgentWorking))
+    .sort((a, b) => latestActivity(b) - latestActivity(a)
+      || Number(b.sessions.some(isAgentWorking)) - Number(a.sessions.some(isAgentWorking))
       || String(a.id).localeCompare(String(b.id)));
 }
 

@@ -359,8 +359,7 @@ export async function probeAgentConnections(env = process.env, home = homedir(),
   const configured = await agentConnections(env, home, process.cwd());
   const byHost = new Map(configured.map((agent) => [agent.id, agent]));
   const sessions = await detectAgents(env, home, undefined, { fresh });
-  // Foreground sessions reserve their route; only recently completed turns
-  // provide a background sampling window. Long-idle panes are not targets.
+  // Open sessions retain their configured route even before their first turn.
   const value = sessions.filter((session) => session.model && (byHost.has(session.host) || agentAdapters.some((adapter) => adapter.id === session.host))
     && !session.endedAt
     && !session.parentSessionId).flatMap((session) => {
@@ -376,7 +375,7 @@ export async function probeAgentConnections(env = process.env, home = homedir(),
     if (session.baseUrl !== connection.baseUrl || session.keyGroup !== connection.keyGroup
       || session.metadata?.modelProvider && session.metadata.modelProvider !== connection.provider) return [];
     return [{ ...connection, model: session.model, agents: [session.host], sessionId: session.sessionId,
-      runtimeStatus: isAgentWorking(session) ? "active" : ["idle", "done", "waiting"].includes(session.displayStatus || session.status) ? "idle" : session.displayStatus || session.status,
+      runtimeStatus: isAgentWorking(session) ? "active" : ["idle", "done", "waiting", "running"].includes(normalizeAgentStatus(session)) ? "idle" : normalizeAgentStatus(session),
       lastActiveAt: session.lastActiveAt, idleSince: session.idleSince,
       reasoningEffort: session.metadata?.reasoningEffort || null }];
   });

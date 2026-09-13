@@ -78,6 +78,10 @@ const state = {
   qualityRuns: [],
   hiddenTrendSeries: new Set(),
   qualityReportId: null,
+  routeSort: "ttft",
+  routeSeries: "",
+  routeReportId: null,
+  modelPage: 0,
   evaluators: [],
   supportedAgents: [],
   events: [],
@@ -884,8 +888,13 @@ function renderModelSelectors() {
   const selected = selectedModel();
   const strip = $("#model-strip");
   const visible = filteredModels();
-  strip.innerHTML = visible.length ? visible.map((model, index) => `
-    <button class="model-chip ${model.id === selected?.id ? "active" : ""}" data-model-index="${index}" data-model-id="${escapeHtml(model.id)}" aria-pressed="${model.id === selected?.id}">
+  const pageSize = 5;
+  const pageCount = Math.max(1, Math.ceil(visible.length / pageSize));
+  state.modelPage = clamp(Number(state.modelPage) || 0, 0, pageCount - 1);
+  const pageStart = state.modelPage * pageSize;
+  const pageModels = visible.slice(pageStart, pageStart + pageSize);
+  strip.innerHTML = visible.length ? pageModels.map((model, index) => `
+    <button class="model-chip ${model.id === selected?.id ? "active" : ""}" data-model-index="${pageStart + index}" data-model-id="${escapeHtml(model.id)}" aria-pressed="${model.id === selected?.id}">
       <span class="provider-orb ${model.color}">${providerGlyph(model)}</span>
       <span><strong>${escapeHtml(model.label)}</strong><small>${escapeHtml(model.reasoningEffort || "档位未指定")} · ${escapeHtml(endpointLabel(model.endpoint))} · ${escapeHtml(model.keyGroup || "无分组")}</small></span>
     </button>`).join("") : `<div class="empty-state wide">当前筛选下没有模型</div>`;
@@ -969,6 +978,14 @@ function renderModelSelectors() {
     button.inert = hidden;
     button.setAttribute("aria-hidden", String(hidden));
   });
+  const previous = $("#model-previous"); const next = $("#model-next");
+  if (previous && next) {
+    previous.hidden = next.hidden = visible.length <= pageSize;
+    previous.disabled = state.modelPage <= 0; next.disabled = state.modelPage >= pageCount - 1;
+    previous.onclick = () => { if (state.modelPage > 0) { state.modelPage--; renderModelSelectors(); } };
+    next.onclick = () => { if (state.modelPage < pageCount - 1) { state.modelPage++; renderModelSelectors(); } };
+  }
+  strip.onwheel = (event) => { if (Math.abs(event.deltaX) > Math.abs(event.deltaY)) { strip.scrollLeft += event.deltaX; } };
   $$('[data-model-index]').forEach((button) => { button.onclick = async () => {
     const models = button.closest("#island-models") ? visibleIslandModels : filteredModels();
     const model = models[Number(button.dataset.modelIndex)];
@@ -1135,6 +1152,9 @@ function drawIslandBridge() {
   const smoothing = reducedMotion() ? 1 : .24;
   bridgePointer.x += (bridgeTarget.x - bridgePointer.x) * smoothing;
   bridgePointer.y += (bridgeTarget.y - bridgePointer.y) * smoothing;
+  const style = state.settings.bridgeStyle || "flow";
+  const idleWave = reducedMotion() ? 0 : Math.sin(performance.now() / (style === "pulse" ? 260 : 520)) * (style === "pulse" ? 3 : 1.5);
+  bridgePointer.y += idleWave;
   const rail = $("#quick-island").getBoundingClientRect();
   const onLeft = document.body.dataset.islandSide === "left";
   // Use layout dimensions so the connector doesn't follow the popover's reveal transform.
@@ -1151,8 +1171,9 @@ function drawIslandBridge() {
   const middleY = (startY + endY) / 2;
   const shoulder = (endX - startX) * .22;
   $("path", bridge).setAttribute("d", `M ${startX} ${startY-19} C ${startX} ${startY-7} ${middleX-shoulder} ${middleY-3} ${middleX} ${middleY-3} C ${middleX+shoulder} ${middleY-3} ${endX} ${endY-7} ${endX} ${endY-15} L ${endX} ${endY+15} C ${endX} ${endY+7} ${middleX+shoulder} ${middleY+3} ${middleX} ${middleY+3} C ${middleX-shoulder} ${middleY+3} ${startX} ${startY+7} ${startX} ${startY+19} Z`);
+  bridge.dataset.style = style;
   bridge.classList.toggle("visible", popover.classList.contains("visible"));
-  if (Math.abs(bridgeTarget.x - bridgePointer.x) + Math.abs(bridgeTarget.y - bridgePointer.y) > .2) bridgeFrame = requestAnimationFrame(drawIslandBridge);
+  if (!reducedMotion() || Math.abs(bridgeTarget.x - bridgePointer.x) + Math.abs(bridgeTarget.y - bridgePointer.y) > .2) bridgeFrame = requestAnimationFrame(drawIslandBridge);
 }
 
 function popoverTrend(label, value, range, points, color, { unavailable = "暂无趋势", rawTtft = false, maximum: scaleMaximum = 100 } = {}) {
@@ -1390,7 +1411,9 @@ function qualityDegradationCount(model) {
 
 function routesView() {
   const selected = selectedModel();
-  const rows = filteredModels().length ? filteredModels().map((model) => `<button class="route-row ${model.id === selected?.id ? "active" : ""}" data-select-model="${escapeHtml(model.id)}">
+  const sorters = { ttft: (m) => m.ttftMs ?? Infinity, cache: (m) => -(m.cacheRate ?? -1), quality: (m) => -(Number(m.verification?.numeric?.value) || 0), activity: (m) => -Math.max(...sessionsForModel(m).map(s => Date.parse(s.lastActiveAt || s.lastSeenAt || "") || 0)), samples: (m) => -(m.sampleCount || 0) };
+  const models = [...filteredModels()].sort((a,b) => (sorters[state.routeSort] || sorters.ttft)(a) - (sorters[state.routeSort] || sorters.ttft)(b));
+  const rows = models.length ? models.map((model) => `<button class="route-row ${model.id === selected?.id ? "active" : ""}" data-select-model="${escapeHtml(model.id)}">
     <span class="route-identity"><strong>${escapeHtml(endpointLabel(model.endpoint))}</strong><small>${escapeHtml(model.provider)} · Key ${escapeHtml(model.keyGroup || "未提供")}</small></span>
     <span><strong>${escapeHtml(model.label)}</strong><small>${model.status === "unsampled" ? "已配置 · 未采样" : escapeHtml(model.standardLabel)}</small></span>
     <span class="mint-text">${qualityValue(model)}<small>${escapeHtml(model.evaluator)}</small></span>
@@ -1402,7 +1425,7 @@ function routesView() {
   const selectionSubtitle = selected
     ? `${endpointLabel(selected.endpoint)} · Key ${selected.keyGroup || "未提供"} · ${selected.label}`
     : "选择渠道后显示当前范围内的历史数据";
-  return `<div class="view-stack"><article class="panel route-list-panel">${viewHeader("渠道表现", `按模型、渠道、Key 与推理档位统计 · ${formatRange()}`)}<div class="route-table-scroll"><div class="route-table"><div class="route-table-head"><span>渠道 / Key 分组</span><span>模型</span><span>模型核验</span><span>Cache</span><span>TTFT</span><span>有效/总计</span><span>基线偏离</span></div>${rows}</div></div></article><article class="panel route-history-panel">${viewHeader("选中渠道历史", selectionSubtitle)}${selected ? `<div class="route-summary"><span><small>${escapeHtml(selected.evaluator)}范围</small><strong class="mint-text">${escapeHtml(metricRange(selected, "quality"))}</strong></span><span><small>Cache 范围</small><strong class="blue-text">${escapeHtml(metricRange(selected, "cache"))}</strong></span><span><small>TTFT 范围</small><strong class="violet-text">${escapeHtml(metricRange(selected, "ttft"))}</strong></span><span><small>基线偏离</small><strong>${qualityDegradationCount(selected)} 次</strong></span></div><div class="route-history-grid"><section class="route-history-item"><header><strong>${escapeHtml(selected.evaluator)}</strong><span>${qualityValue(selected)}</span></header><div class="route-chart" id="route-quality-chart"></div></section><section class="route-history-item"><header><strong>Cache</strong><span>${formatPercent(selected.cacheRate)}</span></header><div class="route-chart" id="route-cache-chart"></div></section><section class="route-history-item"><header><strong>TTFT</strong><span>${formatDuration(selected.ttftMs)}</span></header><div class="route-chart" id="route-ttft-chart"></div></section></div>` : `<div class="empty-state">暂无可选择渠道。</div>`}</article></div>`;
+  return `<div class="view-stack"><article class="panel route-list-panel">${viewHeader("私人渠道排行榜", `渠道 · 模型 · Key · 推理档位 · ${formatRange()}`, `<label class="route-sort">排序<select id="route-sort"><option value="activity" ${state.routeSort === "activity" ? "selected" : ""}>最近活跃</option><option value="quality" ${state.routeSort === "quality" ? "selected" : ""}>核验</option><option value="cache" ${state.routeSort === "cache" ? "selected" : ""}>Cache</option><option value="ttft" ${state.routeSort === "ttft" ? "selected" : ""}>TTFT</option><option value="samples" ${state.routeSort === "samples" ? "selected" : ""}>样本量</option></select></label>`)}<div class="route-table-scroll"><div class="route-table"><div class="route-table-head"><span>渠道 / Key 分组</span><span>模型</span><span>模型核验</span><span>Cache</span><span>TTFT</span><span>有效/总计</span><span>基线偏离</span></div>${rows}</div></div></article><article class="panel route-history-panel">${viewHeader("选中渠道历史", selectionSubtitle)}${selected ? `<div class="route-summary"><span><small>${escapeHtml(selected.evaluator)}范围</small><strong class="mint-text">${escapeHtml(metricRange(selected, "quality"))}</strong></span><span><small>Cache 范围</small><strong class="blue-text">${escapeHtml(metricRange(selected, "cache"))}</strong></span><span><small>TTFT 范围</small><strong class="violet-text">${escapeHtml(metricRange(selected, "ttft"))}</strong></span><span><small>基线偏离</small><strong>${qualityDegradationCount(selected)} 次</strong></span></div><div class="route-history-grid"><section class="route-history-item"><header><strong>${escapeHtml(selected.evaluator)}</strong><span>${qualityValue(selected)}</span></header><div class="route-chart" id="route-quality-chart"></div></section><section class="route-history-item"><header><strong>Cache</strong><span>${formatPercent(selected.cacheRate)}</span></header><div class="route-chart" id="route-cache-chart"></div></section><section class="route-history-item"><header><strong>TTFT</strong><span>${formatDuration(selected.ttftMs)}</span></header><div class="route-chart" id="route-ttft-chart"></div></section></div>${qualityHistoryView(selected)}` : `<div class="empty-state">暂无可选择渠道。</div>`}</article></div>`;
 }
 
 function renderRouteCharts() {
@@ -1484,7 +1507,7 @@ function verificationPlan(model) {
     label: `计划 ${samples} 次有效回答 · 最多 ${maxAttempts} 次请求${note ? ` · ${note}` : ""}` });
   if (method === "astra-community") return plan(5 * state.settings.astraSamples);
   if (method === "one-token") return plan(10 * state.settings.oneTokenSamples);
-  if (method === "custom-question") return plan(1, 1, state.questions.find(question => question.id === state.settings.defaultQuestionId)?.title || "请选择测试题目");
+  if (method === "custom-question") return plan(1, 3, state.questions.find(question => question.id === state.settings.defaultQuestionId)?.title || "请选择测试题目");
   if (method === "juice" && state.settings.juiceMode === "raw") return plan(1, 1, "原始观测，未校准");
   if (!target) return { label: "选择可用的会话后显示请求计划" };
   if (method === "meow-fingerprint") {
@@ -1611,7 +1634,7 @@ function qualityView() {
   const method = state.evaluators.find((item) => item.id === state.settings.evaluatorId)?.label || state.settings.evaluatorId;
   const activity = verificationActivity(model);
   const plan = verificationPlan(model);
-  const action = `<div class="verification-actions"><button class="text-button" data-action="export-quality" ${!qualityRunsForModel(model).length ? "disabled" : ""}>导出报告</button><button class="primary-button" ${plan.external ? "hidden" : ""} data-action="run-quality" ${activity.busy || !activity.target || plan.blocked ? "disabled" : ""}><span>▶</span>${activity.busy ? activity.label : plan.blocked ? "需配置核验条件" : activity.target?.pauseReason ? "排队核验" : "立即核验"}</button></div>`;
+  const action = `<div class="verification-actions"><button type="button" class="text-button" data-action="priority-quality" ${plan.external || !state.probe?.targets?.some(target => target.id === model?.id) || plan.blocked || activity.job && activity.job.phase !== "queued" ? "disabled" : ""}>插队核验</button><button class="text-button" data-action="export-quality" ${!qualityRunsForModel(model).length ? "disabled" : ""}>导出报告</button><button class="primary-button" ${plan.external ? "hidden" : ""} data-action="run-quality" ${activity.busy || !activity.target || plan.blocked ? "disabled" : ""}><span>▶</span>${activity.busy ? activity.label : plan.blocked ? "需配置核验条件" : activity.target?.pauseReason ? "排队核验" : "立即核验"}</button></div>`;
   const points = metricPoints("quality");
   const questionSummary = verification.question;
   return `<div class="view-stack"><article class="panel">${viewHeader("模型核验", `${model?.label || "当前模型"} · ${method} · ${verification.label}`, action)}
@@ -1664,10 +1687,11 @@ function qualityRunReport(run, scope = "selected") {
   const reasonLabels = { samples_incomplete: "有效样本未达 60% 要求", no_valid_samples: "没有完整有效答案", no_threshold: "候选未超过判定线", multiple_thresholds: "最高候选不唯一", unknown_claimed_model: "基准未覆盖申报模型", uncalibrated: "缺少判定线", baseline_cell_missing: "缺少题目基准", samples_exceed_plan: "样本超过计划", target_inactive: "Agent 已待命或切换渠道", monitoring_paused: "监测暂时暂停", budget_exhausted: "达到每日预算上限", authentication_failed: "提供方鉴权失败" };
   return `<section class="historical-report" data-report-key="${detailKey}">${legacyNotice}<div class="verification-metrics"><div><span>检测结论</span><strong>${verdict}</strong><small>${escapeHtml(presentationRecheck ? verificationRunLabel(run) : run.rationale || "未提供")}</small></div><div><span>有效样本</span><strong>${metadata.sampleCount ?? "--"}</strong><small>${escapeHtml(metadata.reasoningEffort || "未记录档位")} · ${escapeHtml(metadata.revision || "未记录基准版本")}</small></div></div>
     ${presentationRecheck ? `<p class="report-notice">已按答案格式归一化复核显示。历史原始判定和回答保留在原始 JSON 中。</p>` : ""}
-    ${metadata.question ? `<section class="question-result"><h3>${escapeHtml(metadata.question.title)}</h3><p>${escapeHtml(metadata.question.prompt)}</p><dl><dt>参考答案</dt><dd>${escapeHtml(metadata.question.answer)}</dd><dt>实际回答</dt><dd class="question-prompt">${escapeHtml(metadata.actual)}</dd></dl></section>` : ""}
+    ${requests.some(request => request.upstreamError?.message) ? `<p class="report-notice"><span>上游返回错误</span>：<span translate="no">${escapeHtml(requests.findLast(request => request.upstreamError?.message).upstreamError.message)}</span></p>` : ""}
+    ${metadata.question ? `<section class="question-result"><h3>${escapeHtml(metadata.question.title)}</h3><p>${escapeHtml(metadata.question.prompt)}</p><dl><dt>参考答案</dt><dd>${escapeHtml(metadata.question.answer)}</dd><dt>实际回答</dt><dd class="question-prompt">${metadata.partialAnswer ? "<strong>未完成的部分回答</strong><br>" : ""}${metadata.actual ? escapeHtml(metadata.actual) : "上游未返回完整答案，请查看请求错误后重试。"}</dd></dl></section>` : ""}
     ${Number.isFinite(metadata.jsd) ? `<p>JSD ${metadata.jsd.toFixed(4)}</p>` : ""}
     ${metadata.conditionNotice ? `<p class="report-notice">${escapeHtml(metadata.conditionNotice)}</p>` : ""}
-    <dl class="report-facts"><div><dt>检测时间</dt><dd>${escapeHtml(formatTimestamp(run.timestamp, true))}</dd></div><div><dt>方案版本</dt><dd>${escapeHtml(run.evaluator_id)} · ${escapeHtml(run.evaluator_version)}</dd></div><div><dt>请求累计耗时</dt><dd>${duration.length ? formatDuration(duration.reduce((sum, request) => sum + request.durationMs, 0)) : "未提供"}</dd></div><div><dt>总花费</dt><dd>${pricedRequests.length ? formatCost(totalCost) : "待计费"}<small>${pricedRequests.length}/${requests.length} 个请求有价格</small></dd></div><div><dt>平均单次花费</dt><dd>${pricedRequests.length ? formatCost(totalCost / pricedRequests.length) : "待计费"}</dd></div><div><dt>采样进度</dt><dd>${metadata.sampleCount ?? "--"} / ${metadata.plannedSamples ?? metadata.attempts ?? "--"}</dd></div><div><dt>请求尝试</dt><dd>${metadata.requestAttempts ?? metadata.attempts ?? (requests.length || "--")}</dd></div><div><dt>失败 / 重试</dt><dd>${metadata.failures?.length ?? 0}</dd></div></dl>
+    <dl class="report-facts"><div><dt>检测时间</dt><dd>${escapeHtml(formatTimestamp(run.timestamp, true))}</dd></div><div><dt>方案版本</dt><dd>${escapeHtml(run.evaluator_id)} · ${escapeHtml(run.evaluator_version)}</dd></div><div><dt>请求累计耗时</dt><dd>${duration.length ? formatDuration(duration.reduce((sum, request) => sum + request.durationMs, 0)) : "未提供"}</dd></div><div><dt>总花费</dt><dd>${pricedRequests.length ? formatCost(totalCost) : "待计费"}<small>${pricedRequests.length}/${requests.length} 个请求有价格</small></dd></div><div><dt>平均单次花费</dt><dd>${pricedRequests.length ? formatCost(totalCost / pricedRequests.length) : "待计费"}</dd></div><div><dt>采样进度</dt><dd>${metadata.sampleCount ?? "--"} / ${metadata.plannedSamples ?? metadata.attempts ?? "--"}</dd></div><div><dt>请求尝试</dt><dd>${metadata.requestAttempts ?? metadata.attempts ?? (requests.length || "--")}</dd></div><div><dt>失败 / 重试</dt><dd>${Math.max(metadata.failures?.length || 0, requests.filter(request => request.status === "error").length)}</dd></div></dl>
     ${metadata.partialSamples ? '<p class="report-notice">本轮未满额采样；判定资格按总体及每题有效样本分别检查。</p>' : ""}
     ${metadata.reasons?.length ? `<p>${metadata.reasons.map((reason) => escapeHtml(reasonLabels[reason] || reason)).join(" · ")}</p>` : ""}
     ${metadata.stopReason ? `<p class="report-notice">${escapeHtml(metadata.stopReason)}</p>` : ""}
@@ -1677,7 +1701,7 @@ function qualityRunReport(run, scope = "selected") {
     ${metadata.results?.length ? `<section class="distribution-report"><h3>KBF 知识边界核验</h3><p>p₀ ${metadata.p0.toFixed(6)} · p ${metadata.pValue.toFixed(6)} · ${metadata.discrepancies} / ${metadata.parsedAnswers}</p>${metadata.results.map(result => `<div class="distribution-row"><strong translate="no">${escapeHtml(result.name)}</strong><span>${result.answer}</span><span>${result.actual ?? "--"}</span><span>${result.matched ? "匹配" : "不匹配"}</span></div>`).join("")}</section>` : ""}
     ${metadata.referenceDataset?.distributions?.length ? `<details data-detail-key="reference-${detailKey}"><summary>OpenRouter 参考样本 · ${metadata.referenceDataset.validSamples} 条</summary><p translate="no">${escapeHtml(metadata.referenceDataset.notice)}</p>${metadata.referenceDataset.distributions.map(item => `<div class="distribution-row"><strong translate="no">${escapeHtml(item.model)} · ${escapeHtml(item.cell)}</strong><span>${item.sampleCount}</span><span translate="no">${escapeHtml(item.profile)}</span><span translate="no">${escapeHtml(Object.entries(item.counts).map(([answer, count]) => `${answer}: ${count}`).join(" · "))}</span></div>`).join("")}</details>` : ""}
     ${metadata.failures?.length ? `<details class="report-failures" data-detail-key="failures-${detailKey}"><summary>失败尝试 ${metadata.failures.length} 次</summary>${metadata.failures.map((failure) => `<p>#${failure.attempt} · ${escapeHtml(failure.cellId)} · ${escapeHtml(failure.error)}</p>`).join("")}</details>` : ""}
-    ${requests.length ? `<details class="report-requests" data-detail-key="requests-${detailKey}"><summary>请求明细 ${requests.length} 次</summary><div class="report-request-head"><span>时间</span><span>耗时</span><span>费用</span><span>状态</span></div>${requests.map((request) => `<div class="report-request-row"><time>${escapeHtml(formatTimestamp(request.timestamp))}</time><span>${formatDuration(request.durationMs)}</span><span>${formatCost(request.costUsd)}${request.costStatus === "estimated" ? "（估算）" : ""}</span><span>${escapeHtml(request.error || (request.status === "ok" ? "完成" : request.status || "未记录"))}</span></div>`).join("")}</details>` : ""}
+    ${requests.length ? `<details class="report-requests" data-detail-key="requests-${detailKey}"><summary>请求明细 ${requests.length} 次</summary><div class="report-request-head"><span>时间</span><span>耗时</span><span>费用</span><span>状态</span></div>${requests.map((request) => `<div class="report-request-row"><time>${escapeHtml(formatTimestamp(request.timestamp))}</time><span>${formatDuration(request.durationMs)}</span><span>${formatCost(request.costUsd)}${request.costStatus === "estimated" ? "（估算）" : ""}</span><span>${escapeHtml(request.upstreamError?.message || request.error || (request.status === "ok" ? "完成" : request.status || "未记录"))}</span></div>`).join("")}</details>` : ""}
     <details data-detail-key="raw-${detailKey}"><summary>原始 JSON 与采样条件</summary><pre>${escapeHtml(JSON.stringify(run, null, 2))}</pre></details></section>`;
 }
 
@@ -1726,8 +1750,8 @@ function customizationView() {
   const groups = new Map();
   preferenceFields.forEach(field => { if (!groups.has(field.group)) groups.set(field.group, []); groups.get(field.group).push(field); });
   const labels = { appearance: "外观", interaction: "交互", verification: "检测策略", display: "显示内容", thresholds: "阈值配色" };
-  const controls = (field) => field.key === "ringStyle"
-    ? `<div class="ring-style-picker"><select name="ringStyle" class="setting-control">${Object.entries(field.options).map(([key, label]) => `<option value="${key}" ${state.settings.ringStyle === key ? "selected" : ""}>${label}</option>`).join("")}</select><div class="ring-style-previews">${Object.entries(field.options).map(([key, label]) => `<button type="button" data-ring-style="${key}" aria-label="预览并选择${label}" aria-pressed="${state.settings.ringStyle === key}"><svg viewBox="0 0 60 60" aria-hidden="true">${metricRing(24, 54, state.settings.qualityHighColor, "预览", "54%", "20%–82%", 20, 82)}</svg><small>${label}</small></button>`).join("")}</div></div>`
+  const controls = (field) => ["ringStyle", "bridgeStyle"].includes(field.key)
+    ? `<div class="ring-style-picker"><select name="${field.key}" class="setting-control">${Object.entries(field.options).map(([key, label]) => `<option value="${key}" ${state.settings[field.key] === key ? "selected" : ""}>${label}</option>`).join("")}</select><div class="ring-style-previews">${Object.entries(field.options).map(([key, label]) => `<button type="button" data-style-key="${field.key}" data-style-value="${key}" aria-label="预览并选择${label}" aria-pressed="${state.settings[field.key] === key}"><svg viewBox="0 0 60 60" aria-hidden="true">${metricRing(24, 54, state.settings.qualityHighColor, "预览", "54%", "20%–82%", 20, 82)}</svg><small>${label}</small></button>`).join("")}</div></div>`
     : field.options
     ? `<select name="${field.key}" class="setting-control">${Object.entries(field.options).map(([value, label]) => `<option value="${escapeHtml(value)}" ${state.settings[field.key] === value ? "selected" : ""}>${escapeHtml(label)}</option>`).join("")}</select>`
     : field.type === "boolean" ? switchControl(field.key, state.settings[field.key], state.settings[field.key] ? "已开启" : "已关闭")
@@ -1981,7 +2005,7 @@ function renderActiveView() {
   if (state.view === "overview") { viewContent.innerHTML = ""; return; }
   const views = { models: modelsView, routes: routesView, cache: cacheView, ttft: ttftView, quality: qualityView, alerts: alertsView, logs: logsView, settings: settingsView };
   const markup = (views[state.view] || modelsView)();
-  if (["quality", "logs"].includes(state.view) && viewContent.dataset.renderedView === state.view) {
+  if (["quality", "logs", "routes"].includes(state.view) && viewContent.dataset.renderedView === state.view) {
     reconcileContent(viewContent, markup);
   } else viewContent.innerHTML = markup;
   viewContent.dataset.renderedView = state.view;
@@ -2158,7 +2182,7 @@ function setView(view) {
   $("#page-title").textContent = titles[view] || "概览";
   $$(".nav-item").forEach((item) => item.classList.toggle("active", item.dataset.view === view));
   $$(".overview-only").forEach((element) => { element.hidden = view !== "overview"; });
-  $("#model-strip").hidden = view !== "overview";
+  $("#model-carousel").hidden = view !== "overview";
   renderActiveView();
   animateContent(view === "overview" ? $("#metric-grid") : $("#view-content"));
   window.scrollTo({ top: 0, behavior: reducedMotion() ? "auto" : "smooth" });
@@ -2177,15 +2201,15 @@ async function acknowledgeAlerts() {
   } catch (error) { showToast(`操作失败：${error.message}`, "error"); }
 }
 
-async function runQuality({ evaluatorId = state.settings.evaluatorId, questionId = state.settings.defaultQuestionId } = {}) {
+async function runQuality({ evaluatorId = state.settings.evaluatorId, questionId = state.settings.defaultQuestionId, priority = false } = {}) {
   const model = selectedModel();
   if (!state.evaluators.length || !model) return;
   try {
     const results = [];
-    for (const evaluator of state.evaluators.filter((item) => item.id === evaluatorId)) results.push(await fetchJson("/api/quality/run", { method: "POST", body: JSON.stringify({ evaluatorId: evaluator.id, questionId,
+    for (const evaluator of state.evaluators.filter((item) => item.id === evaluatorId)) results.push(await fetchJson("/api/quality/run", { method: "POST", body: JSON.stringify({ evaluatorId: evaluator.id, questionId, priority,
       protocol: model.provider, baseUrl: model.endpoint, keyGroup: model.keyGroup, observedModel: model.observedModel,
       canonicalModelId: model.canonicalModelId, reasoningEffort: model.reasoningEffort, conditionsId: evaluator.conditionsId }) }));
-    showToast(results.some(result => result.status === "queued") ? "核验已排队，本轮工作结束后开始" : "核验已开始，可在面板查看采样进度"); await refreshObservations({ quiet: true }); }
+    showToast(results.some(result => result.priority) ? "已插队，将在当前请求结束后优先核验" : results.some(result => result.status === "queued") ? "核验已排队，等待当前请求和调度条件" : "核验已开始，可在面板查看采样进度"); await refreshObservations({ quiet: true }); }
   catch (error) { showToast(`核验失败：${error.message}`, "error"); }
 }
 
@@ -2258,16 +2282,18 @@ function bindEvents() {
     ? desktopMessage({ type: "open-main", view: "settings" }) : setView("settings"));
   $("#island-buffer").addEventListener("click", () => enterIslandState({ type: "border" }));
   $("#island-expand").addEventListener("click", () => {
-    if (desktopMode === "island") { desktopMessage({ type: "open-main" }); return; }
+    if (desktopMode === "island") { desktopMessage({ type: "open-main", view: "overview" }); return; }
     const island = $("#quick-island"); const expanded = island.classList.toggle("expanded");
     $("#island-expand").setAttribute("aria-expanded", String(expanded));
   });
   $("#quick-island").addEventListener("pointermove", (event) => { const island = event.currentTarget; const bounds = island.getBoundingClientRect(); island.style.setProperty("--pointer-y", `${clamp(event.clientY - bounds.top, 24, bounds.height - 24)}px`); island.style.setProperty("--tail-stretch", String(0.75 + clamp((bounds.left - event.clientX + 70) / 180, 0, 0.55))); });
   $("#view-content").addEventListener("click", async (event) => {
-    const ringStyle = event.target.closest("[data-ring-style]");
-    if (ringStyle && ringStyle.tagName === "BUTTON") {
-      $("#customization-form [name=ringStyle]").value = ringStyle.dataset.ringStyle;
-      $$(".ring-style-previews button").forEach(button => button.setAttribute("aria-pressed", String(button === ringStyle)));
+    const styleButton = event.target.closest("[data-style-key]");
+    if (styleButton && styleButton.tagName === "BUTTON") {
+      const key = styleButton.dataset.styleKey;
+      const input = $(`#customization-form [name="${key}"]`);
+      if (input) { input.value = styleButton.dataset.styleValue; input.dispatchEvent(new Event("change", { bubbles: true })); }
+      $$(`.ring-style-previews button[data-style-key="${key}"]`).forEach(button => button.setAttribute("aria-pressed", String(button === styleButton)));
       return;
     }
     const settingsTab = event.target.closest("[data-settings-tab]");
@@ -2346,6 +2372,7 @@ function bindEvents() {
     }
     if (action === "bazaarlink-start" || action === "bazaarlink-stop") { await bazaarlinkAction(action.split("-")[1]); return; }
     if (action === "question-verification") { setView("quality"); return; }
+    if (action === "priority-quality") await runQuality({ priority: true });
     if (action === "run-quality") await runQuality();
     if (action === "export-distribution") {
       const runs = qualityRunsForModel(selectedModel());
@@ -2381,7 +2408,8 @@ function bindEvents() {
     if (event.target.getAttribute("id") === "question-form") { event.preventDefault(); await saveCustomQuestion(event.target); }
   });
   $("#view-content").addEventListener("change", async (event) => {
-    if (event.target.name === "ringStyle") $$(".ring-style-previews button").forEach(button => button.setAttribute("aria-pressed", String(button.dataset.ringStyle === event.target.value)));
+    if (event.target.id === "route-sort") { state.routeSort = event.target.value; renderActiveView(); animateContent($("#view-content")); return; }
+    if (["ringStyle", "bridgeStyle"].includes(event.target.name)) $$(`.ring-style-previews button[data-style-key="${event.target.name}"]`).forEach(button => button.setAttribute("aria-pressed", String(button.dataset.styleValue === event.target.value)));
     if (["evaluatorId", "juiceMode", "hlwySource"].includes(event.target.name)) updateSettingsVisibility();
     if (event.target.name === "purpose") configureTrustedPurpose(event.target.form, event.target.value);
     if (event.target.name === "evaluatorId" && ["probability-probe", "hlwy-fingerprint"].includes(event.target.value)) {
@@ -2506,6 +2534,7 @@ function applyAppearance() {
   for (const info of ["Endpoint", "KeyGroup", "Reasoning", "Agents"]) root.classList.toggle(`hide-info-${info.toLowerCase()}`, !state.settings[`show${info}`]);
   document.body.dataset.islandShape = state.settings.islandShape || "pill";
   document.body.dataset.ringStyle = state.settings.ringStyle || "classic";
+  document.body.dataset.bridgeStyle = state.settings.bridgeStyle || "flow";
   document.body.dataset.probeStrategy = state.settings.probeStrategy || "adaptive";
   document.body.classList.toggle("reduced-motion", Boolean(state.settings.reducedMotion));
   const light = document.body.classList.contains("light");
@@ -2517,8 +2546,11 @@ const tourSteps = [
   [".health-panel", "主窗口先显示当前四元组的核心环、Cache、TTFT 和核验状态；顶部模型卡可切换模型，首屏指标卡可直接点击进入对应详细页。"],
   ["#agent-status", "主窗口这里汇总每个 coding agent 的工作、规划、工具调用、等待和完成状态；多个 Agent 会分别保留，不合并成一个在线状态。"],
   [".metric-grid", "主窗口的三张指标卡支持点击跳转：模型核验、Cache 和 TTFT 会打开详细窗口的对应 Tab，并保留当前模型四元组。"],
+  ["#model-strip", "顶部四元组条支持分页和触控板横向滑动；左右箭头可浏览全部渠道、模型、推理档位与 Key 组合。"],
+  ["[data-view=routes]", "私人渠道排行榜按最近活跃、核验、Cache、TTFT 或样本量排序；点击任一行可查看该四元组的三项指标曲线和全部历史核验记录。"],
   ["#refresh-button", "拓展窗口是实时灵动岛：极简、普通、专注和扩展详情会平滑切换。侧边拖条可点击或拖动，释放后吸附左右边缘；悬停模型可查看扩展信息。"],
-  ['[data-view="settings"]', "设置和拓展窗口都能重播引导；设置按外观、交互、检测策略和题库分类，并支持搜索、透明度、显示指标和自定义问题。"]
+  ['[data-view="settings"]', "设置按外观、交互、检测策略和题库分类，并支持 Spotlight 搜索、透明度、显示指标、主题色、连接线风格与自定义问题；修改会自动保存并提示。"],
+  ['[data-view="quality"]', "模型核验页支持普通核验、插队核验、单题题库和历史报告；失败请求会保留上游错误、部分回答、尝试次数和重试信息。"]
 ];
 let tourCleanup;
 function closeTour() { tourCleanup?.(); tourCleanup = null; document.querySelector(".spotlight-tour")?.remove(); }
@@ -2531,7 +2563,10 @@ function startTour() {
     ["#quick-island", "极简形态只显示工作中的四元组。模型图标与无数值环保持可见。"],
     ["#island-buffer", "普通形态显示全部目标。上下边缘可滚动列表；顶部横条与侧面竖条都可拖动，松开后吸附左右边缘。点击侧条返回普通形态。"],
     ["#island-focus", "专注形态显示当前目标的指标。点击 Cache、TTFT 或模型核验进入同一四元组的对应详情页。"],
-    [".island-stage", "拓展窗口显示渠道、Agent 状态、历史趋势与核验进度；点击任一趋势进入对应详情，显示哪些指标和信息可在设置中调整。"]
+    [".island-stage", "拓展窗口显示渠道、Agent 状态、历史趋势与核验进度；点击任一趋势进入对应详情，显示哪些指标和信息可在设置中调整。"],
+    ["#island-settings", "设置按钮打开灵动岛专属显示项；连接线支持丝带、水流、脉冲风格预览，减少动态选项可关闭持续动画。"],
+    ["#island-expand", "展开按钮进入主窗口概览；窗口拖动会跟随鼠标并平滑吸附到左右边缘。"],
+    ["#island-models", "模型过多时可通过上下边界滚动和轮播浏览，点击指标环进入对应四元组详情。"]
   ] : tourSteps;
   const previousFocus = document.activeElement;
   let index = 0;

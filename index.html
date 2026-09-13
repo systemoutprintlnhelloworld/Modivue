@@ -48,7 +48,7 @@
           <button class="primary-button" id="refresh-button" title="调用已配置的提供方，可能产生 token 消耗"><span>↻</span>立即采样</button>
         </section>
 
-        <section class="model-strip" id="model-strip"></section>
+        <div class="model-carousel" id="model-carousel"><button class="carousel-arrow" id="model-previous" type="button" aria-label="上一组四元组" hidden>‹</button><section class="model-strip" id="model-strip" aria-label="选择四元组"></section><button class="carousel-arrow" id="model-next" type="button" aria-label="下一组四元组" hidden>›</button></div>
         <section id="cost-summary" class="cost-summary" aria-label="当前对象核验费用"></section>
 
         <div class="overview-metrics overview-only">
@@ -73,7 +73,7 @@
         <footer class="app-footer"><span>Modivue 0.4.1 · 本地模式</span><span>标准目录：<a href="https://models.dev" target="_blank" rel="noreferrer">models.dev</a> · <span id="catalog-footer">同步中</span></span></footer>
       </main>
 
-      <aside class="island" id="quick-island" aria-label="模型实时指标"><button class="island-grip" id="island-expand" aria-label="打开详细窗口" aria-expanded="false"></button><button id="island-buffer" aria-label="返回全部 Agent" title="点击返回全部 Agent · 拖动移动窗口">全部</button><div class="island-stage"><div id="island-models"></div><div id="island-focus" aria-label="专注指标" inert></div></div><button class="island-model island-command" id="island-settings" title="打开设置" aria-label="打开设置"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="m9 3-1 3-3 1v4l-2 1 2 3v3l3 1 1 2h6l1-2 3-1v-3l2-3-2-1V7l-3-1-1-3Z"/><circle cx="12" cy="12" r="3.5"/></svg></button></aside>
+      <aside class="island" id="quick-island" aria-label="模型实时指标"><button class="island-grip" id="island-expand" aria-label="打开详细窗口" aria-expanded="false"></button><button id="island-buffer" aria-label="返回全部 Agent">全部</button><div class="island-stage"><div id="island-models"></div><div id="island-focus" aria-label="专注指标" inert></div></div><button class="island-model island-command" id="island-settings" title="打开设置" aria-label="打开设置"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="m9 3-1 3-3 1v4l-2 1 2 3v3l3 1 1 2h6l1-2 3-1v-3l2-3-2-1V7l-3-1-1-3Z"/><circle cx="12" cy="12" r="3.5"/></svg></button></aside>
       <svg id="island-bridge" aria-hidden="true"><path></path></svg>
       <div class="hover-popover" id="hover-popover" role="status"></div>
       <div class="toast" id="toast" role="status" aria-live="polite"></div>

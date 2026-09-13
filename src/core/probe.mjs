@@ -66,17 +66,17 @@ export async function probeTargets(env = process.env) {
 }
 
 export function probePauseReason(target, connections) {
-  const strategy = target.probeStrategy || "idle";
+  const strategy = target.manualPriority ? "adaptive" : target.probeStrategy || "idle";
   const cooldownUntil = probeCooldowns.get(probeRouteKey(target));
   if (cooldownUntil && cooldownUntil > Date.now()) return `探测冷却中，${Math.ceil((cooldownUntil - Date.now()) / 1000)} 秒后重试`;
   const sameTarget = session => normalizeBaseUrl(session.baseUrl) === normalizeBaseUrl(target.baseUrl)
     && session.keyGroup === target.keyGroup && session.model === target.observedModel
     && (session.reasoningEffort || null) === (target.reasoningEffort || null);
   if (target.sessionId && !connections.some(session => sameTarget(session) && (strategy === "idle"
-    ? session.runtimeStatus === "idle" && canProbeSession({ ...session, status: "idle" })
+    ? session.runtimeStatus === "idle" && canProbeSession({ ...session, status: "idle" }, Date.now(), getSettings().idleGraceSeconds * 1000)
     : session.runtimeStatus === "active" || session.runtimeStatus === "idle" && (!session.idleSince
       || Date.now() - Date.parse(session.idleSince) >= getSettings().idleGraceSeconds * 1000))))
-    return "Agent 已超出空闲核验窗口、结束或切换渠道";
+    return "Agent 工作中、已结束或切换渠道；待命目标可核验";
   if (connections.some((session) => session.runtimeStatus === "active"
     && normalizeBaseUrl(session.baseUrl) === normalizeBaseUrl(target.baseUrl) && session.keyGroup === target.keyGroup)
   ) return strategy === "idle" ? "同渠道、同 Key 的 Agent 工作中，主动检测暂停" : null;
@@ -176,12 +176,15 @@ const verificationJobId = (target, evaluatorId, options = {}) => JSON.stringify(
 export async function requestTargetVerification(target, evaluatorId, options = {}) {
   const id = verificationJobId(target, evaluatorId, options);
   if (qualityJobs.has(id)) return { status: "running", targetId: target.id };
+  const previous = pendingVerifications.get(id);
+  options = { ...options, priority: options.priority === true || previous?.options.priority === true };
   pendingVerifications.set(id, { targetId: target.id, evaluatorId, options });
   if (!target.pauseReason && !qualityJobs.size && !batch) {
     void runTargetVerification(target, evaluatorId, () => true, options).catch(error => console.error(error.message));
     return { status: "running", targetId: target.id };
   }
-  return { status: "queued", targetId: target.id, rationale: target.pauseReason || "等待当前核验结束" };
+  return { status: "queued", priority: options.priority, targetId: target.id,
+    rationale: options.priority ? "已插队，将在当前请求结束后优先核验" : target.pauseReason || "等待当前核验结束" };
 }
 export function verificationDue(target, evaluatorId, runs, intervalMinutes, now = Date.now(), questionId = null) {
   const question = evaluatorId === "custom-question" ? listQuestions().find(item => item.id === (questionId || getSettings().defaultQuestionId)) : null;
@@ -198,12 +201,15 @@ export function verificationDue(target, evaluatorId, runs, intervalMinutes, now 
 }
 
 export async function runTargetVerification(target, evaluatorId, shouldContinue = () => true, options = {}) {
+  if (options.priority) target = { ...target, manualPriority: true };
   const paused = probePauseReason(target, await probeAgentConnections(undefined, undefined, { fresh: true }));
   if (paused) return { status: "skipped", rationale: paused };
   const id = verificationJobId(target, evaluatorId, options);
   if (qualityJobs.has(id)) return qualityJobs.get(id);
   if (qualityJobs.size) return { status: "skipped", rationale: "其他模型核验正在运行" };
   pendingVerifications.delete(id);
+  let preempted = false;
+  const priority = options.priority === true;
   const job = (async () => {
     let result;
     const samples = [];
@@ -232,6 +238,10 @@ export async function runTargetVerification(target, evaluatorId, shouldContinue 
           await delay(getSettings().verificationRequestDelaySeconds * 1000);
         }
         const checkContinue = () => {
+          if (!priority && [...pendingVerifications].some(([other, job]) => other !== id && job.options.priority)) {
+            preempted = true;
+            throw Object.assign(new Error("优先核验已插队，当前进度保留待续测"), { code: "monitoring_paused" });
+          }
           if (!shouldContinue()) throw Object.assign(new Error("主动检测已暂停"), { code: "monitoring_paused" });
         };
         checkContinue();
@@ -252,14 +262,20 @@ export async function runTargetVerification(target, evaluatorId, shouldContinue 
           // returned a usage-bearing sample.
           samples.push({ timestamp: new Date().toISOString(), durationMs: null,
             costUsd: null, costStatus: "unknown", status: "error", error: error.message || "请求失败", upstreamError: null });
+          error.partialText = text;
           throw error;
         }
         const record = { timestamp: sample.timestamp, durationMs: sample.durationMs, costUsd: sample.costUsd,
           costStatus: sample.costStatus, status: sample.status, error: sample.error || null, upstreamError: sample.measurement?.upstreamError || null };
+        if (sample.status !== "ok" && text) record.partialText = text;
         samples.push(record);
-        if (sample.status !== "ok") throw Object.assign(new Error(sample.error || "核验请求失败"),
+        if (sample.status !== "ok") throw Object.assign(new Error(sample.measurement?.upstreamError?.message || sample.error || "核验请求失败"),
           { code: [401, 403].includes(sample.measurement?.httpStatus) ? "authentication_failed" : "request_failed",
-            retryAfterMs: sample.measurement?.retryAfterMs });
+            retryAfterMs: Math.max(sample.measurement?.retryAfterMs || 0, (probeCooldowns.get(probeRouteKey(target)) || 0) - Date.now()),
+            partialText: text, upstreamError: sample.measurement?.upstreamError,
+            retryable: [408, 429, 500, 502, 503, 504].includes(sample.measurement?.httpStatus)
+              || ["upstream_error", "server_error", "rate_limit_exceeded"].includes(sample.measurement?.upstreamError?.code)
+              || ["TimeoutError", "TypeError"].includes(sample.error) });
         try {
           if (reasoningDetected) throw new Error("上游未关闭推理，该回答不计入单词分布");
           return stream ? stream.finish() : text;
@@ -284,7 +300,11 @@ export async function runTargetVerification(target, evaluatorId, shouldContinue 
     return run;
   })();
   qualityJobs.set(id, job);
-  try { return await job; } finally { qualityJobs.delete(id); qualityProgress.delete(id); }
+  try { return await job; } finally {
+    qualityJobs.delete(id); qualityProgress.delete(id);
+    if (preempted) pendingVerifications.set(id, { targetId: target.id, evaluatorId, options });
+    if (!batch && pendingVerifications.size) scheduleProbes({ immediate: true });
+  }
 }
 
 export async function probeState() {
@@ -307,7 +327,22 @@ export async function runProbeBatch({ force = false } = {}) {
     const results = [];
     const targets = await probeTargets();
     for (const [id, pending] of pendingVerifications) if (!targets.some(target => target.id === pending.targetId)) pendingVerifications.delete(id);
+    const handled = new Set();
+    const drainQueue = async () => {
+      for (;;) {
+        const entry = [...pendingVerifications].filter(([id]) => !handled.has(id))
+          .sort((a, b) => Number(Boolean(b[1].options.priority)) - Number(Boolean(a[1].options.priority)))[0];
+        if (!entry) break;
+        const [id, queued] = entry;
+        handled.add(id);
+        const target = targets.find(item => item.id === queued.targetId);
+        if (!target) continue;
+        results.push(await runTargetVerification(target, queued.evaluatorId, () => true, queued.options));
+      }
+    };
+    await drainQueue();
     for (const target of targets) {
+      await drainQueue();
       const settings = getSettings();
       const manual = [...pendingVerifications.entries()].filter(([, job]) => job.targetId === target.id);
       if (bazaarlinkState().jobs.some(job => job.target.id === target.id && ["starting", "running", "stopping", "polling-error"].includes(job.status))) continue;
@@ -321,12 +356,7 @@ export async function runProbeBatch({ force = false } = {}) {
         results.push({ status: "budget_exhausted", limit: settings.probeDailyLimit });
         break;
       }
-      if (manual.length) {
-        for (const [id, job] of manual) {
-          results.push(await runTargetVerification(target, job.evaluatorId, () => true, job.options));
-        }
-        continue;
-      }
+      if (manual.length || [...handled].some(id => JSON.parse(id)[0] === target.id)) continue;
       try {
         if (settings.evaluatorId === "custom-question") {
           const runs = listQualityRuns({ hours: 0, baseUrl: target.baseUrl, keyGroup: target.keyGroup,
@@ -365,6 +395,7 @@ export async function runProbeBatch({ force = false } = {}) {
           ...(skipped ? { rationale: error.message } : { error: error.message || "探测请求失败" }) });
       }
     }
+    await drainQueue();
     lastRunAt = new Date().toISOString();
     return results;
   })();

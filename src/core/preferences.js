@@ -42,6 +42,7 @@ export const preferenceFields = [
   ...["compact", "normal"].map(mode => ({ key: `${mode}Metric`, label: `${mode === "compact" ? "极简" : "普通"}形态环指标`, group: "display",
     options: { quality: "模型核验", cache: "Cache", ttft: "TTFT", none: "仅模型图标" }, value: "quality" })),
   { key: "ringStyle", label: "三环显示样式", hint: "深浅同色：深色表示范围最大值，浅色表示当前值；经典样式保留原有轨道", group: "display", options: { classic: "经典渐变环", depth: "深浅同色范围环" }, value: "classic" },
+  { key: "bridgeStyle", label: "连接线动态风格", hint: "悬浮详情与灵动岛之间的连接线", group: "display", options: { ribbon: "柔和丝带", flow: "水流", pulse: "呼吸脉冲" }, value: "flow" },
   ...["focus", "detail", "popover"].flatMap(surface => ["quality", "cache", "ttft"].map(metric => ({
     key: `${surface}Show${metric[0].toUpperCase()}${metric.slice(1)}`, group: "display", type: "boolean", value: true,
     label: `${{ focus: "专注", detail: "详细窗口", popover: "扩展详情" }[surface]}显示${{ quality: "模型核验", cache: "Cache", ttft: "TTFT" }[metric]}` }))),
