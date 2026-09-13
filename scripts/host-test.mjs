@@ -238,6 +238,11 @@ if (mode !== "--worker") {
         ax = await driver("elements", pid);
         check("native-settings-replaces-overview", ax.some(row=>row.AXValue === "监测设置")
           && !ax.some(row=>row.AXValue === "今天的模型状态"));
+        const mainLayout = JSON.parse(await readFile(join(jobDirectory, "main-geometry.json"), "utf8"));
+        check("native-content-below-titlebar", mainLayout.mainWebFrame.height <= mainLayout.mainContentLayout.height + 1
+          && mainLayout.mainWebFrame.y >= mainLayout.mainContentLayout.y - 1, mainLayout);
+        check("native-theme-synchronized", mainLayout.theme === "light" ? !mainLayout.mainAppearance.includes("Dark")
+          : mainLayout.theme === "system" || mainLayout.mainAppearance.includes("Dark"), mainLayout.mainAppearance);
         await save("settings-categories-ax.json", ax);
         const verificationTab = ax.find(row => (row.AXTitle || row.AXValue || "") === "核验" && row.AXRole !== "AXStaticText");
         check("native-verification-category-present", Boolean(verificationTab), verificationTab);

@@ -192,13 +192,16 @@ final class ModivueApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNav
         }
         item.button?.toolTip = "Modivue"
         let menu = NSMenu()
-        menu.addItem(withTitle: "打开分析窗口", action: #selector(openDashboard), keyEquivalent: "o").target = self
-        menu.addItem(withTitle: "显示灵动岛", action: #selector(showIsland), keyEquivalent: "i").target = self
+        menu.addItem(withTitle: localizedMenuTitle("打开分析窗口", "Open Dashboard"), action: #selector(openDashboard), keyEquivalent: "o").target = self
+        menu.addItem(withTitle: localizedMenuTitle("显示灵动岛", "Show Island"), action: #selector(showIsland), keyEquivalent: "i").target = self
         menu.addItem(.separator())
-        menu.addItem(withTitle: "退出 Modivue", action: #selector(quitApplication), keyEquivalent: "q").target = self
+        menu.addItem(withTitle: localizedMenuTitle("退出 Modivue", "Quit Modivue"), action: #selector(quitApplication), keyEquivalent: "q").target = self
         item.menu = menu
         statusItem = item
     }
+
+    private var interfaceEnglish = Locale.preferredLanguages.first?.hasPrefix("zh") == false
+    private func localizedMenuTitle(_ chinese: String, _ english: String) -> String { interfaceEnglish ? english : chinese }
 
     private func startServer() throws {
         guard let resources = Bundle.main.resourceURL else { throw LaunchError("应用资源目录不可用") }
@@ -277,6 +280,9 @@ final class ModivueApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNav
     private func webView(mode: String) -> WKWebView {
         let controller = WKUserContentController()
         controller.add(self, name: "modivue")
+        if let data = try? JSONSerialization.data(withJSONObject: Locale.preferredLanguages), let languages = String(data: data, encoding: .utf8) {
+            controller.addUserScript(WKUserScript(source: "window.modivueLanguages = \(languages);", injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        }
         let configuration = WKWebViewConfiguration()
         configuration.userContentController = controller
         let view = mode == "island" ? IslandWebView(frame: .zero, configuration: configuration) : WKWebView(frame: .zero, configuration: configuration)
@@ -421,7 +427,17 @@ final class ModivueApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNav
             window.isReleasedWhenClosed = false
             window.delegate = self
             let view = webView(mode: "main")
-            window.contentView = view
+            let surface = NSView()
+            window.contentView = surface
+            surface.addSubview(view)
+            view.translatesAutoresizingMaskIntoConstraints = false
+            let layout = window.contentLayoutGuide as! NSLayoutGuide
+            NSLayoutConstraint.activate([
+                view.leadingAnchor.constraint(equalTo: layout.leadingAnchor),
+                view.trailingAnchor.constraint(equalTo: layout.trailingAnchor),
+                view.topAnchor.constraint(equalTo: layout.topAnchor),
+                view.bottomAnchor.constraint(equalTo: layout.bottomAnchor)
+            ])
             mainWindow = window
             mainWebView = view
         }
@@ -441,10 +457,10 @@ final class ModivueApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNav
 
     func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
         let menu = NSMenu()
-        menu.addItem(withTitle: "打开分析窗口", action: #selector(openDashboard), keyEquivalent: "")
-        menu.addItem(withTitle: "显示灵动岛", action: #selector(showIsland), keyEquivalent: "")
+        menu.addItem(withTitle: localizedMenuTitle("打开分析窗口", "Open Dashboard"), action: #selector(openDashboard), keyEquivalent: "")
+        menu.addItem(withTitle: localizedMenuTitle("显示灵动岛", "Show Island"), action: #selector(showIsland), keyEquivalent: "")
         menu.addItem(.separator())
-        menu.addItem(withTitle: "退出 Modivue", action: #selector(quitApplication), keyEquivalent: "")
+        menu.addItem(withTitle: localizedMenuTitle("退出 Modivue", "Quit Modivue"), action: #selector(quitApplication), keyEquivalent: "")
         menu.items.forEach { $0.target = self }
         return menu
     }
@@ -483,6 +499,11 @@ final class ModivueApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNav
                 evidence["nativeFrame"] = ["x": panel.frame.minX, "y": panel.frame.minY,
                     "width": panel.frame.width, "height": panel.frame.height]
             }
+            if message.webView === mainWebView, let window = mainWindow, let view = mainWebView {
+                evidence["mainWebFrame"] = ["x": view.frame.minX, "y": view.frame.minY, "width": view.frame.width, "height": view.frame.height]
+                evidence["mainContentLayout"] = ["x": window.contentLayoutRect.minX, "y": window.contentLayoutRect.minY, "width": window.contentLayoutRect.width, "height": window.contentLayoutRect.height]
+                evidence["mainAppearance"] = window.effectiveAppearance.name.rawValue
+            }
             if let view = islandWebView {
                 // UI-driver coordinates are relative to the native panel, not the clipped web surface.
                 func panelRect(_ rect: [String: Any]) -> [String: Any] {
@@ -510,6 +531,21 @@ final class ModivueApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNav
             return
         }
         switch type {
+        case "locale":
+            interfaceEnglish = body["locale"] as? String == "en"
+            for item in statusItem?.menu?.items ?? [] {
+                if item.action == #selector(openDashboard) { item.title = localizedMenuTitle("打开分析窗口", "Open Dashboard") }
+                if item.action == #selector(showIsland) { item.title = localizedMenuTitle("显示灵动岛", "Show Island") }
+                if item.action == #selector(quitApplication) { item.title = localizedMenuTitle("退出 Modivue", "Quit Modivue") }
+            }
+        case "appearance":
+            if message.webView === mainWebView {
+                mainWindow?.appearance = NSAppearance(named: body["dark"] as? Bool == true ? .darkAqua : .aqua)
+                mainWindow?.titlebarAppearsTransparent = true
+                if let hex = body["background"] as? String, hex.count == 7, hex.hasPrefix("#"), let rgb = UInt32(hex.dropFirst(), radix: 16) {
+                    mainWindow?.backgroundColor = NSColor(srgbRed: CGFloat((rgb >> 16) & 255) / 255, green: CGFloat((rgb >> 8) & 255) / 255, blue: CGFloat(rgb & 255) / 255, alpha: 1)
+                }
+            }
         case "start-island-tour":
             pendingCollapse?.cancel()
             islandTourActive = true
@@ -594,6 +630,8 @@ final class ModivueApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNav
         if webView === mainWebView && ProcessInfo.processInfo.environment["MODIVUE_UI_ARTIFACTS"] != nil {
             webView.evaluateJavaScript("""
                 setInterval(() => window.webkit.messageHandlers.modivue.postMessage({type:'ui-evidence',
+                  topbar:document.querySelector(".topbar").getBoundingClientRect().toJSON(),
+                  theme:document.body.dataset.themePreset, locale:document.documentElement.lang,
                   view:document.querySelector('.nav-item.active')?.dataset.view,
                   selectedId:document.querySelector('#model-strip .model-chip.active')?.dataset.modelId}), 250);
                 """)

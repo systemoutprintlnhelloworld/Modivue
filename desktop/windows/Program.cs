@@ -86,6 +86,7 @@ internal sealed class MonitorContext : ApplicationContext
     private async Task Prepare(WebView2 web, CoreWebView2Environment environment, string mode)
     {
         await web.EnsureCoreWebView2Async(environment);
+        await web.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync($"window.modivueLanguages = {JsonSerializer.Serialize(new[] { System.Globalization.CultureInfo.CurrentUICulture.Name })};");
         web.CoreWebView2.Settings.IsStatusBarEnabled = false;
         web.CoreWebView2.NewWindowRequested += (_, e) => { e.Handled = true; OpenExternal(e.Uri); };
         web.CoreWebView2.NavigationStarting += (_, e) => {

@@ -8,7 +8,8 @@ import { observationKey } from "./identity.mjs";
 import { reasoningEffortOf } from "./model-identity.js";
 import { catalogState } from "./catalog.mjs";
 import { matchModelName } from "./model-match.js";
-import { verificationVersions } from "./quality-summary.js";
+import { verificationVersions, summarizeQuestionRuns, questionConditionsId } from "./quality-summary.js";
+import { modelIdentity } from "./model-identity.js";
 import { preferenceDefaults, validatePreference } from "./preferences.js";
 import { builtInQuestions, validateQuestion } from "../data/question-tests.js";
 import { randomUUID } from "node:crypto";
@@ -319,9 +320,40 @@ export function getSettings() {
   return { ...defaults, ...row && JSON.parse(row.value) };
 }
 
+// Remote probe jobs contain target identity, consent and progress, never keys.
+export function loadBazaarlinkJobs() {
+  return parseJson(db.prepare("SELECT value FROM preferences WHERE name = 'bazaarlink-jobs'").get()?.value, []);
+}
+
+export function saveBazaarlinkJobs(jobs) {
+  db.prepare("INSERT INTO preferences VALUES ('bazaarlink-jobs', ?) ON CONFLICT(name) DO UPDATE SET value=excluded.value").run(JSON.stringify(jobs));
+}
+
 export function listQuestions() {
   const row = db.prepare("SELECT value FROM preferences WHERE name = 'custom-questions'").get();
   return [...builtInQuestions.map(question => ({ ...question, builtIn: true })), ...parseJson(row?.value, [])];
+}
+
+export function questionWindowSummaries({ hours = getSettings().defaultHours, baseUrl, keyGroup, protocol, model, reasoningEffort } = {}) {
+  const question = listQuestions().find(item => item.id === getSettings().defaultQuestionId);
+  if (!question) return {};
+  const until = Date.now(), since = Number(hours) ? until - Number(hours) * 3600000 : 0;
+  const clauses = ["evaluator_id = 'custom-question'", "evaluator_version = ?", "conditions_id = ?", "timestamp >= ?", "timestamp <= ?"];
+  const parameters = [verificationVersions["custom-question"], questionConditionsId(question), new Date(since).toISOString(), new Date(until).toISOString()];
+  for (const [column, value] of [["base_url", baseUrl], ["key_group", keyGroup], ["protocol", protocol]]) {
+    if (value) { clauses.push(`${column} = ?`); parameters.push(value); }
+  }
+  const groups = new Map();
+  // Window counts must not inherit the 5000-row report browser limit.
+  for (const row of db.prepare(`SELECT * FROM quality_runs WHERE ${clauses.join(" AND ")}`).iterate(...parameters)) {
+    const run = { ...row, canonical_model_id: resolveCanonicalModelId(row.observed_model, row.canonical_model_id), metadata: parseJson(row.metadata, {}) };
+    if (model && run.observed_model !== model && run.canonical_model_id !== model) continue;
+    if (reasoningEffort !== undefined && reasoningEffortOf(run) !== (reasoningEffort || null)) continue;
+    const identity = modelIdentity(run);
+    if (!groups.has(identity)) groups.set(identity, []);
+    groups.get(identity).push(run);
+  }
+  return Object.fromEntries([...groups].map(([identity, runs]) => [identity, summarizeQuestionRuns(runs, { question, since, until })]));
 }
 
 export function saveQuestion(input) {
@@ -353,7 +385,7 @@ export function updateSettings(patch) {
     } else if (key === "probeInstruction") {
       if (typeof value !== "string" || !value.trim() || value.length > 2000) throw new TypeError("探测指令必须为 1–2000 个字符");
     } else if (key === "evaluatorId") {
-      if (!["meow-fingerprint", "hlwy-fingerprint", "probability-probe", "juice", "custom-question", "ztest"].includes(value)) throw new TypeError("核验方案无效");
+      if (!["meow-fingerprint", "hlwy-fingerprint", "probability-probe", "juice", "custom-question", "ztest", "bazaarlink-probe"].includes(value)) throw new TypeError("核验方案无效");
     } else if (key === "defaultQuestionId") {
       if (!listQuestions().some(question => question.id === value)) throw new TypeError("请选择已有的单问题测试题目");
     } else if (key === "meowTier") {

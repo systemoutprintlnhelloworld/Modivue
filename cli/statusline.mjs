@@ -1,4 +1,4 @@
-import { getSettings, listQualityRuns, summary, upsertAgentSession } from "../src/core/storage.mjs";
+import { getSettings, listQualityRuns, summary, upsertAgentSession, listQuestions, questionWindowSummaries } from "../src/core/storage.mjs";
 import { keyGroup, normalizeBaseUrl } from "../src/core/identity.mjs";
 import { matchModelName, normalizeModelName } from "../src/core/model-match.js";
 import { catalogState } from "../src/core/catalog.mjs";
@@ -189,16 +189,18 @@ function displayDuration(milliseconds) {
   return milliseconds < 1000 ? `${Math.round(milliseconds)}ms` : `${(milliseconds / 1000).toFixed(milliseconds < 10000 ? 2 : 1)}s`;
 }
 
-function metricPayload(observation, qualityRuns, settings) {
+function metricPayload(observation, qualityRuns, settings, hours = settings.defaultHours) {
   const runs = Array.isArray(qualityRuns) ? qualityRuns : qualityRuns ? [qualityRuns] : [];
-  const verification = summarizeVerification(runs, settings.evaluatorId);
+  const verification = summarizeVerification(runs, settings.evaluatorId, { target: observation,
+    question: listQuestions().find(question => question.id === settings.defaultQuestionId), since: hours ? Date.now() - hours * 3600000 : 0,
+    questionSummary: settings.evaluatorId === "custom-question" && observation ? questionWindowSummaries({ hours, baseUrl: observation.baseUrl, keyGroup: observation.keyGroup })[modelIdentity(observation)] : null });
   const cacheRate = observation?.cacheHitRate ?? observation?.reportedCacheHitRate ?? null;
   const cacheStatus = observation?.cacheStatus || "unavailable";
   const ttft = Number.isFinite(observation?.ttftMs) ? Number(observation.ttftMs) : null;
   const ttftValue = ttftGauge(ttft, Number(settings.ttftThresholdMs));
   return {
     quality: { value: verification.numeric?.value ?? null, status: verification.verdict,
-      bar: !verification.numeric ? null : verification.numeric.unit === "%" ? clamp(verification.numeric.value / 100)
+      bar: verification.question ? verification.question.ratio : !verification.numeric ? null : verification.numeric.unit === "%" ? clamp(verification.numeric.value / 100)
         : verification.numeric.method === "probability-probe" ? clamp(1 - verification.numeric.value) : null,
       ...verification,
       label: verification.numeric ? `${verification.numeric.label} ${verification.numeric.value.toFixed(2)}${verification.numeric.unit} · ${verification.label}${verification.stale ? ` · 上次有效 ${verification.measuredAt}` : ""}` : verification.label },
@@ -276,7 +278,7 @@ async function main() {
       model: observation.canonicalModelId ? undefined : observation.observedModel, baseUrl: observation.baseUrl,
       keyGroup: observation.keyGroup, reasoningEffort: observation.reasoningEffort || null })
       .sort((left, right) => (right.timestamp || "").localeCompare(left.timestamp || "")) : [];
-    const metrics = metricPayload(observation, qualityRuns, settings);
+    const metrics = metricPayload(observation, qualityRuns, settings, hours);
     const result = structuredResult({ label: sessionLabel, hours, observation, selection, metrics, settings, diagnostics });
     writeDiagnostics(diagnostics);
     if (options.json) process.stdout.write(JSON.stringify(result) + "\n");

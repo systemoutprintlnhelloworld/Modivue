@@ -1,6 +1,35 @@
 import { comparableAnswer } from "./answer-comparison.js";
+import { modelIdentity } from "./model-identity.js";
 
-export const verificationVersions = Object.freeze({ "probability-probe": "2.0.0", juice: "4.0.0", "hlwy-fingerprint": "1.1.0", "meow-fingerprint": "4.5.3-modivue.3", "custom-question": "1.0.0", ztest: "1.0.0" });
+export const verificationVersions = Object.freeze({ "probability-probe": "2.0.0", juice: "4.0.0", "hlwy-fingerprint": "1.1.0", "meow-fingerprint": "4.5.3-modivue.3", "custom-question": "1.0.0", ztest: "1.0.0", "bazaarlink-probe": "1.0.0" });
+
+export const questionConditionsId = question => JSON.stringify(["question:v1", question.id, question.prompt, question.answer, question.match]);
+
+// A question revision and one model route define a series. Failed requests
+// remain visible; only completed automatic comparisons enter the match rate.
+export function summarizeQuestionRuns(runs = [], { question, target, since = 0, until = Date.now() } = {}) {
+  const candidates = runs.filter(run => run.evaluator_id === "custom-question" && run.evaluator_version === verificationVersions["custom-question"])
+    .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
+  const latest = candidates.at(-1);
+  question ??= latest?.metadata?.question;
+  target ??= latest;
+  const conditionsId = question ? questionConditionsId(question) : null;
+  const selected = candidates.filter(run => conditionsId && run.metadata?.conditionsId === conditionsId
+    && modelIdentity(run) === modelIdentity(target)
+    && Date.parse(run.timestamp) >= since && Date.parse(run.timestamp) <= until);
+  let matched = 0, compared = 0, reviewed = 0, errors = 0;
+  const points = [];
+  for (const run of selected) {
+    if (run.status !== "ok") { errors++; continue; }
+    if (question.match === "review") { reviewed++; continue; }
+    compared++;
+    if (comparableAnswer(run.metadata.actual, question.answer)) matched++;
+    points.push({ timestamp: run.timestamp, value: matched, ratio: matched / compared * 100 });
+  }
+  return { questionId: question?.id || null, conditionsId, matched, total: selected.length, compared, reviewed, errors,
+    ratio: compared ? matched / compared : null, since: new Date(since).toISOString(), until: new Date(until).toISOString(),
+    firstSampleAt: selected[0]?.timestamp || null, lastSampleAt: selected.at(-1)?.timestamp || null, points };
+}
 
 export function verificationRunLabel(run) {
   if (!run) return "待核验";
@@ -14,6 +43,7 @@ export function verificationRunLabel(run) {
   if (run.status === "paused") return "检测已暂停，等待下次继续";
   if (run.status !== "ok") return "核验请求失败";
   if (run.evaluator_id === "ztest") return "Ztest 第三方检测报告";
+  if (run.evaluator_id === "bazaarlink-probe") return "BazaarLink 行为检测报告";
   if (run.evaluator_id === "custom-question") return run.metadata?.question?.match === "review" || run.metadata?.matched === null ? "待人工复核" : (run.metadata?.question ? comparableAnswer(run.metadata.actual, run.metadata.question.answer) : run.metadata?.matched) ? "答案匹配" : "答案不匹配";
   const metadata = run.metadata || {};
   if (run.evaluator_id === "juice" && metadata.mode === "raw") return Number.isFinite(metadata.reportedJuice) ? "原始观测 · 未校准" : "未返回有效数值";
@@ -29,11 +59,13 @@ export function verificationRunLabel(run) {
   return "证据不足";
 }
 
-export function summarizeVerification(runs = [], preferredMethod = "meow-fingerprint") {
+export function summarizeVerification(runs = [], preferredMethod = "meow-fingerprint", options = {}) {
+  const question = preferredMethod === "custom-question" ? (options.questionSummary && (!options.question || options.questionSummary.conditionsId === questionConditionsId(options.question)) ? options.questionSummary : summarizeQuestionRuns(runs, options)) : null;
   const latest = new Map();
   const measurements = new Map();
   for (const run of [...runs].sort((a, b) => b.timestamp.localeCompare(a.timestamp) || (b.id || 0) - (a.id || 0))) {
     if (run.evaluator_version !== verificationVersions[run.evaluator_id]) continue;
+    if (run.evaluator_id === "custom-question" && question && run.metadata?.conditionsId !== question.conditionsId) continue;
     if (!latest.has(run.evaluator_id)) latest.set(run.evaluator_id, run);
     if (run.status === "ok" && !measurements.has(run.evaluator_id)) measurements.set(run.evaluator_id, run);
   }
@@ -44,7 +76,7 @@ export function summarizeVerification(runs = [], preferredMethod = "meow-fingerp
   const stale = Boolean(measurement && measurement !== selected);
   const usable = selected?.status === "ok";
   const verdict = usable ? selected.metadata?.verdict || "inconclusive" : "inconclusive";
-  const label = verificationRunLabel(selected);
+  const label = question ? `${question.matched} / ${question.compared} 次答案匹配` : verificationRunLabel(selected);
   const valid = (id, field) => {
     const run = measurements.get(id);
     return run?.status === "ok" && Number.isFinite(run.metadata?.[field]) ? run.metadata[field] : null;
@@ -66,6 +98,7 @@ export function summarizeVerification(runs = [], preferredMethod = "meow-fingerp
     else if (selectedMethod === "juice" && juice !== null)
       numeric = { value: juice, label: "Juice 原始值", unit: "", method: "juice" };
   }
-  return { verdict, label, methods, selected, measurement, measuredAt: measurement?.timestamp || null, stale,
+  if (question?.compared) numeric = { value: question.matched, label: "单题匹配次数", unit: "次", method: "custom-question" };
+  return { question, verdict, label, methods, selected, measurement, measuredAt: measurement?.timestamp || null, stale,
     numeric, declaredMatch, matchPercent, jsd, juice, directionScore, directedModel };
 }

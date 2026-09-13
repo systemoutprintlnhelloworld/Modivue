@@ -10,8 +10,9 @@ import { listEvaluators } from "./src/core/quality.mjs";
 import "./src/core/evaluator-coding.mjs";
 import { meowReportDetails } from "./src/core/evaluator-meow.mjs";
 import { normalizeZtestReport, ztestReportId } from "./src/core/evaluator-ztest.mjs";
+import { bazaarlinkState, configureBazaarlink, startBazaarlink, stopBazaarlink, tickBazaarlink, importBazaarlinkReport } from "./src/core/evaluator-bazaarlink.mjs";
 import "./src/core/evaluator-question.mjs";
-import { listQuestions, saveQuestion, deleteQuestion } from "./src/core/storage.mjs";
+import { listQuestions, saveQuestion, deleteQuestion, questionWindowSummaries } from "./src/core/storage.mjs";
 import { verificationReferences } from "./src/data/question-tests.js";
 import { trustedHLWYReference } from "./src/core/hlwy-reference.js";
 import { probeState, probeTargets, runProbeBatch, scheduleProbes, requestTargetVerification } from "./src/core/probe.mjs";
@@ -176,11 +177,36 @@ async function routeRequest(request, response) {
     response.writeHead(202, { "Content-Type": "application/json; charset=utf-8" }).end(JSON.stringify(run));
     return;
   }
+  if (url.pathname === "/api/quality/bazaarlink") {
+    if (request.method === "GET") {
+      response.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" }).end(JSON.stringify(bazaarlinkState()));
+      return;
+    }
+    if (request.method !== "POST") { response.writeHead(405).end(); return; }
+    const input = await readJsonBody(request);
+    if (input.action === "stop") {
+      await stopBazaarlink(input.targetId);
+    } else {
+      const target = (await probeTargets()).find(target => target.id === input.targetId);
+      if (!target) throw new TypeError("请选择当前运行且已配置凭据的四元组");
+      if (input.action === "configure") configureBazaarlink(target, input);
+      else if (input.action === "start") {
+        // Acknowledge immediately; the durable job is written before remote POST.
+        void startBazaarlink(target).catch(error => console.error(error.message));
+      } else if (input.action === "import") {
+        if (input.confirmTarget !== true) throw new TypeError("请确认报告属于当前四元组");
+        importBazaarlinkReport(input.report, target);
+      } else throw new TypeError("未知 BazaarLink 操作");
+    }
+    response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(bazaarlinkState()));
+    return;
+  }
   if (url.pathname === "/api/quality/runs" && request.method === "GET") {
     const latestFilters = { ...filters, hours: 0, since: undefined };
     const report = run => ({ ...run, reportDetails: meowReportDetails(run) });
     response.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" }).end(JSON.stringify({
       runs: listQualityRuns(filters).map(report),
+      questionWindows: questionWindowSummaries(filters),
       history: listQualityRuns(latestFilters).map(report),
       latest: listQualityRuns({ ...latestFilters, latest: true }).map(report)
     }));
@@ -306,4 +332,9 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   // connection and leave the agent waiting in "connecting". Subsequent runs
   // follow the configured interval and remain serialised by probe.mjs.
   scheduleProbes();
+  if (!process.env.MODIVUE_UI_ARTIFACTS) {
+    const poll = async () => { try { await tickBazaarlink(await probeTargets()); } catch (error) { console.error(error.message); } };
+    void poll();
+    setInterval(poll, 5000).unref();
+  }
 }

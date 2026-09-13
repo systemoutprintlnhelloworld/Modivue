@@ -43,7 +43,7 @@ export async function runRuntimeTest(directory, { browser: withBrowser = false }
     process.env.MODIVUE_PROBE_OPENAI_API = "responses";
     const { handleRequest } = await import("../../server.mjs");
     const { updateSettings, savePassiveObservation } = await import("../../src/core/storage.mjs");
-    updateSettings({ probeEnabled: false });
+    updateSettings({ probeEnabled: false, locale: "zh-CN" });
     server = createServer(handleRequest); server.listen(0, "127.0.0.1"); await once(server, "listening");
     const base = `http://127.0.0.1:${server.address().port}`;
     const response = await fetch(`${base}/proxy/openai/v1/responses`, { method: "POST", headers: {"content-type":"application/json", authorization:"Bearer modivue-test-only"}, body: JSON.stringify({ model:"integration-fixture", input:"ok", stream:true }) });
@@ -410,6 +410,21 @@ export async function runRuntimeTest(directory, { browser: withBrowser = false }
         await page.unroute('**/api/settings');
         checks.push({ name: 'autosave-validation-navigation-and-request-race', status: 'PASS' });
         await page.locator('[data-settings-tab="appearance"]').click();
+        await page.locator('[name="fontScale"]').fill("120");
+        await page.locator('[name="customTextColor"]').check();
+        await page.locator('[name="textColor"]').fill("#aabbcc");
+        await page.waitForFunction(() => getComputedStyle(document.body).getPropertyValue("--font-scale") === "1.2"
+          && getComputedStyle(document.body).getPropertyValue("--text").trim() === "#aabbcc");
+        await page.screenshot({ path: join(directory, "web-font-custom-color.png") });
+        await page.locator('[name="fontScale"]').fill("100");
+        await page.locator('[name="customTextColor"]').uncheck();
+        await page.locator('[name="locale"]').selectOption("system");
+        await page.waitForFunction(() => document.documentElement.lang === "en");
+        await page.reload();
+        await page.waitForFunction(() => document.documentElement.lang === "en");
+        await page.locator('[data-view="settings"]').click();
+        await page.locator('[data-settings-tab="appearance"]').click();
+        checks.push({ name: "system-locale-and-independent-font-color", status: "PASS" });
         await page.locator('[name="locale"]').selectOption('en');
         await page.waitForFunction(() => document.documentElement.lang === 'en');
         await page.reload();
@@ -430,6 +445,18 @@ export async function runRuntimeTest(directory, { browser: withBrowser = false }
         await page.locator('[name="locale"]').selectOption('zh-CN');
         await page.waitForFunction(() => document.documentElement.lang === 'zh-CN');
         checks.push({ name: 'spotlight-keyboard-scroll-lock-and-persisted-language', status: 'PASS' });
+        await page.locator('[data-view="quality"]').click();
+        await page.locator("#quality-method-select").selectOption("bazaarlink-probe");
+        await page.locator("#bazaarlink-form").waitFor();
+        assert.equal(await page.locator('[data-action="bazaarlink-start"]').isDisabled(), true);
+        const startsBefore = upstreamCalls;
+        await page.locator('#bazaarlink-form [name="mode"]').selectOption("full");
+        await page.waitForTimeout(2200);
+        assert.equal(await page.locator('#bazaarlink-form [name="mode"]').inputValue(), "full", "Polling must not overwrite an edited remote plan");
+        assert.equal(upstreamCalls, startsBefore, "Selecting a remote method must not send model requests");
+        await page.screenshot({ path: join(directory, "web-bazaarlink.png") });
+        await page.locator("#quality-method-select").selectOption("juice");
+        checks.push({ name: "bazaarlink-ui-consent-and-plan-editing", status: "PASS" });
         const ztestReport = { id: 'modivue-ztest-fixture', status: 'completed', model: { code: 'integration-fixture', display_name: 'Integration fixture' },
           profile: 'quick', endpoint_masked: 'local fixture', probe_results: [{ probe_code: 'fixture', probe_name: 'Fixture probe', status: 'success', score: 1, latency_ms: 123 }] };
         const importBody = { observedModel: sample.observed_model, baseUrl: sample.base_url, keyGroup: sample.key_group, reasoningEffort: null, confirmTarget: true, report: ztestReport };
@@ -492,6 +519,17 @@ export async function runRuntimeTest(directory, { browser: withBrowser = false }
           await island.locator(`[data-focus-metric="${metric}"]`).hover();
           assert.equal(await island.locator(`[data-focus-metric="${metric}"] .ring-metric`).evaluate(el => el.classList.contains("is-hovered")), true, `${metric}: focused metric did not respond to pointer`);
         }
+        const animations = await island.evaluate(() => Object.fromEntries(["quality", "cache", "ttft"].map(metric => {
+          const symbol = document.querySelector(`[data-focus-metric="${metric}"] .focus-metric-icon ${metric === "cache" ? "ellipse" : "path"}`);
+          const style = getComputedStyle(symbol);
+          return [metric, { name: style.animationName, duration: style.animationDuration, iterations: style.animationIterationCount }];
+        })));
+        assert.deepEqual(Object.values(animations).map(value => value.name), ["thought-spark", "cache-flow", "response-spark"]);
+        assert.ok(Object.values(animations).every(value => value.iterations === "infinite"));
+        await island.emulateMedia({ reducedMotion: "reduce" });
+        assert.equal(await island.locator('[data-focus-metric="quality"] .focus-metric-icon path').first().evaluate(el => getComputedStyle(el).animationName), "none");
+        await island.emulateMedia({ reducedMotion: "no-preference" });
+        checks.push({ name: "three-internal-svg-animations-and-reduced-motion", status: "PASS", evidence: animations });
         await island.screenshot({path:join(directory,"web-island-focus.png")});
         await island.waitForTimeout(1200);
         assert.equal(await island.locator("#hover-popover").evaluate(el => el.classList.contains("visible")), true, "Stationary hover collapsed");
@@ -574,7 +612,7 @@ export async function runRuntimeTest(directory, { browser: withBrowser = false }
       } finally { await browser.close(); }
     }
     const { saveCalibration } = await import("../../src/core/calibration.mjs");
-    const { runTargetVerification, probePauseReason } = await import("../../src/core/probe.mjs");
+    const { runTargetVerification, probePauseReason, verificationDue } = await import("../../src/core/probe.mjs");
     const { listQualityRuns, listSamples, probeUsageToday, saveQualityRun } = await import("../../src/core/storage.mjs");
     const { listQuestions, saveQuestion, deleteQuestion } = await import("../../src/core/storage.mjs");
     const { summarizeVerification } = await import("../../src/core/quality-summary.js");
@@ -592,14 +630,78 @@ export async function runRuntimeTest(directory, { browser: withBrowser = false }
     assert.equal(questionRun.metadata.actual, 'ok');
     assert.equal(questionRun.metadata.requests.length, 1);
     assert.equal(questionRun.metadata.verdict, 'inconclusive');
+    const { questionConditionsId, summarizeQuestionRuns } = await import("../../src/core/quality-summary.js");
+    const questionRows = listQualityRuns({ hours: 0 }).filter(run => run.evaluator_id === "custom-question");
+    const questionNow = Date.now();
+    assert.equal(verificationDue(target, "custom-question", questionRows, 15, questionNow + 59900, question.id), false);
+    assert.equal(verificationDue(target, "custom-question", questionRows, 15, questionNow + 60100, question.id), true);
+    const qrows = [questionRows[0], { ...questionRows[0], id: 1002, metadata: { ...questionRows[0].metadata, actual: "wrong" } },
+      { ...questionRows[0], id: 1003, status: "error" }, { ...questionRows[0], id: 1004, key_group: "another-key" },
+      { ...questionRows[0], id: 1005, metadata: { ...questionRows[0].metadata, conditionsId: questionConditionsId({ ...question, answer: "other" }) } }];
+    const qstats = summarizeQuestionRuns(qrows, { question, target });
+    assert.deepEqual([qstats.matched, qstats.compared, qstats.total, qstats.errors, qstats.ratio], [1, 2, 3, 1, .5]);
+    assert.deepEqual(qstats.points.map(point => point.value), [1, 1]);
+    checks.push({ name: "question-window-frequency-version-and-route-isolation", status: "PASS" });
     saveQuestion({ ...question, answer: 'different' });
     assert.equal(listQuestions().find(item => item.id === question.id).answer, 'different');
+    assert.equal(verificationDue(target, "custom-question", questionRows, 15, questionNow, question.id), true, "Editing a question must create a new series");
     deleteQuestion(question.id);
     assert.equal(listQuestions().some(item => item.id === question.id), false);
     assert.throws(() => saveQuestion({ title: '', prompt: '', answer: '' }));
     assert.throws(() => updateSettings({ cacheWarningScore: 90, cacheGoodScore: 80 }));
     assert.throws(() => updateSettings({ focusShowQuality: false, focusShowCache: false, focusShowTtft: false }));
     checks.push({ name: 'custom-question-persistence-metered-run-and-settings-validation', status: 'PASS' });
+    const remoteProbe = await import("../../src/core/evaluator-bazaarlink.mjs");
+    const remoteRequests = [];
+    let remoteStatus = "running";
+    const probeMock = createServer(async (req, res) => {
+      let body = ""; for await (const chunk of req) body += chunk;
+      remoteRequests.push({ path: req.url, method: req.method, body: body ? JSON.parse(body) : null });
+      res.setHeader("content-type", "application/json");
+      if (req.url.endsWith("/stop")) { remoteStatus = "stopped"; res.end("{}"); return; }
+      if (req.method === "POST") { res.end(JSON.stringify({ runId: "mock-run-12345678", status: "running" })); return; }
+      res.end(JSON.stringify({ runId: "mock-run-12345678", status: remoteStatus, modelId: target.observedModel, baseUrl: target.baseUrl,
+        items: [{ probeId: "identity", label: "Identity", group: "identity", status: "done", passed: true, response: "ok" }],
+        identityAssessment: { status: "match", riskFlags: [] }, totalInputTokens: 10, totalOutputTokens: 2, score: 99 }));
+    });
+    probeMock.listen(0, "127.0.0.1"); await once(probeMock, "listening");
+    const remoteOrigin = `http://127.0.0.1:${probeMock.address().port}`;
+    const fakeFetch = (url, options) => fetch(new URL(new URL(url).pathname, remoteOrigin), options);
+    try {
+      assert.throws(() => remoteProbe.startBazaarlink(target), /启用/);
+      assert.throws(() => remoteProbe.configureBazaarlink(target, { consent: false }), /确认/);
+      remoteProbe.configureBazaarlink(target, { consent: true, mode: "full", continuous: true, intervalMinutes: 15, dailyRuns: 2 });
+      await remoteProbe.startBazaarlink(target, { fetchImpl: fakeFetch });
+      await remoteProbe.startBazaarlink(target, { fetchImpl: fakeFetch });
+      assert.equal(remoteRequests.length, 1, "Duplicate start must not bill twice");
+      assert.equal(remoteRequests[0].body.quickMode, false);
+      assert.equal(remoteRequests[0].body.identityOnly, false);
+      assert.equal(remoteRequests[0].body.apiKey, target.apiKey);
+      assert.equal(JSON.stringify(remoteProbe.bazaarlinkState()).includes(target.apiKey), false);
+      await remoteProbe.tickBazaarlink([], { fetchImpl: fakeFetch });
+      assert.equal(remoteProbe.bazaarlinkState().jobs[0].progress.completed, 1);
+      remoteStatus = "completed";
+      await remoteProbe.tickBazaarlink([], { fetchImpl: fakeFetch });
+      const completed = remoteProbe.bazaarlinkState().jobs[0];
+      assert.equal(completed.status, "completed");
+      assert.ok(completed.nextRunAt);
+      const storedReport = listQualityRuns({ hours: 0 }).find(run => run.evaluator_id === "bazaarlink-probe");
+      assert.equal(storedReport.score, null);
+      assert.equal(storedReport.metadata.costUsd, null);
+      assert.equal(storedReport.metadata.externalReport.score, undefined);
+      assert.equal(remoteProbe.normalizeBazaarlinkReport(storedReport.metadata.externalReport, target).apiKey, undefined);
+      assert.throws(() => remoteProbe.importBazaarlinkReport({ ...storedReport.metadata.externalReport, status: "running" }, target), /尚未结束/);
+      assert.equal(remoteProbe.normalizeBazaarlinkReport({ ...storedReport.metadata.externalReport, status: undefined, completedAt: new Date().toISOString() }, target).status, "ok");
+      assert.equal(remoteProbe.importBazaarlinkReport(storedReport.metadata.externalReport, target, "full").duplicate, true);
+      assert.throws(() => remoteProbe.importBazaarlinkReport({ ...storedReport.metadata.externalReport, modelId: "wrong" }, target), /不一致/);
+      await remoteProbe.startBazaarlink(target, { fetchImpl: fakeFetch });
+      await remoteProbe.stopBazaarlink(target.id, { fetchImpl: fakeFetch });
+      await remoteProbe.tickBazaarlink([], { fetchImpl: fakeFetch });
+      assert.equal(remoteProbe.bazaarlinkState().jobs[0].continuous, false);
+      assert.equal(remoteProbe.bazaarlinkState().jobs[0].status, "stopped");
+      assert.throws(() => remoteProbe.startBazaarlink(target, { fetchImpl: fakeFetch }), /上限/);
+      checks.push({ name: "bazaarlink-official-contract-start-poll-stop-budget-and-report", status: "PASS", evidence: { requests: remoteRequests.length, paidRequests: 0 } });
+    } finally { await new Promise(resolve => probeMock.close(resolve)); }
     const busy = [{ ...target, runtimeStatus: "active", model: "different-model", reasoningEffort: "high" }];
     assert.ok(probePauseReason({ ...target, reasoningEffort: "low" }, busy));
     assert.equal(probePauseReason({ ...target, keyGroup: "other-credential" }, busy), null);

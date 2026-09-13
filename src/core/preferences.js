@@ -1,10 +1,12 @@
 // Appearance and interaction options are shared by the form and persistence.
 export const preferenceFields = [
-  { key: "locale", label: "界面语言", group: "appearance", options: { "zh-CN": "简体中文", en: "English", system: "跟随系统" }, value: "zh-CN" },
+  { key: "locale", label: "界面语言", group: "appearance", options: { "zh-CN": "简体中文", en: "English", system: "跟随系统" }, value: "system" },
   { key: "themePreset", label: "界面主题", group: "appearance", options: { system: "跟随系统", graphite: "石墨", catppuccin: "Catppuccin Mocha", dracula: "Dracula", light: "浅色", custom: "自定义颜色" }, value: "system" },
   { key: "mainBackground", label: "主窗口背景", group: "appearance", type: "color", value: "#11141a" },
   { key: "panelBackground", label: "卡片背景", group: "appearance", type: "color", value: "#191d25" },
   { key: "textColor", label: "主窗口文字", group: "appearance", type: "color", value: "#f5f7fa" },
+  { key: "customTextColor", label: "使用自定义文字色", hint: "可在任何主题上覆盖正文文字色；指标状态颜色单独保留", group: "appearance", type: "boolean", value: false },
+  { key: "fontScale", label: "文字大小", hint: "只调整文字，不缩放环和窗口几何", group: "appearance", min: 80, max: 140, unit: "%", value: 100 },
   { key: "accentColor", label: "主窗口强调色", group: "appearance", type: "color", value: "#75b9ff" },
   { key: "normalBackground", label: "普通形态背景", group: "appearance", type: "color", value: "#101217" },
   { key: "focusBackground", label: "专注形态背景", group: "appearance", type: "color", value: "#101217" },
@@ -24,6 +26,7 @@ export const preferenceFields = [
   { key: "juiceMode", label: "Juice 检测方式", hint: "原始观测只请求 1 次并保留模型回答；校准对照需同模型、协议和推理档位的参考范围，最多尝试 3 次。", group: "verification", options: { raw: "单次原始观测 · 无需校准", calibrated: "可信校准对照" }, value: "raw" },
   { key: "workingProbeDelaySeconds", label: "工作中请求间隔", hint: "遇到限流自动冷却；请求不写入 Agent 对话", group: "verification", min: 5, max: 180, unit: "秒", value: 20 },
   { key: "probeCooldownSeconds", label: "限流或服务故障冷却", group: "verification", min: 15, max: 900, unit: "秒", value: 60 },
+  { key: "questionIntervalSeconds", label: "单问题检测频率", hint: "从上次完成计时，默认 60 秒；工作中也使用此间隔，每轮仅请求一次，仍受每日额度和限流冷却限制", group: "verification", min: 5, max: 3600, unit: "秒", value: 60 },
   { key: "idleGraceSeconds", label: "工作结束后的让行时间", group: "verification", min: 0, max: 60, unit: "秒", value: 3 },
   ...[
     ["focusOpacity", "专注背景不透明度", 94, 40], ["popoverOpacity", "扩展详情不透明度", 98, 40],

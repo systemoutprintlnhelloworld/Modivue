@@ -26,6 +26,7 @@ const defaultSettings = {
   probeIntervalMinutes: 1,
   verificationIntervalMinutes: 15,
   verificationRequestDelaySeconds: 2,
+  questionIntervalSeconds: 60,
   probeDailyLimit: 256,
   verificationSamples: 50,
   probeMaxOutputTokens: 16,
@@ -237,6 +238,7 @@ async function persistSettingsPatch(patch) {
     const result = await fetchJson("/api/settings", { method: "PATCH", body: JSON.stringify(patch) });
     state.settings = { ...defaultSettings, ...result.settings };
     state.probe = result.probe || state.probe;
+    if (["defaultQuestionId", "defaultHours"].some(key => Object.hasOwn(patch, key))) state.questionWindows = {};
     if (Object.hasOwn(patch, "defaultHours")) { state.rangeHours = state.settings.defaultHours; updateRangeControl(); }
     applyAppearance(); updateModels(state.summaryGroups); renderAll({ preserveSettings: true });
     for (const name of ["hlwySource", "notifications"]) {
@@ -382,7 +384,7 @@ function metricPointsForModel(model, metric, count = 80) {
     const evaluatorId = method === "juice-direction" ? "juice" : method;
     const latest = model?.verification?.measurement;
     const field = method === "hlwy-fingerprint" ? "value" : method === "meow-fingerprint" ? "declaredMatch" : method === "juice-direction" ? "directionScore" : method === "juice" ? "reportedJuice" : "jsd";
-    rows = qualityRunsForModel(model).filter((run) => inSelectedRange(run.timestamp) && run.status === "ok" && run.evaluator_id === evaluatorId
+    rows = method === "custom-question" ? model.verification.question.points : qualityRunsForModel(model).filter((run) => inSelectedRange(run.timestamp) && run.status === "ok" && run.evaluator_id === evaluatorId
       && run.evaluator_version === latest?.evaluator_version
       && run.metadata?.conditionsId === latest?.metadata?.conditionsId && Number.isFinite(run.metadata?.[field]))
       .map((run) => ({ timestamp: run.timestamp, value: run.metadata[field] }));
@@ -414,7 +416,8 @@ function qualityValue(model) {
   const activity = verificationActivity(model);
   if (activity.busy) return activity.label;
   const numeric = model?.verification?.numeric;
-  return numeric ? `${numeric.value.toFixed(["juice", "juice-direction"].includes(numeric.method) ? 1 : 2)}${numeric.unit}` : activity.label;
+  if (model?.verification?.question?.compared) return `${model.verification.question.matched}/${model.verification.question.compared}`;
+  return numeric ? `${numeric.value.toFixed(numeric.method === "custom-question" ? 0 : ["juice", "juice-direction"].includes(numeric.method) ? 1 : 2)}${numeric.unit}` : activity.label;
 }
 
 function verificationActivity(model) {
@@ -469,6 +472,7 @@ function metricHealth(metric, value) {
 function verificationScore(model) {
   const numeric = model?.verification?.numeric;
   if (!numeric || !Number.isFinite(numeric.value)) return null;
+  if (numeric.method === "custom-question") return model.verification.question.ratio * 100;
   if (numeric.unit === "%") return numeric.value;
   if (numeric.method === "probability-probe") return (1 - clamp(numeric.value, 0, 1)) * 100;
   return null;
@@ -488,8 +492,8 @@ function verificationHealth(model) {
 function qualityChartOptions(model) {
   const numeric = model?.verification?.numeric;
   return { minimum: 0, maximum: numeric?.unit === "%" ? 100
-    : numeric?.method === "juice" ? Math.max(1, model.qualityStats?.max || numeric.value) * 1.1 : 1,
-    tickLabel: (value) => `${value.toFixed(numeric?.method === "juice" || numeric?.method === "juice-direction" ? 0 : 2)}${numeric?.unit || ""}`,
+    : numeric?.method === "custom-question" ? Math.max(1, numeric.value) : numeric?.method === "juice" ? Math.max(1, model.qualityStats?.max || numeric.value) * 1.1 : 1,
+    tickLabel: (value) => `${value.toFixed(["juice", "juice-direction", "custom-question"].includes(numeric?.method) ? 0 : 2)}${numeric?.unit || ""}`,
     label: `${numeric?.label || "模型核验"}历史` };
 }
 
@@ -583,7 +587,9 @@ function updateRangeControl() {
 function applyQualityRuns() {
   state.models.forEach((model) => {
     const runs = qualityRunsForModel(model);
-    model.verification = summarizeVerification(runs, state.settings.evaluatorId);
+    model.verification = summarizeVerification(runs, state.settings.evaluatorId, { question: state.questions.find(item => item.id === state.settings.defaultQuestionId), target: model,
+      questionSummary: state.questionWindows?.[modelIdentity(model)],
+      since: state.rangeHours ? Date.now() - state.rangeHours * 3600000 : 0 });
     const scores = metricPointsForModel(model, "quality", Infinity).map((point) => point.value);
     model.quality = model.verification.numeric?.value ?? null;
     model.qualityStats = scores.length ? { count: scores.length, min: Math.min(...scores), max: Math.max(...scores) } : {};
@@ -699,6 +705,10 @@ function modelLogo(model, className = "") {
 function providerGlyph(model) { return modelLogo(model); }
 
 function qualityRingStats(model) {
+  if (model?.verification?.question) {
+    const values = model.verification.question.points.map(point => point.ratio);
+    return values.length ? { min: Math.min(...values), max: Math.max(...values) } : {};
+  }
   const stats = model?.qualityStats;
   if (!stats || !Number.isFinite(stats.min) || !Number.isFinite(stats.max)) return { min: null, max: null };
   if (model?.verification?.numeric?.method === "probability-probe") return { min: (1 - stats.max) * 100, max: (1 - stats.min) * 100 };
@@ -710,7 +720,7 @@ function metricRange(model, metric) {
   if (!Number.isFinite(stats?.min) || !Number.isFinite(stats?.max)) return metric === "quality" ? "未评测" : "未提供";
   if (metric === "cache") return `${formatPercent(stats.min)}–${formatPercent(stats.max)}`;
   if (metric === "ttft") return `${formatDuration(stats.min)}–${formatDuration(stats.max)}`;
-  const digits = ["juice", "juice-direction"].includes(model.verification?.numeric?.method) ? 0 : 2;
+  const digits = ["juice", "juice-direction", "custom-question"].includes(model.verification?.numeric?.method) ? 0 : 2;
   return `${stats.min.toFixed(digits)}–${stats.max.toFixed(digits)}${model.verification?.numeric?.unit || ""}`;
 }
 
@@ -1158,7 +1168,7 @@ function renderMetrics() {
   const ttft = model?.ttftMs;
   const numeric = model?.verification?.numeric;
   const activity = verificationActivity(model);
-  renderMetricCard(".quality-card", activity.busy ? `<span class="spin">↻</span> ${escapeHtml(activity.label)}` : numeric ? `${numeric.value.toFixed(["juice", "juice-direction"].includes(numeric.method) ? 1 : 2)}<span class="unit">${numeric.unit}</span>` : escapeHtml(activity.label), activity.busy ? activity.label : model?.verification?.label || activity.label, model?.verification?.verdict === "consistent" ? "online" : "pending",
+  renderMetricCard(".quality-card", activity.busy ? `<span class="spin">↻</span> ${escapeHtml(activity.label)}` : numeric ? `${numeric.value.toFixed(numeric.method === "custom-question" ? 0 : ["juice", "juice-direction"].includes(numeric.method) ? 1 : 2)}<span class="unit">${numeric.unit}</span>` : escapeHtml(activity.label), activity.busy ? activity.label : model?.verification?.label || activity.label, model?.verification?.verdict === "consistent" ? "online" : "pending",
     model?.verification?.measuredAt ? `${model.verification.stale ? "上次有效" : "采样于"} ${formatTimestamp(model.verification.measuredAt, true)}` : "暂无有效核验",
     activity.busy || !numeric ? activity.detail : model?.verification?.stale ? "最新检测未完成" : model?.verification?.directedModel ? `指向 ${model.verification.directedModel}` : model?.verification?.label);
   $(".quality-card .metric-source").textContent = numeric?.label || "候选模型分布 · Juice 证据";
@@ -1408,6 +1418,7 @@ function verificationCost(runs) {
 function verificationPlan(model) {
   const target = state.probe?.targets?.find(target => target.id === model?.id);
   const method = state.settings.evaluatorId;
+  if (method === "bazaarlink-probe") return { external: true, label: "官方远程综合检测；按当前四元组单独启用，可持续运行并保存逐题报告。" };
   if (method === "ztest") return { external: true, label: "在 Ztest 完成人机验证与多探针检测，然后导入报告保存到当前四元组。" };
   const plan = (samples, maxAttempts = samples, note = "") => ({ samples, maxAttempts,
     label: `计划 ${samples} 次有效回答 · 最多 ${maxAttempts} 次请求${note ? ` · ${note}` : ""}` });
@@ -1465,6 +1476,65 @@ async function importZtestReport(form) {
   finally { button.disabled = false; }
 }
 
+function bazaarlinkView(model) {
+  const job = state.bazaarlink?.jobs?.find(job => job.target.id === model?.id);
+  const active = ["starting", "running", "polling-error", "stopping"].includes(job?.status);
+  const labels = { idle: "已配置", starting: "正在启动", running: "正在检测", "polling-error": "进度读取重试中", stopping: "正在停止",
+    completed: "检测完成", stopped: "已停止", cancelled: "已停止", failed: "检测失败", "start-unknown": "启动状态待确认" };
+  return `<section class="bazaarlink-panel"><h3>BazaarLink Probe 综合检测</h3>
+    <p>使用官网完整检测链路。检测 token 由当前渠道 Key 的额度计收，BazaarLink 不另收检测费。BYOK 默认回退到平台线路时按平台价格收费；严格模式可关闭回退。</p>
+    <p>远程检测的探针请求数由官网决定，每日轮数上限与本地请求预算分别计算；不会自动沿用本地推理档位。持续检测受主动探测开关控制。</p>
+    <a href="https://bazaarlink.ai/probe" target="_blank" rel="noreferrer">打开 BazaarLink Probe</a>
+    <form id="bazaarlink-form" data-target-id="${escapeHtml(model?.id || "")}" class="question-form"><label>检测模式<select name="mode"><option value="quick" ${job?.mode === "quick" ? "selected" : ""}>快速身份探针</option><option value="full" ${job?.mode === "full" ? "selected" : ""}>综合检测</option><option value="context" ${job?.mode === "context" ? "selected" : ""}>综合检测与上下文测试</option></select></label>
+    <label>持续检测间隔（分钟）<input name="intervalMinutes" type="number" min="15" max="10080" value="${job?.intervalMinutes || 60}" required></label>
+    <label>每日最多检测轮数<input name="dailyRuns" type="number" min="1" max="20" value="${job?.dailyRuns || 2}" required></label>
+    <label><input name="continuous" type="checkbox" ${job?.continuous ? "checked" : ""}>启用持续检测</label>
+    <label><input name="consent" type="checkbox" required>确认向 BazaarLink 发送当前渠道 API Key，消耗目标额度，并公开保存检测报告</label>
+    <button type="submit" class="primary-button" ${active || !model ? "disabled" : ""}>保存当前目标检测计划</button></form>
+    <div class="question-actions"><button type="button" data-action="bazaarlink-start" class="primary-button" ${!job || active ? "disabled" : ""}>开始远程检测</button><button type="button" data-action="bazaarlink-stop" class="text-button" ${!job ? "disabled" : ""}>停止并关闭持续检测</button></div>
+    <p role="status">${escapeHtml(labels[job?.status] || "尚未启用当前目标")}${job?.progress ? ` · ${job.progress.completed}/${job.progress.total || "--"} 项` : ""}${job?.error ? ` · ${escapeHtml(job.error)}` : ""}${job?.nextRunAt ? ` · 下次 ${escapeHtml(formatTimestamp(job.nextRunAt, true))}` : ""}</p>
+    ${job?.runId ? `<p>runId: <code>${escapeHtml(job.runId)}</code></p>` : ""}
+    <form id="bazaarlink-import-form" class="question-form"><label>导入官网报告 JSON<input name="report" type="file" accept=".json,application/json" required></label><label><input name="confirmTarget" type="checkbox" required>确认报告属于当前模型、渠道、Key 分组和推理档位</label><button class="text-button" type="submit">导入并保存报告</button></form></section>`;
+}
+
+async function saveBazaarlinkPlan(form) {
+  const values = new FormData(form);
+  try {
+    state.bazaarlink = await fetchJson("/api/quality/bazaarlink", { method: "POST", body: JSON.stringify({ action: "configure", targetId: selectedModel()?.id,
+      mode: values.get("mode"), intervalMinutes: Number(values.get("intervalMinutes")), dailyRuns: Number(values.get("dailyRuns")),
+      continuous: values.has("continuous"), consent: values.has("consent") }) });
+    form.remove(); showToast("当前目标检测计划已保存"); renderActiveView();
+  } catch (error) { showToast(error.message, "error"); }
+}
+
+async function bazaarlinkAction(action) {
+  try {
+    state.bazaarlink = await fetchJson("/api/quality/bazaarlink", { method: "POST", body: JSON.stringify({ action, targetId: selectedModel()?.id }) });
+    renderActiveView();
+  } catch (error) { showToast(error.message, "error"); }
+}
+
+async function importBazaarlink(form) {
+  try {
+    const file = form.elements.report.files[0];
+    if (!file || file.size > 1024 * 1024) throw new Error("请选择不超过 1 MB 的报告 JSON");
+    state.bazaarlink = await fetchJson("/api/quality/bazaarlink", { method: "POST", body: JSON.stringify({ action: "import", targetId: selectedModel()?.id,
+      confirmTarget: form.elements.confirmTarget.checked, report: JSON.parse(await file.text()) }) });
+    await refreshObservations({ quiet: true }); showToast("报告已保存");
+  } catch (error) { showToast(error.message, "error"); }
+}
+
+function bazaarlinkReport(metadata) {
+  const report = metadata.externalReport;
+  if (!report) return "";
+  const assessment = report.identityAssessment || {};
+  return `<section class="distribution-report"><header><h3>BazaarLink 逐题结果</h3><a href="${escapeHtml(metadata.source)}" target="_blank" rel="noreferrer">查看源报告</a></header>
+    <p>官方判定：${escapeHtml(assessment.verdict?.status || assessment.status || "证据不足")} · ${escapeHtml(assessment.verdict?.trueModel || assessment.predictedFamily || "")}</p>
+    <p>输入 ${formatInteger(report.totalInputTokens)} / 输出 ${formatInteger(report.totalOutputTokens)} token · 费用未知</p>
+    ${(assessment.riskFlags || []).map(flag => `<p class="report-notice">${escapeHtml(flag)}</p>`).join("")}
+    ${report.items.map(item => `<details data-detail-key="bazaarlink-${escapeHtml(metadata.reportId)}-${escapeHtml(item.probeId)}"><summary>${escapeHtml(item.label || item.probeId)} · ${escapeHtml(item.group || "")} · ${item.passed === true ? "通过" : item.passed === false ? "未通过" : escapeHtml(item.status || "待判定")}</summary><p>${escapeHtml(item.error || item.passReason || "")}</p><pre>${escapeHtml(item.response || "")}</pre><p>TTFT ${formatDuration(item.ttftMs)} · ${item.tps ?? "--"} token/s</p></details>`).join("")}</section>`;
+}
+
 function qualityView() {
   const model = selectedModel();
   const verification = model?.verification || summarizeVerification([], state.settings.evaluatorId);
@@ -1474,13 +1544,15 @@ function qualityView() {
   const plan = verificationPlan(model);
   const action = `<div class="verification-actions"><button class="text-button" data-action="export-quality" ${!verification.methods.length ? "disabled" : ""}>导出报告</button><button class="primary-button" ${plan.external ? "hidden" : ""} data-action="run-quality" ${activity.busy || !activity.target || plan.blocked ? "disabled" : ""}><span>▶</span>${activity.busy ? activity.label : plan.blocked ? "需配置核验条件" : activity.target?.pauseReason ? "排队核验" : "立即核验"}</button></div>`;
   const points = metricPoints("quality");
+  const questionSummary = verification.question;
   return `<div class="view-stack"><article class="panel">${viewHeader("模型核验", `${model?.label || "当前模型"} · ${method} · ${verification.label}`, action)}
     <label class="report-picker">核验方式<select id="quality-method-select">${state.evaluators.map(item => `<option value="${item.id}" ${item.id === state.settings.evaluatorId ? "selected" : ""}>${escapeHtml(item.label)}</option>`).join("")}</select></label>
     ${state.settings.evaluatorId === "custom-question" ? `<label class="report-picker">当前题目<select id="quality-question-select">${state.questions.map(question => `<option value="${escapeHtml(question.id)}" ${question.id === state.settings.defaultQuestionId ? "selected" : ""}>${escapeHtml(question.title)}</option>`).join("")}</select></label>` : ""}
     ${verification.stale ? `<p class="report-notice">环形指标保留 ${escapeHtml(formatTimestamp(verification.measuredAt, true))} 的有效结果；最新一次检测未完成，详情如下。</p>` : ""}
     ${verificationStatusMarkup(model)}
     <p class="verification-plan" role="status">${escapeHtml(plan.label)}</p>
-    ${plan.external ? ztestView(model) : ""}
+    ${questionSummary ? `<p class="question-window-summary"><strong>${questionSummary.matched} / ${questionSummary.compared} 次答案匹配</strong> · ${questionSummary.ratio === null ? "--" : (questionSummary.ratio * 100).toFixed(1) + "%"} · ${escapeHtml(formatRange())} · 总请求 ${questionSummary.total} · 失败 ${questionSummary.errors}${questionSummary.reviewed ? ` · ${questionSummary.reviewed} 次待人工复核` : ""}</p>` : ""}
+    ${plan.external ? state.settings.evaluatorId === "bazaarlink-probe" ? bazaarlinkView(model) : ztestView(model) : ""}
     <h3>${escapeHtml(qualityChartOptions(model).label)}</h3><div class="trend-chart">${points.length ? chartSvg([{ points, color: colors.mint }], qualityChartOptions(model)) : '<div class="empty-state">当前范围尚无有效核验趋势</div>'}</div>
     ${selected ? qualityRunReport(selected) : '<div class="empty-state">所选方案尚未核验</div>'}
     </article>${qualityHistoryView(model)}</div>`;
@@ -1510,7 +1582,7 @@ function qualityRunReport(run, scope = "selected") {
     const label = cell.prompt || cell.id || "探针案例";
     return `<div class="verification-case"><span title="${escapeHtml(label)}">${escapeHtml(label)}</span><strong>${valid}${planned === null ? "" : ` / ${planned}`}</strong><small>${attempts === null ? "" : `${attempts} 次尝试`}</small></div>`;
   }).join("");
-  const external = metadata.externalReport;
+  const external = run.evaluator_id === "ztest" ? metadata.externalReport : null;
   const externalSummary = external ? `<section class="distribution-report"><header><h3>Ztest 探针明细</h3><a href="${escapeHtml(metadata.source)}" target="_blank" rel="noreferrer">查看源报告</a></header><p>${escapeHtml(external.endpoint_masked || "")} · ${escapeHtml(external.model?.display_name || "")} · ${escapeHtml(external.profile || "")}</p>${external.probe_results.map(probe => `<div class="external-probe"><strong>${escapeHtml(probe.probe_name || probe.probe_code)}</strong><span>${escapeHtml(probe.status)}</span><span>${probe.score ?? "--"}</span><span>${formatDuration(probe.latency_ms)}</span></div>`).join("")}</section>` : "";
   const presentationRecheck = metadata.question?.match === "exact" && metadata.matched !== comparableAnswer(metadata.actual, metadata.question.answer);
   const verdict = legacy ? "旧版判定无效" : escapeHtml(verificationRunLabel(run));
@@ -1529,7 +1601,7 @@ function qualityRunReport(run, scope = "selected") {
     ${metadata.stopReason ? `<p class="report-notice">${escapeHtml(metadata.stopReason)}</p>` : ""}
     ${Number.isFinite(metadata.reportedJuice) ? `<p>Juice 观测 ${metadata.reportedJuice} · 参考范围 ${metadata.expectedRange ? `${metadata.expectedRange.min}–${metadata.expectedRange.max}` : "未校准"}</p>` : ""}
     ${caseSummary ? `<section class="verification-cases"><header><h3>采样案例进度</h3><span>每个案例的有效样本与尝试次数</span></header>${caseSummary}</section>` : ""}
-    ${externalSummary}${distributionReport(metadata)}${!legacy && ["hlwy-fingerprint", "meow-fingerprint"].includes(run.evaluator_id) ? modelDirectionReport({ ...run, metadata }) : run.evaluator_id === "juice" ? juiceDirectionReport(run) : ""}${observations}
+    ${externalSummary}${run.evaluator_id === "bazaarlink-probe" ? bazaarlinkReport(metadata) : ""}${distributionReport(metadata)}${!legacy && ["hlwy-fingerprint", "meow-fingerprint"].includes(run.evaluator_id) ? modelDirectionReport({ ...run, metadata }) : run.evaluator_id === "juice" ? juiceDirectionReport(run) : ""}${observations}
     ${metadata.failures?.length ? `<details class="report-failures" data-detail-key="failures-${detailKey}"><summary>失败尝试 ${metadata.failures.length} 次</summary>${metadata.failures.map((failure) => `<p>#${failure.attempt} · ${escapeHtml(failure.cellId)} · ${escapeHtml(failure.error)}</p>`).join("")}</details>` : ""}
     ${requests.length ? `<details class="report-requests" data-detail-key="requests-${detailKey}"><summary>请求明细 ${requests.length} 次</summary><div class="report-request-head"><span>时间</span><span>耗时</span><span>费用</span><span>状态</span></div>${requests.map((request) => `<div class="report-request-row"><time>${escapeHtml(formatTimestamp(request.timestamp))}</time><span>${formatDuration(request.durationMs)}</span><span>${formatCost(request.costUsd)}${request.costStatus === "estimated" ? "（估算）" : ""}</span><span>${escapeHtml(request.error || (request.status === "ok" ? "完成" : request.status || "未记录"))}</span></div>`).join("")}</details>` : ""}
     <details data-detail-key="raw-${detailKey}"><summary>原始 JSON 与采样条件</summary><pre>${escapeHtml(JSON.stringify(run, null, 2))}</pre></details></section>`;
@@ -1631,7 +1703,7 @@ function updateSettingsVisibility() {
   const query = state.customizationQuery.trim().toLocaleLowerCase();
   const method = $("#settings-form [name=evaluatorId]")?.value || state.settings.evaluatorId;
   const methods = { meowTier: ["meow-fingerprint"], verificationSamples: ["hlwy-fingerprint"],
-    hlwySource: ["hlwy-fingerprint"], juiceMode: ["juice"], defaultQuestionId: ["custom-question"] };
+    hlwySource: ["hlwy-fingerprint"], juiceMode: ["juice"], defaultQuestionId: ["custom-question"], questionIntervalSeconds: ["custom-question"] };
   const eligible = node => !node.dataset.methods || node.dataset.methods.split(" ").includes(method);
   Object.entries(methods).forEach(([name, values]) => {
     const input = $(`#view-content [name="${name}"]`);
@@ -1787,12 +1859,18 @@ async function importCalibration(form) {
 
 function renderActiveView() {
   const viewContent = $("#view-content");
+  const remoteForm = $("#bazaarlink-form");
   const openDetails = new Map($$("details[data-detail-key]", viewContent)
     .map((details) => [details.dataset.detailKey, details.open]));
   viewContent.hidden = state.view === "overview";
   if (state.view === "overview") { viewContent.innerHTML = ""; return; }
   const views = { models: modelsView, routes: routesView, cache: cacheView, ttft: ttftView, quality: qualityView, alerts: alertsView, logs: logsView, settings: settingsView };
   viewContent.innerHTML = (views[state.view] || modelsView)();
+  const nextRemoteForm = $("#bazaarlink-form");
+  if (remoteForm && nextRemoteForm?.dataset.targetId === remoteForm.dataset.targetId) {
+    $("button[type=submit]", remoteForm).disabled = $("button[type=submit]", nextRemoteForm).disabled;
+    nextRemoteForm.replaceWith(remoteForm);
+  }
   for (const [key, open] of openDetails) {
     $$(`details[data-detail-key="${CSS.escape(key)}"]`, viewContent).forEach((details) => { details.open = open; });
   }
@@ -1814,7 +1892,7 @@ function renderActiveView() {
     const form = $("#settings-form");
     const evaluatorRow = document.createElement("div");
     evaluatorRow.className = "setting-row";
-    const evaluatorRequirement = { ztest: "网站检测与报告导入 · 不参与后台自动核验", juice: "单次原始观测；可选可信校准对照", "probability-probe": "需导入同条件分布校准", "hlwy-fingerprint": "使用公共分布；可选可信 API 对照", "meow-fingerprint": "公开 benchmark；协议需匹配", "custom-question": "单问题答案比对" };
+    const evaluatorRequirement = { "bazaarlink-probe": "官方远程检测 · 逐目标启用并可持续运行", ztest: "网站检测与报告导入 · 不参与后台自动核验", juice: "单次原始观测；可选可信校准对照", "probability-probe": "需导入同条件分布校准", "hlwy-fingerprint": "使用公共分布；可选可信 API 对照", "meow-fingerprint": "公开 benchmark；协议需匹配", "custom-question": "单问题答案比对" };
     evaluatorRow.innerHTML = `<div><strong>默认核验方案</strong><small>主界面中心指标与主动核验使用此方案；${escapeHtml(evaluatorRequirement[state.settings.evaluatorId] || "运行时会显示具体前置条件")}</small></div><select class="setting-control" name="evaluatorId">${state.evaluators.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.label)} · ${escapeHtml(evaluatorRequirement[item.id] || "运行时检查条件")}</option>`).join("")}</select>`;
     $(".view-columns article:first-child", form).append(evaluatorRow);
     $(".view-columns article:last-child", form).insertAdjacentHTML("beforeend", `<div class="setting-row"><div><strong>HLWY 每轮样本数</strong><small>当前 HLWY 运行至少需要 50 次有效采样；该约束不阻止保存其他设置。</small></div><label class="number-control"><input type="number" name="verificationSamples" min="1" max="500" step="1" value="${state.settings.verificationSamples}"><span>次</span></label></div>`);
@@ -1867,6 +1945,7 @@ async function refreshObservations({ quiet = false } = {}) {
   const failures = [summaryResult, qualityResult, eventResult, logResult].filter((result) => result.status === "rejected");
   if (qualityResult.status === "fulfilled") {
     state.qualityRuns = qualityResult.value.history || qualityResult.value.runs || [];
+    state.questionWindows = qualityResult.value.questionWindows || {};
   }
   state.summaryGroups = summaryResult.status === "fulfilled" ? summaryResult.value.groups || [] : [];
   updateModels(state.summaryGroups);
@@ -2135,6 +2214,7 @@ function bindEvents() {
         showToast(state.publicBaselines.error || "公共基准已更新", state.publicBaselines.error ? "warning" : "success");
       } catch (error) { button.disabled = false; showToast(`更新失败：${error.message}`, "error"); }
     }
+    if (action === "bazaarlink-start" || action === "bazaarlink-stop") { await bazaarlinkAction(action.split("-")[1]); return; }
     if (action === "question-verification") { setView("quality"); return; }
     if (action === "run-quality") await runQuality();
     if (action === "export-quality") {
@@ -2150,6 +2230,8 @@ function bindEvents() {
     if (action === "export-logs") window.location.assign(`/api/samples/export?${queryString(globalQuery())}`);
   });
   $("#view-content").addEventListener("submit", async (event) => {
+    if (event.target.id === "bazaarlink-form") { event.preventDefault(); await saveBazaarlinkPlan(event.target); }
+    if (event.target.id === "bazaarlink-import-form") { event.preventDefault(); await importBazaarlink(event.target); }
     if (event.target.id === "ztest-import-form") { event.preventDefault(); await importZtestReport(event.target); }
     if (event.target.id === "settings-form") { event.preventDefault(); await saveSettings(event.target); }
     if (event.target.id === "calibration-form") { event.preventDefault(); await importCalibration(event.target); }
@@ -2169,7 +2251,8 @@ function bindEvents() {
       const key = event.target.id === "quality-method-select" ? "evaluatorId" : "defaultQuestionId";
       try {
         const result = await fetchJson("/api/settings", { method: "PATCH", body: JSON.stringify({ [key]: event.target.value }) });
-        state.settings = { ...state.settings, ...result.settings }; updateModels(state.summaryGroups); renderAll();
+        state.settings = { ...state.settings, ...result.settings }; state.questionWindows = {};
+        await refreshObservations({ quiet: true });
       } catch (error) { showToast(error.message, "error"); }
       return;
     }
@@ -2239,6 +2322,7 @@ async function saveCustomization(form) {
 
 function applyAppearance() {
   setLocale(state.settings.locale);
+  desktopMessage({ type: "locale", locale: currentLocale() });
   const root = document.body;
   const preset = state.settings.themePreset || "system";
   const themes = {
@@ -2256,7 +2340,7 @@ function applyAppearance() {
   for (const [variable, index] of [["--bg-deep", 0], ["--panel-strong", 1], ["--blue", 3]]) {
     if (themes[preset]) root.style.setProperty(variable, themes[preset][index]); else root.style.removeProperty(variable);
   }
-  if (preset !== "system") root.classList.toggle("light", preset === "light");
+  root.classList.toggle("light", preset === "light" || preset === "system" && matchMedia("(prefers-color-scheme: light)").matches);
   root.dataset.themePreset = preset;
   const island = $("#quick-island");
   island.style.setProperty("--rail-bg", state.settings.normalBackground);
@@ -2265,6 +2349,10 @@ function applyAppearance() {
   if (Number.isFinite(state.settings.panelRadius)) root.style.setProperty("--panel-radius", `${state.settings.panelRadius}px`);
   root.style.setProperty("--island-opacity", `${(Number(state.settings.islandOpacity) || 94) / 100}`);
   root.style.setProperty("--island-duration", `${Number(state.settings.animationDurationMs) || 420}ms`);
+  root.style.setProperty("--font-scale", String((Number(state.settings.fontScale) || 100) / 100));
+  if (state.settings.customTextColor) root.style.setProperty("--text", state.settings.textColor);
+  root.style.colorScheme = root.classList.contains("light") ? "light" : "dark";
+  if (desktopMode === "main") desktopMessage({ type: "appearance", dark: !root.classList.contains("light"), background: getComputedStyle(root).getPropertyValue("--bg").trim() });
   for (const [key, variable] of [["focusOpacity", "--focus-opacity"], ["popoverOpacity", "--popover-opacity"], ["panelOpacity", "--panel-opacity"], ["compactBackingOpacity", "--compact-backing-opacity"], ["compactRingOpacity", "--compact-ring-opacity"]]) {
     root.style.setProperty(variable, String(state.settings[key] / 100));
   }
@@ -2370,7 +2458,10 @@ function startTour() {
 }
 
 async function bootstrap() {
-  const storedTheme = localStorage.getItem("modivue-theme"); const light = storedTheme === "light" || storedTheme === null && matchMedia("(prefers-color-scheme: light)").matches;
+  const systemTheme = matchMedia("(prefers-color-scheme: light)");
+  const light = systemTheme.matches;
+  systemTheme.addEventListener("change", () => { if (state.settings.themePreset === "system") applyAppearance(); });
+  window.addEventListener("languagechange", () => { if (state.settings.locale === "system") setLocale("system"); });
   document.body.classList.toggle("light", light);
   if (desktopMode === "island") document.body.dataset.islandMode = "compact";
   if (desktopMode !== "island") document.body.classList.add("window-focused");
@@ -2415,9 +2506,12 @@ async function bootstrap() {
     try {
       const wasRunning = state.probe?.verification?.length > 0;
       state.probe = await fetchJson("/api/probe/state");
+      const previousRemote = JSON.stringify(state.bazaarlink?.jobs?.map(job => job.savedRunId));
+      state.bazaarlink = await fetchJson("/api/quality/bazaarlink");
+      if (previousRemote !== JSON.stringify(state.bazaarlink.jobs.map(job => job.savedRunId))) await refreshObservations({ quiet: true });
       if (state.view === "settings") await refreshTrustedCalibration();
       renderMetrics(); renderModelSelectors();
-      if (state.view === "quality") renderActiveView();
+      if (state.view === "quality" && !document.activeElement?.closest("#bazaarlink-form")) renderActiveView();
       if (islandState.mode === "focus" && lastIslandPointer) showModelHistoryPopover(lastIslandPointer, state.models.find(model => model.id === islandState.modelId));
       if (wasRunning && !state.probe.verification?.length) await refreshObservations({ quiet: true });
     } catch {} finally { pollingVerification = false; }

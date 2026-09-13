@@ -1,7 +1,8 @@
 $ErrorActionPreference = 'Stop'
 $project = Split-Path $PSScriptRoot -Parent
 $destination = Join-Path $project 'dist/Modivue-windows-x64'
-dotnet publish (Join-Path $project 'desktop/windows/Modivue.csproj') -c Release -r win-x64 --self-contained true -o $destination
+$version = (Get-Content (Join-Path $project 'package.json') -Raw | ConvertFrom-Json).version
+dotnet publish (Join-Path $project 'desktop/windows/Modivue.csproj') -c Release -r win-x64 --self-contained true "-p:Version=$version" -o $destination
 if ($LASTEXITCODE -ne 0) { throw 'Windows host build failed' }
 $app = Join-Path $destination 'app'
 New-Item -ItemType Directory -Force -Path $app, (Join-Path $destination 'runtime') | Out-Null

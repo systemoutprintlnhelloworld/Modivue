@@ -1,3 +1,4 @@
+import { questionConditionsId } from "./quality-summary.js";
 import { registerEvaluator } from "./quality.mjs";
 import { listQuestions, getSettings } from "./storage.mjs";
 import { comparableAnswer } from "./answer-comparison.js";
@@ -9,7 +10,7 @@ registerEvaluator({ id: "custom-question", label: "单问题测试", version: "1
     if (!question) throw new TypeError("题目已删除，请重新选择");
     input.requireBudget?.(1);
     input.onProgress?.({ completed: 0, total: 1 });
-    const conditionsId = JSON.stringify(["question:v1", question.id, question.prompt, question.answer, question.match]);
+    const conditionsId = questionConditionsId(question);
     const prompt = question.match === "exact" ? `${question.prompt}\n仅输出最终答案，不附加解释。` : question.prompt;
     const response = await input.request(prompt, { maxOutputTokens: question.match === "review" ? 4096 : 512, conditionsId });
     const actual = response.trim();

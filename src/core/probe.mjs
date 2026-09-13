@@ -3,12 +3,15 @@ import { credentialGroup, normalizeBaseUrl, observationKey, upstreamEndpoint } f
 import { probeAgentConnections } from "./agents.mjs";
 import { catalogState } from "./catalog.mjs";
 import { matchModelName } from "./model-match.js";
-import { getSettings, probeUsageToday, saveSample, saveQualityRun, listQualityRuns } from "./storage.mjs";
+import { getSettings, listQuestions, probeUsageToday, saveSample, saveQualityRun, listQualityRuns } from "./storage.mjs";
+import { questionConditionsId, verificationVersions } from "./quality-summary.js";
+import "./evaluator-question.mjs";
 import { listEvaluators, runEvaluator } from "./quality.mjs";
 import "./evaluator-coding.mjs";
 import "./evaluator-hlwy.mjs";
 import "./evaluator-meow.mjs";
 import "./evaluator-ztest.mjs";
+import { bazaarlinkState } from "./evaluator-bazaarlink.mjs";
 import { createHash } from "node:crypto";
 import { verificationStream } from "./verification-stream.mjs";
 import { setTimeout as delay } from "node:timers/promises";
@@ -95,7 +98,7 @@ export async function runProbe(target, options = {}) {
       && normalizeBaseUrl(session.baseUrl) === normalizeBaseUrl(target.baseUrl) && session.keyGroup === target.keyGroup);
     const routeKey = probeRouteKey(target);
     if (working && target.probeStrategy && target.probeStrategy !== "idle") {
-      const remaining = (lastProbeRequests.get(routeKey) || 0) + getSettings().workingProbeDelaySeconds * 1000 - Date.now();
+      const remaining = (lastProbeRequests.get(routeKey) || 0) + (conditionsId?.startsWith('["question:v1"') ? getSettings().questionIntervalSeconds : getSettings().workingProbeDelaySeconds) * 1000 - Date.now();
       if (remaining > 0) { await delay(remaining); options.checkContinue?.(); connections = await probeAgentConnections(undefined, undefined, { fresh: true }); }
     }
     const paused = probePauseReason(target, connections);
@@ -173,15 +176,18 @@ export async function requestTargetVerification(target, evaluatorId, options = {
   }
   return { status: "queued", targetId: target.id, rationale: target.pauseReason || "等待当前核验结束" };
 }
-export function verificationDue(target, evaluatorId, runs, intervalMinutes, now = Date.now()) {
-  const matching = runs.filter((run) => run.evaluator_id === evaluatorId && modelIdentity(run) === modelIdentity(target))
+export function verificationDue(target, evaluatorId, runs, intervalMinutes, now = Date.now(), questionId = null) {
+  const question = evaluatorId === "custom-question" ? listQuestions().find(item => item.id === (questionId || getSettings().defaultQuestionId)) : null;
+  const matching = runs.filter((run) => run.evaluator_id === evaluatorId && modelIdentity(run) === modelIdentity(target)
+    && (evaluatorId !== "custom-question" || question && run.evaluator_version === verificationVersions[evaluatorId] && run.metadata?.conditionsId === questionConditionsId(question)))
     .sort((a, b) => (Date.parse(b.timestamp) || 0) - (Date.parse(a.timestamp) || 0));
   const latest = matching[0];
   // A target can go idle during a run. Keep its partial observations, then
   // resume on the next scheduler tick instead of waiting a full interval.
   if (latest?.status === "paused") return true;
   const previous = Date.parse(latest?.timestamp) || 0;
-  return !previous || now - previous >= Math.max(15, intervalMinutes) * 60000;
+  const interval = evaluatorId === "custom-question" ? (getSettings().questionIntervalSeconds || 60) * 1000 : Math.max(15, intervalMinutes) * 60000;
+  return !previous || now - previous >= interval;
 }
 
 export async function runTargetVerification(target, evaluatorId, shouldContinue = () => true, options = {}) {
@@ -255,7 +261,10 @@ export async function runTargetVerification(target, evaluatorId, shouldContinue 
       ? [...(prior.metadata.requests || []), ...samples] : samples;
     const run = { ...result, timestamp: new Date().toISOString(), protocol: target.protocol, baseUrl: target.baseUrl,
       keyGroup: target.keyGroup, observedModel: target.observedModel, canonicalModelId: target.canonicalModelId,
-      metadata: { ...result.metadata, reasoningEffort: target.reasoningEffort || null,
+      metadata: { ...result.metadata, ...(evaluatorId === "custom-question" && !result.metadata?.question ? (() => {
+        const question = listQuestions().find(item => item.id === (options.questionId || getSettings().defaultQuestionId));
+        return question ? { question, conditionsId: questionConditionsId(question) } : {};
+      })() : {}), reasoningEffort: target.reasoningEffort || null,
         requestAttempts: requests.length, requests } };
     saveQualityRun(run);
     return run;
@@ -267,7 +276,10 @@ export async function runTargetVerification(target, evaluatorId, shouldContinue 
 export async function probeState() {
   const settings = getSettings();
   const targets = (await probeTargets()).map(({ apiKey, authHeader, ...target }) => target);
-  return { enabled: settings.probeEnabled, targets, running: Boolean(batch), verification: [...pendingVerifications.values()].map(job => ({ ...job, phase: "queued" })).concat([...qualityProgress.values()]), lastRunAt, nextRunAt, usage: probeUsageToday(),
+  const remote = bazaarlinkState().jobs.filter(job => ["starting", "running", "stopping", "polling-error"].includes(job.status))
+    .map(job => ({ targetId: job.target.id, evaluatorId: "bazaarlink-probe", phase: job.status === "polling-error" ? "retrying" : "sampling", startedAt: job.startedAt,
+      completed: job.progress?.completed || 0, total: job.progress?.total || null }));
+  return { enabled: settings.probeEnabled, targets, running: Boolean(batch), verification: [...pendingVerifications.values()].map(job => ({ ...job, phase: "queued" })).concat([...qualityProgress.values()], remote), lastRunAt, nextRunAt, usage: probeUsageToday(),
     verificationIntervalMinutes: settings.verificationIntervalMinutes,
     intervalMinutes: settings.probeIntervalMinutes, dailyLimit: settings.probeDailyLimit, maxOutputTokens: settings.probeMaxOutputTokens,
     conditionsId: `probe:custom:${createHash("sha256").update(JSON.stringify({ instruction: settings.probeInstruction, maxOutputTokens: settings.probeMaxOutputTokens })).digest("hex").slice(0, 12)}` };
@@ -284,6 +296,7 @@ export async function runProbeBatch({ force = false } = {}) {
     for (const target of targets) {
       const settings = getSettings();
       const manual = [...pendingVerifications.entries()].filter(([, job]) => job.targetId === target.id);
+      if (bazaarlinkState().jobs.some(job => job.target.id === target.id && ["starting", "running", "stopping", "polling-error"].includes(job.status))) continue;
       if (!force && (!settings.probeEnabled || settings.probeStrategy === "manual") && !manual.length) continue;
       const activeWorking = target.sessionId && target.runtimeStatus === "active";
       if (target.pauseReason || activeWorking && target.probeStrategy === "idle") {
@@ -301,6 +314,13 @@ export async function runProbeBatch({ force = false } = {}) {
         continue;
       }
       try {
+        if (settings.evaluatorId === "custom-question") {
+          const runs = listQualityRuns({ hours: 0, baseUrl: target.baseUrl, keyGroup: target.keyGroup,
+            model: target.canonicalModelId || target.observedModel, reasoningEffort: target.reasoningEffort || "" });
+          if (verificationDue(target, "custom-question", runs, settings.verificationIntervalMinutes))
+            results.push(await runTargetVerification(target, "custom-question", () => force || getSettings().probeEnabled));
+          continue;
+        }
         let sample;
         let lastError;
         for (let attempt = 0; attempt < 3; attempt++) {
@@ -322,7 +342,7 @@ export async function runProbeBatch({ force = false } = {}) {
           if (!force && !getSettings().probeEnabled) break;
           const runs = listQualityRuns({ hours: 0, baseUrl: target.baseUrl, keyGroup: target.keyGroup,
             model: target.canonicalModelId || target.observedModel, reasoningEffort: target.reasoningEffort || "" });
-          if (!verificationDue(target, evaluator.id, runs, getSettings().verificationIntervalMinutes)) continue;
+          if (!verificationDue(target, evaluator.id, runs, getSettings().verificationIntervalMinutes, Date.now(), evaluator.id === "custom-question" ? getSettings().defaultQuestionId : null)) continue;
           results.push(await runTargetVerification(target, evaluator.id, () => force || getSettings().probeEnabled));
         }
       } catch (error) {
@@ -342,7 +362,7 @@ export function scheduleProbes({ immediate = false } = {}) {
   // Native UI tests inspect real sessions without sending provider requests.
   if (process.env.MODIVUE_UI_ARTIFACTS) { nextRunAt = null; return; }
   const settings = getSettings();
-  const delay = immediate ? 0 : pendingVerifications.size ? 5000 : settings.probeIntervalMinutes * 60000;
+  const delay = immediate ? 0 : pendingVerifications.size ? 5000 : settings.evaluatorId === "custom-question" ? settings.questionIntervalSeconds * 1000 : settings.probeIntervalMinutes * 60000;
   nextRunAt = settings.probeEnabled && settings.probeStrategy !== "manual" || pendingVerifications.size ? new Date(Date.now() + delay).toISOString() : null;
   if (nextRunAt) timer = setTimeout(async () => {
     try { await runProbeBatch(); } catch (error) { console.error(error.message); }
