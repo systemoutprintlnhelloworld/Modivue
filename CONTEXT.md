@@ -24,6 +24,16 @@
 | 未提供 | 上游没有返回计算该指标所需的数据。 |
 | 未评测 | 尚未按确定的方法完成质量评测。 |
 
+## 2026-09-13 18:38 — 0.2.0 发布与新增需求验收
+
+GitHub 已通过用户 Safari 登录授权完成：仓库 https://github.com/systemoutprintlnhelloworld/Modivue ，发布 https://github.com/systemoutprintlnhelloworld/Modivue/releases/tag/v0.2.0 。v0.2.0 标签代码为 28975d4；macOS arm64 和 Windows x64 ZIP 均由 Actions 构建并发布，标签流水线 34752023183 成功。已启用本地版本控制，旧文中“没有 Git”属于历史记录，不再适用。
+
+本輪新增：Spotlight 模态搜索与滚动锁；700ms 自动保存、输入验证和失败/切页保留草稿；主要界面中英文与系统语言跟随；极简拖条/设置透明；Ztest 独立外部检测报告导入和去重；Windows WebView2/托盘/拖动吸附及 CIM 进程发现；本地数据库 CLI status/watch/agents/reports。
+
+验证：Web 35/35 PASS（.ui-artifacts/1789294964971-web/result.json）；原生 95/95 PASS（.ui-artifacts/1789295628543-ui/result.json，已审阅 initial/hover）；CLI 隔离四元组 TTFT 输出 PASS（.ui-artifacts/cli-status-0.2.0.json）；JS/core/macOS 构建通过，Windows 编译 0 警告 0 错误。Web 外层等待曾在 240 秒超时，worker 随后真实完成 PASS；已将等待预算调到 360 秒，没有重复提交运行中的任务。
+
+仍未完成：Windows 原生实机与多 DPI，英文长说明全部覆盖，Cline/Roo/Continue GUI 真正请求，真实渠道同条件多批基准；Ztest 当前通过官网完成人机验证与检测后导入，不是后台无人值守。完整目标未完成，详情见 ROADMAP.md。没有新增真实付费模型请求。
+
 # 当前交接摘要（2026-09-13 04:35）
 
 最新原生完整回归 `.ui-artifacts/1789245046869-ui/result.json` 为 95/95 PASS，包含横竖拖动、释放吸附动画、缓冲条动态高度/点击、指标跨窗口四元组导航和灵动岛四步引导。修复使用事件坐标计算拖动，并在 `windowDidResize` 同步 WebView，避免吸附后视口宽度残留。透明原生宿主仍保留 420pt，不能把它误认为可见边框的最小高度。

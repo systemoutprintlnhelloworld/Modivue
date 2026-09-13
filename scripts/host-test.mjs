@@ -38,7 +38,7 @@ if (mode !== "--worker") {
   await mkdir(directory, { recursive: true });
   const command = [process.execPath, fileURLToPath(import.meta.url), task, "--worker", directory].map(quote).join(" ");
   await run("herdr", ["pane", "run", pane.pane_id, command]);
-  const deadline = Date.now() + 240000;
+  const deadline = Date.now() + 360000;
   let result;
   while (Date.now() < deadline) {
     try { result = JSON.parse(await readFile(join(directory, "result.json"), "utf8")); break; }
