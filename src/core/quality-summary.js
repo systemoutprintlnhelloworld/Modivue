@@ -1,7 +1,8 @@
 import { comparableAnswer } from "./answer-comparison.js";
-import { modelIdentity } from "./model-identity.js";
+import { qualityIdentity } from "./model-identity.js";
+import { summarizeBazaarlink } from "./bazaarlink-summary.js";
 
-export const verificationVersions = Object.freeze({ "probability-probe": "2.0.0", juice: "4.0.0", "hlwy-fingerprint": "1.1.0", "meow-fingerprint": "4.5.4-modivue.1", "custom-question": "1.0.0", ztest: "1.0.0", "bazaarlink-probe": "1.0.0", "knowledge-boundary": "1.0.0", "one-token": "1.0.0", "astra-community": "1.0.0" });
+export const verificationVersions = Object.freeze({ "probability-probe": "2.0.0", juice: "4.0.0", "hlwy-fingerprint": "1.1.0", "meow-fingerprint": "4.5.4-modivue.1", "custom-question": "1.0.0", ztest: "1.0.0", "ztest-local": "1.0.0", "bazaarlink-probe": "1.0.0", "knowledge-boundary": "1.0.0", "one-token": "1.0.0", "astra-community": "1.0.0" });
 
 export const questionConditionsId = question => JSON.stringify(["question:v1", question.id, question.prompt, question.answer, question.match]);
 
@@ -15,7 +16,7 @@ export function summarizeQuestionRuns(runs = [], { question, target, since = 0, 
   target ??= latest;
   const conditionsId = question ? questionConditionsId(question) : null;
   const selected = candidates.filter(run => conditionsId && run.metadata?.conditionsId === conditionsId
-    && modelIdentity(run) === modelIdentity(target)
+    && qualityIdentity(run, "custom-question") === qualityIdentity(target, "custom-question")
     && Date.parse(run.timestamp) >= since && Date.parse(run.timestamp) <= until);
   let matched = 0, compared = 0, reviewed = 0, errors = 0;
   const points = [];
@@ -40,10 +41,14 @@ export function verificationRunLabel(run) {
     if (/校准|基准|覆盖|凭据|配置/.test(run.rationale || "")) return "前置条件不足";
     return "方案不支持";
   }
-  if (run.status === "paused") return "检测已暂停，等待下次继续";
+  if (run.status === "paused") return run.metadata?.controlAction === "stop" ? "核验已终止" : "检测已暂停，等待下次继续";
   if (run.status !== "ok") return "核验请求失败";
   if (run.evaluator_id === "ztest") return "Ztest 第三方检测报告";
-  if (run.evaluator_id === "bazaarlink-probe") return "BazaarLink 行为检测报告";
+  if (run.evaluator_id === "ztest-local") return "Ztest 本地兼容探针 · 待人工复核";
+  if (run.evaluator_id === "bazaarlink-probe") {
+    const result = summarizeBazaarlink(run.metadata?.externalReport);
+    return `${result.label}${result.detectedModel ? ` → ${result.detectedModel}` : ""}`;
+  }
   if (run.evaluator_id === "custom-question") return run.metadata?.question?.match === "review" || run.metadata?.matched === null ? "待人工复核" : (run.metadata?.question ? comparableAnswer(run.metadata.actual, run.metadata.question.answer) : run.metadata?.matched) ? "答案匹配" : "答案不匹配";
   const metadata = run.metadata || {};
   if (run.evaluator_id === "juice" && metadata.mode === "raw") return Number.isFinite(metadata.reportedJuice) ? "原始观测 · 未校准" : "未返回有效数值";
@@ -51,8 +56,14 @@ export function verificationRunLabel(run) {
   if (metadata.verdict === "deviates") return metadata.directedModel ? `强烈指向 ${metadata.directedModel}` : "偏离申报模型基线";
   const complete = Number.isFinite(metadata.plannedSamples) && metadata.sampleCount >= metadata.plannedSamples;
   if (metadata.partialSamples || metadata.reasons?.includes("samples_incomplete")) return "采样未满额，暂不下结论";
-  if (metadata.reasons?.includes("uncalibrated")) return metadata.tier === "screen"
-    ? "筛查已完成 · 未设强指向判定线" : "缺少判定线 · 仅展示观测";
+  if (metadata.reasons?.includes("screen_preview")) return "筛查完成 · 需完整采样确认";
+  if (metadata.reasons?.includes("uncalibrated")) {
+    if (metadata.tier === "screen") {
+      const candidate = metadata.candidateDistribution?.[0]?.model;
+      return candidate ? `筛查完成 · 候选指向 ${candidate}（未校准）` : "筛查已完成 · 未设强指向判定线";
+    }
+    return "缺少判定线 · 仅展示观测";
+  }
   if (metadata.reasons?.includes("no_threshold")) return `${complete ? "采样已完成" : "已有有效样本"} · 未超过强指向阈值`;
   if (metadata.reasons?.includes("multiple_thresholds")) return "最高候选并列 · 暂无唯一指向";
   if (complete) return "采样已完成 · 暂无明确模型指向";
@@ -75,28 +86,33 @@ export function summarizeVerification(runs = [], preferredMethod = "meow-fingerp
   const measurement = measurements.get(preferredMethod);
   const stale = Boolean(measurement && measurement !== selected);
   const usable = selected?.status === "ok";
-  const verdict = usable ? selected.metadata?.verdict || "inconclusive" : "inconclusive";
-  const label = question ? `${question.matched} / ${question.compared} 次答案匹配` : verificationRunLabel(selected);
+  const bazaarlink = selectedMethod === "bazaarlink-probe" && measurement ? summarizeBazaarlink(measurement.metadata?.externalReport) : null;
+  const verdict = usable ? bazaarlink?.verdict || selected.metadata?.verdict || "inconclusive" : "inconclusive";
+  const label = question ? (question.reviewed
+    ? `已记录 ${question.reviewed} 次待人工复核`
+    : `${question.matched} / ${question.compared} 次答案匹配`) : verificationRunLabel(selected);
   const valid = (id, field) => {
     const run = measurements.get(id);
     return run?.status === "ok" && Number.isFinite(run.metadata?.[field]) ? run.metadata[field] : null;
   };
   const matchPercent = valid("hlwy-fingerprint", "value");
   const juice = valid("juice", "reportedJuice");
-  const jsd = valid(selectedMethod === "one-token" ? "one-token" : "probability-probe", "jsd");
+  const jsd = valid(["one-token", "astra-community", "meow-fingerprint"].includes(selectedMethod) ? selectedMethod : "probability-probe", "jsd");
   const declaredMatch = valid("meow-fingerprint", "declaredMatch");
   const directionScore = selectedMethod === "meow-fingerprint" ? declaredMatch : valid(selectedMethod, "directionScore");
   const directedModel = usable ? selected.metadata?.directedModel || null : null;
   let numeric = null;
   if (measurement) {
     if (selectedMethod === "meow-fingerprint" && declaredMatch !== null)
-      numeric = { value: declaredMatch, label: "申报模型匹配度", unit: "%", method: selectedMethod };
+      numeric = { value: declaredMatch, label: "候选模型匹配度", unit: "%", method: selectedMethod };
     else if (selectedMethod === "hlwy-fingerprint" && matchPercent !== null)
       numeric = { value: matchPercent, label: "HLWY 匹配度", unit: "%", method: selectedMethod };
-    else if (["probability-probe", "one-token"].includes(selectedMethod) && jsd !== null)
-      numeric = { value: jsd, label: "分布 JSD", unit: "", method: selectedMethod };
+    else if (["probability-probe", "one-token", "astra-community", "meow-fingerprint"].includes(selectedMethod) && jsd !== null)
+      numeric = { value: jsd, label: "分布差异（JSD）", unit: "", method: selectedMethod };
     else if (selectedMethod === "juice" && juice !== null)
       numeric = { value: juice, label: "Juice 原始值", unit: "", method: "juice" };
+    else if (bazaarlink?.declaredMatch !== null && bazaarlink?.declaredMatch !== undefined)
+      numeric = { value: bazaarlink.declaredMatch, label: "候选模型匹配度", unit: "%", method: "bazaarlink-probe" };
   }
   if (question?.compared) numeric = { value: question.matched, label: "单题匹配次数", unit: "次", method: "custom-question" };
   return { question, verdict, label, methods, selected, measurement, measuredAt: measurement?.timestamp || null, stale,

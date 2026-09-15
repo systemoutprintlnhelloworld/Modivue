@@ -4,12 +4,11 @@ import { homedir, platform } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { aggregate, normalizeUsage } from "./metrics.js";
-import { observationKey } from "./identity.mjs";
-import { reasoningEffortOf } from "./model-identity.js";
+import { observationKey, normalizeBaseUrl } from "./identity.mjs";
+import { reasoningEffortOf, qualityIdentity } from "./model-identity.js";
 import { catalogState } from "./catalog.mjs";
 import { matchModelName } from "./model-match.js";
 import { verificationVersions, summarizeQuestionRuns, questionConditionsId } from "./quality-summary.js";
-import { modelIdentity } from "./model-identity.js";
 import { preferenceDefaults, validatePreference } from "./preferences.js";
 import { builtInQuestions, validateQuestion } from "../data/question-tests.js";
 import { randomUUID } from "node:crypto";
@@ -173,6 +172,7 @@ function queryRows({ hours = 24, model, canonicalModelId, baseUrl, keyGroup, pro
       source: measurement.source || (row.agent === "modivue-probe" ? "probe" : "observation"),
       measurement, ttft_ms: measurement.version >= 2 ? row.ttft_ms : null,
       cost_usd: Number.isFinite(row.cost_usd) ? row.cost_usd : null, cost_status: row.cost_status || "unknown",
+      costSource: measurement.cost?.costSource || null, costDetails: measurement.cost?.costDetails || null,
       duration_ms: row.total_duration_ms ?? measurement.durationMs ?? null,
       input_tokens: usage.inputTokens, output_tokens: usage.outputTokens, cache_read_tokens: usage.cacheReadTokens,
       cache_hit_rate: usage.cacheHitRate, cache_status: usage.cacheStatus };
@@ -309,7 +309,7 @@ export function listAgentSessions({ host, includeEnded = false, graceMinutes = 1
     }));
 }
 
-const defaults = Object.freeze({ ...preferenceDefaults, probeEnabled: true, probeIntervalMinutes: 1, probeDailyLimit: 256, verificationSamples: 50,
+const defaults = Object.freeze({ ...preferenceDefaults, probeEnabled: true, probeIntervalMinutes: 1, probeDailyLimit: 256, verificationSamples: 10,
   verificationIntervalMinutes: 15, verificationRequestDelaySeconds: 2,
   probeMaxOutputTokens: 16, probeInstruction: "Reply with the word ok.", ttftThresholdMs: 2000, cacheThreshold: 0.2,
   qualityConsecutive: 2, defaultHours: 1, evaluatorId: "meow-fingerprint", meowTier: "screen", notifications: false, acknowledgedAt: null,
@@ -317,7 +317,54 @@ const defaults = Object.freeze({ ...preferenceDefaults, probeEnabled: true, prob
 
 export function getSettings() {
   const row = db.prepare("SELECT value FROM preferences WHERE name = 'settings'").get();
-  return { ...defaults, ...row && JSON.parse(row.value) };
+  const saved = row ? JSON.parse(row.value) : {};
+  if (Object.hasOwn(saved, "normalMetric")) {
+    for (const kind of ["quality", "cache", "ttft", "balance"]) {
+      saved[`normalShow${kind[0].toUpperCase()}${kind.slice(1)}`] ??= saved.normalMetric === kind;
+    }
+    delete saved.normalMetric;
+  }
+  if (Object.hasOwn(saved, "overviewMetric")) {
+    const balanceOnly = saved.overviewMetric === "balance";
+    for (const kind of ["quality", "cache", "ttft", "balance"]) {
+      const key = `overviewShow${kind[0].toUpperCase()}${kind.slice(1)}`;
+      saved[key] ??= balanceOnly ? kind === "balance" : kind !== "balance";
+    }
+    delete saved.overviewMetric;
+  }
+  return { ...defaults, ...saved };
+}
+
+function pricingIdentity(input) {
+  if (!["openai", "anthropic", "gemini"].includes(input.protocol)
+    || typeof input.keyGroup !== "string" || !input.keyGroup || input.keyGroup.length > 128
+    || typeof input.observedModel !== "string" || !input.observedModel.trim() || input.observedModel.length > 256) throw new TypeError("渠道单价目标无效");
+  return JSON.stringify([input.protocol, normalizeBaseUrl(input.baseUrl), input.keyGroup, input.observedModel]);
+}
+export function listChannelPricing() {
+  return parseJson(db.prepare("SELECT value FROM preferences WHERE name = 'channel-pricing'").get()?.value, {});
+}
+export function getChannelPricing(target) {
+  return listChannelPricing()[pricingIdentity(target)]?.rates || null;
+}
+export function saveChannelPricing(input) {
+  const id = pricingIdentity(input), entries = listChannelPricing();
+  if (input.enabled === false) delete entries[id];
+  else {
+    const rates = {};
+    for (const key of ["input", "output", "cache_read", "cache_write"]) {
+      const value = input.rates?.[key];
+      if (value == null || value === "") {
+        if (["input", "output"].includes(key)) throw new TypeError("请填写输入和输出单价");
+        continue;
+      }
+      if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1000000) throw new TypeError("单价必须是非负有效数值");
+      rates[key] = value;
+    }
+    entries[id] = { rates, updatedAt: new Date().toISOString() };
+  }
+  db.prepare("INSERT INTO preferences VALUES ('channel-pricing', ?) ON CONFLICT(name) DO UPDATE SET value = excluded.value").run(JSON.stringify(entries));
+  return entries;
 }
 
 // Remote probe jobs contain target identity, consent and progress, never keys.
@@ -349,7 +396,9 @@ export function questionWindowSummaries({ hours = getSettings().defaultHours, ba
     const run = { ...row, canonical_model_id: resolveCanonicalModelId(row.observed_model, row.canonical_model_id), metadata: parseJson(row.metadata, {}) };
     if (model && run.observed_model !== model && run.canonical_model_id !== model) continue;
     if (reasoningEffort !== undefined && reasoningEffortOf(run) !== (reasoningEffort || null)) continue;
-    const identity = modelIdentity(run);
+    // Question results follow the same verification identity rule as other
+    // non-Juice methods: thinking strength does not split the series.
+    const identity = qualityIdentity(run, "custom-question");
     if (!groups.has(identity)) groups.set(identity, []);
     groups.get(identity).push(run);
   }
@@ -358,6 +407,8 @@ export function questionWindowSummaries({ hours = getSettings().defaultHours, ba
 
 export function saveQuestion(input) {
   const value = validateQuestion(input);
+  const duplicate = listQuestions().find(question => ["title", "prompt", "answer", "match"].every(key => question[key] === value[key]));
+  if (!input.id && duplicate) return duplicate;
   const questions = listQuestions().filter(question => !question.builtIn);
   if (input.id && !questions.some(question => question.id === input.id)) throw new TypeError("自定义题目不存在");
   if (!input.id && questions.length >= 100) throw new TypeError("最多保存 100 个自定义题目");
@@ -371,6 +422,7 @@ export function deleteQuestion(id) {
   const questions = listQuestions().filter(question => !question.builtIn);
   if (!questions.some(question => question.id === id)) throw new TypeError("自定义题目不存在或为内置题目");
   db.prepare("UPDATE preferences SET value=? WHERE name='custom-questions'").run(JSON.stringify(questions.filter(question => question.id !== id)));
+  if (getSettings().defaultQuestionId === id) updateSettings({ defaultQuestionId: builtInQuestions[0].id });
 }
 
 export function updateSettings(patch) {
@@ -385,7 +437,10 @@ export function updateSettings(patch) {
     } else if (key === "probeInstruction") {
       if (typeof value !== "string" || !value.trim() || value.length > 2000) throw new TypeError("探测指令必须为 1–2000 个字符");
     } else if (key === "evaluatorId") {
-      if (!["meow-fingerprint", "hlwy-fingerprint", "probability-probe", "juice", "custom-question", "ztest", "bazaarlink-probe", "knowledge-boundary", "one-token", "astra-community"].includes(value)) throw new TypeError("核验方案无效");
+      // Keep the persisted preference allow-list in sync with registered
+      // evaluators.  ztest-local is a first-class offline adapter and must
+      // be selectable without being rejected by settings validation.
+      if (!["meow-fingerprint", "hlwy-fingerprint", "probability-probe", "juice", "custom-question", "ztest", "ztest-local", "bazaarlink-probe", "knowledge-boundary", "one-token", "astra-community"].includes(value)) throw new TypeError("核验方案无效");
     } else if (key === "defaultQuestionId") {
       if (!listQuestions().some(question => question.id === value)) throw new TypeError("请选择已有的单问题测试题目");
     } else if (key === "meowTier") {
@@ -403,7 +458,7 @@ export function updateSettings(patch) {
   for (const metric of ["quality", "cache", "ttft"]) {
     if (value[`${metric}WarningScore`] >= value[`${metric}GoodScore`]) throw new TypeError(`${metric.toUpperCase()} 警戒分界必须小于良好分界`);
   }
-  if (!["Quality", "Cache", "Ttft"].some(metric => value[`focusShow${metric}`])) throw new TypeError("专注形态至少显示一个指标");
+  if (!["Quality", "Cache", "Ttft", "Balance"].some(metric => value[`focusShow${metric}`])) throw new TypeError("专注形态至少显示一个指标");
   db.prepare("INSERT INTO preferences VALUES ('settings', ?) ON CONFLICT(name) DO UPDATE SET value = excluded.value").run(JSON.stringify(value));
   return value;
 }
@@ -438,7 +493,8 @@ export function listQualityRuns({ hours = 24, model, canonicalModelId, baseUrl, 
   const filterAfterRead = Boolean(model || canonicalModelId || conditionsId || reasoningEffort !== undefined);
   if (!filterAfterRead) params.push(Math.min(5000, Number(limit)));
   const table = latest ? `(SELECT *, ROW_NUMBER() OVER (PARTITION BY protocol, base_url, key_group,
-    COALESCE(canonical_model_id, observed_model), json_extract(metadata, '$.reasoningEffort'), evaluator_id, evaluator_version
+    COALESCE(canonical_model_id, observed_model), evaluator_id, evaluator_version,
+    CASE WHEN evaluator_id = 'juice' THEN json_extract(metadata, '$.reasoningEffort') ELSE NULL END
     ORDER BY timestamp DESC, id DESC) AS rank FROM quality_runs)` : "quality_runs";
   if (latest) clauses.push("rank = 1");
   let runs = db.prepare(`SELECT * FROM ${table} WHERE ${clauses.join(" AND ")} ORDER BY timestamp DESC, id DESC${filterAfterRead ? "" : " LIMIT ?"}`).all(...params)
@@ -450,7 +506,7 @@ export function listQualityRuns({ hours = 24, model, canonicalModelId, baseUrl, 
   if (model) runs = runs.filter((run) => run.observed_model === model || run.canonical_model_id === model);
   if (canonicalModelId) runs = runs.filter((run) => run.canonical_model_id === canonicalModelId);
   if (conditionsId) runs = runs.filter((run) => run.conditions_id === conditionsId);
-  if (reasoningEffort !== undefined) runs = runs.filter((run) => reasoningEffortOf(run) === (reasoningEffort || null));
+  if (reasoningEffort !== undefined) runs = runs.filter((run) => run.evaluator_id !== "juice" || reasoningEffortOf(run) === (reasoningEffort || null));
   return filterAfterRead ? runs.slice(0, Math.min(5000, Number(limit))) : runs;
 }
 
@@ -460,7 +516,7 @@ export function qualityDegradations(filters = {}) {
   for (const run of listQualityRuns(filters).reverse()) {
     if (run.evaluator_version !== verificationVersions[run.evaluator_id]) continue;
     const key = JSON.stringify([run.protocol, run.base_url, run.key_group, run.canonical_model_id || run.observed_model,
-      run.evaluator_id, run.conditions_id, run.metadata?.reasoningEffort || null]);
+      run.evaluator_id, run.conditions_id, run.evaluator_id === "juice" ? run.metadata?.reasoningEffort || null : null]);
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(run);
   }
@@ -474,7 +530,7 @@ export function qualityDegradations(filters = {}) {
       if (streak >= settings.qualityConsecutive && !ongoing) {
         ongoing = true;
         events.push({ id: `quality:${run.id}`, type: "quality", level: "warning", timestamp: run.timestamp,
-          model: run.observed_model, protocol: run.protocol, baseUrl: run.base_url, keyGroup: run.key_group,
+          model: run.observed_model, protocol: run.protocol, baseUrl: run.base_url, keyGroup: run.key_group, evaluatorId: run.evaluator_id,
           detail: `${run.evaluator_id}: ${run.rationale}`,
           canonicalModelId: run.canonical_model_id, conditionsId: run.conditions_id, reasoningEffort: reasoningEffortOf(run) });
       }

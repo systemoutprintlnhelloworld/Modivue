@@ -2,19 +2,33 @@ import assert from "node:assert/strict";
 import { transitionIsland } from "../src/core/island-state.js";
 import { islandDisplayModels, islandWaiting, liveIslandModels } from "../src/core/island-display.js";
 import { aggregate, normalizeUsage } from "../src/core/metrics.js";
-import { summarizeVerification, verificationVersions, verificationRunLabel } from "../src/core/quality-summary.js";
+import { summarizeVerification, verificationVersions, verificationRunLabel, questionConditionsId } from "../src/core/quality-summary.js";
 import { canProbeSession, normalizeAgentStatus, claudeTranscriptStatus, isAgentWorking } from "../src/core/agent-activity.js";
 import { trustedHLWYReference, hlwyPrompt } from "../src/core/hlwy-reference.js";
 import { builtInQuestions } from "../src/data/question-tests.js";
+import { parseBalance, balanceRatio } from "../src/core/balance.mjs";
+import { listEvaluators } from "../src/core/quality.mjs";
+import { ztestLocalProbes } from "../src/core/evaluator-ztest.mjs";
+import { parseStructuredProof } from "../src/core/evaluator-question.mjs";
 
 const referenceRecord = { revision: 'test', reasoningEffort: 'low', maxOutputTokens: 256, protocol: 'openai', wireApi: 'responses',
   referenceSampleCount: 50, probability: { temperature: 1, cells: [{ prompt: hlwyPrompt, distribution: { 42: 1 } }] } };
 const referenceTarget = { observedModel: 'fixture', reasoningEffort: 'low', protocol: 'openai', wireApi: 'responses' };
 assert.equal(trustedHLWYReference({ models: { fixture: referenceRecord } }, referenceTarget).stats.mode, 42);
-assert.equal(trustedHLWYReference({ models: { fixture: referenceRecord } }, { ...referenceTarget, reasoningEffort: 'high' }), null);
+// Benchmark matching deliberately ignores thinking strength (Juice is the
+// only strict method), so the same trusted HLWY distribution is reusable.
+assert.equal(trustedHLWYReference({ models: { fixture: referenceRecord } }, { ...referenceTarget, reasoningEffort: 'high' }).stats.mode, 42);
 assert.equal(trustedHLWYReference({ models: { fixture: { ...referenceRecord, referenceSampleCount: 2 } } }, referenceTarget), null);
 assert.equal(builtInQuestions[0].answer, '21');
 assert.equal(builtInQuestions[1].answer, '8');
+assert.deepEqual(parseBalance('new-api', { data: { quota: 750000, used_quota: 250000 } }), { remaining: 1.5, total: 2, used: 0.5, unit: 'USD', unlimited: false });
+assert.deepEqual(parseBalance('new-api-token', { data: { total_available: 12, total_granted: 100, total_used: 88, unlimited_quota: false } }), { remaining: 12, total: 100, used: 88, unit: 'quota', unlimited: false });
+assert.equal(balanceRatio(5, 10), 0.5);
+assert.equal(balanceRatio(20, 10), 1, '充值超过初始余额时满环不溢出');
+assert.deepEqual(parseStructuredProof('最终答案是 8\n理由/证明：严格证明。', '8'), { parsedAnswer: '8', answerMatched: true, proof: '理由/证明：严格证明。' });
+assert.throws(() => parseBalance('usage', { data: { balance: null } }), /有效余额/);
+assert.equal(ztestLocalProbes.length, 5);
+assert.ok(listEvaluators().some(item => item.id === "ztest-local"), "本地 Ztest 评测器已注册");
 
 const session = (id, status, extra = {}) => ({ sessionId: id, status, ...extra });
 const models = [
@@ -78,6 +92,11 @@ for (const answer of ['21个。', '２１', '答案：21', '```text\n21\n```', '
 for (const answer of ['-21', '2.1', '2 1', '21或22', '21%','不是21','21个，但可能是22']) assert.equal(comparableAnswer(answer, '21'), false, answer);
 assert.equal(comparableAnswer('21', '21。'), true);
 assert.equal(verificationRunLabel({status:'ok',evaluator_id:'custom-question',metadata:{question:{match:'exact',answer:'21'},actual:'21个。',matched:false}}), '答案匹配');
+const reviewQuestion = { id: 'water-cups-8', match: 'review', answer: '8' };
+const reviewRun = { timestamp: '2026-09-12T00:00:00Z', evaluator_id: 'custom-question', evaluator_version: verificationVersions['custom-question'], status: 'ok',
+  metadata: { conditionsId: questionConditionsId(reviewQuestion), question: reviewQuestion, actual: '5', matched: null } };
+const reviewSummary = summarizeVerification([reviewRun], 'custom-question', { question: reviewQuestion });
+assert.equal(reviewSummary.label, '已记录 1 次待人工复核');
 assert.equal(claudeTranscriptStatus([{type:'assistant',message:{stop_reason:'end_turn'}}]), 'idle');
 assert.equal(claudeTranscriptStatus([{type:'assistant',message:{stop_reason:'tool_use'}}]), 'tool');
 assert.equal(claudeTranscriptStatus([{type:'assistant',message:{stop_reason:'end_turn'}},{type:'user',message:{content:'next'}}]), 'working');

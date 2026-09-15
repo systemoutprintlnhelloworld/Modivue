@@ -1,17 +1,18 @@
 import { registerEvaluator } from "./quality.mjs";
 import { readCalibration } from "./calibration.mjs";
+import { calibrationReference } from "./calibration-reference.js";
 
 const unknown = (rationale, metadata = {}) => ({ status: "unsupported", score: null, rationale,
   metadata: { ...metadata, verdict: "inconclusive" } });
 
-async function calibrationFor(input) {
+async function calibrationFor(input, purpose) {
   let payload;
   try { payload = await readCalibration(); }
   catch (error) { return { error: error.message }; }
-  const model = payload?.models?.[input.canonicalModelId] || payload?.models?.[input.observedModel];
+  const model = calibrationReference(payload, input, purpose);
   if (!model) return { error: "缺少该模型的可信校准档案" };
-  if ((input.reasoningEffort || null) !== model.reasoningEffort) return { error: "当前推理档位与校准档案不一致" };
-  if (model.wireApi && input.wireApi !== model.wireApi) return { error: "当前 API 协议与可信端采样条件不一致" };
+  // Non-Juice verification references are shared across reasoning strengths;
+  // only Juice keeps a strict effort match (see calibrationReference).
   return { ...model, source: model.source || payload.source, candidates: payload.candidates || payload.models };
 }
 
@@ -29,7 +30,7 @@ function jsd(observed, reference) {
 }
 
 async function probabilityProbe(input) {
-  const calibration = await calibrationFor(input);
+  const calibration = await calibrationFor(input, "probability");
   if (calibration.error || !calibration.probability) return unknown(calibration.error || "缺少该模型的概率探针校准档案",
     { sampleCount: 0, attempts: 0, conditionsId: "probability-probe:v2:unsupported" });
   const calibrationRevision = calibration.revision;
@@ -98,7 +99,7 @@ async function probabilityProbe(input) {
   const verdict = stopReason || distance === null ? "inconclusive" : maxJsd === null ? "inconclusive" : distance <= maxJsd ? "consistent" : "deviates";
   return { score: null, status: stopReason ? "paused" : "ok", rationale: stopReason || `JSD ${distance.toFixed(4)} · ${maxJsd === null ? "观测值，尚无可信身份校准" : "与参考分布比较"}`,
     metadata: { verdict, jsd: distance, observations, maxJsd, stopReason, source: calibration.source,
-      revision: calibrationRevision, reasoningEffort: calibration.reasoningEffort,
+      revision: calibrationRevision, reasoningEffort: input.reasoningEffort || null, baselineReasoningEffort: calibration.reasoningEffort,
       plannedSamples, continuedFrom: canResume ? previousRun.id : null,
       sampleCount: observations.reduce((sum, cell) => sum + cell.sampleCount, 0), attempts, failures,
       conditionsId } };
@@ -108,7 +109,7 @@ async function juiceProbe(input) {
   const mode = input.juiceMode || "raw";
   if (!["raw", "calibrated"].includes(mode)) throw new TypeError("Juice 检测方式无效");
   const calibrated = mode === "calibrated";
-  const calibration = calibrated ? await calibrationFor(input) : null;
+  const calibration = calibrated ? await calibrationFor(input, "juice") : null;
   if (calibrated && (calibration.error || !calibration.juice)) return unknown(calibration.error || "缺少该模型的 Juice 校准档案",
     { reasonCode: "calibration_missing", calibrationNotice: calibration.error || "未配置 Juice 参考范围",
       mode, sampleCount: 0, attempts: 0, plannedSamples: 1, conditionsId: "juice:v4:calibration-missing" });

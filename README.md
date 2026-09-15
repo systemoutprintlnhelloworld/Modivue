@@ -1,8 +1,37 @@
 # Modivue
 
+[![Build](https://github.com/systemoutprintlnhelloworld/Modivue/actions/workflows/build.yml/badge.svg)](https://github.com/systemoutprintlnhelloworld/Modivue/actions/workflows/build.yml) [![Latest release](https://img.shields.io/github/v/release/systemoutprintlnhelloworld/Modivue?display_name=tag&sort=semver)](https://github.com/systemoutprintlnhelloworld/Modivue/releases) [![macOS](https://img.shields.io/badge/macOS-Apple%20Silicon-111827?logo=apple)](https://github.com/systemoutprintlnhelloworld/Modivue/releases) [![Windows preview](https://img.shields.io/badge/Windows-preview-0078D4?logo=windows)](#windows-预览版)
+
+<p align="center"><img src="UI-concept/3.0.png" alt="Modivue glass UI concept" width="900"></p>
+
+<p align="center"><strong>Observe every AI request. Keep the evidence local.</strong><br>本地优先的 coding agent 模型监测与费用工作台。</p>
+
 Modivue 是面向 coding agent 的本地模型监测工具，按模型、渠道、Key 分组和推理档位展示核验证据、缓存命中率、TTFT 与检测费用。提供 macOS 灵动岛、Windows 预览宿主及 Agent 状态栏／命令工具。核验结果不是人类 IQ 或模型身份认证。
 
 [下载预览版](https://github.com/systemoutprintlnhelloworld/Modivue/releases) · [构建状态](https://github.com/systemoutprintlnhelloworld/Modivue/actions)
+
+## 界面一览
+
+截图来自最新 Web 回归样本，覆盖概览、悬浮详情、灵动岛三种状态、设置、校准、报告和核验流程。
+
+| 概览 | 悬浮详情 | 灵动岛普通态 |
+|---|---|---|
+| ![概览](docs/screenshots/01-overview.png) | ![悬浮详情](docs/screenshots/02-hover-detail.png) | ![普通态](docs/screenshots/03-island-normal.png) |
+
+| 灵动岛专注态 | 灵动岛闲置态 | 显示设置 |
+|---|---|---|
+| ![专注态](docs/screenshots/04-island-focus.png) | ![闲置态](docs/screenshots/05-island-idle.png) | ![显示设置](docs/screenshots/06-customization.png) |
+
+| 校准档案 | 报告披露 | 核验与费用 |
+|---|---|---|
+| ![校准](docs/screenshots/07-calibration.png) | ![报告](docs/screenshots/08-report.png) | ![核验费用](docs/screenshots/09-cost-verification.png) |
+
+## 为什么是 Modivue
+
+- **本地证据链**：原始 usage、TTFT、Cache、请求费用和核验回答保留在本机 SQLite，未知费用明确显示为未知。
+- **按四元组归因**：模型、渠道、Key 分组、推理档位分开聚合，避免把不同路由混成一条结论。
+- **三态灵动岛**：极简态只报活动，普通态展示目标，专注态展开指标；闲置时显示 SVG 状态图标。
+- **可追溯核验**：校准档案、官方报告、逐请求费用和原始回答都能回到对应条件。
 
 ## 0.4.1
 
@@ -16,14 +45,18 @@ Modivue 是面向 coding agent 的本地模型监测工具，按模型、渠道�
 - 英文自动扫描覆盖界面正文、提示、可访问名称、展开报告和全部方法设置；运行 `npm run ui:test:web`，未翻译条目会使检查失败，清单写入 `.ui-artifacts/<运行编号>-web/i18n-coverage.json`。
 - SVG 仅悬停播放；Spotlight、Tab、主题、三环和折叠增加平滑过渡，遵守“减少动态效果”。文字缩放扩展至 80%–200%，强调文字与边框跟随主题，连接桥改为窄腰柔光。
 - 自动保存、主动检测和导出显示 toast；macOS/Windows 使用系统保存窗口导出，系统通知由常驻灵动岛发送，设置提供测试通知。
-- 水杯等单题默认 300 秒、16384 输出 token，可分别调至 30–900 秒和 512–65536 token；证明题保留人工复核。
+- 水杯等单题默认 300 秒、16384 输出 token；水杯证明题固定不限时（仍可手动暂停/终止），并保留完整原始回答供人工复核。
 - Meow 升至上游 4.5.4 正式基准，支持 Responses、Messages 与 Chat Completions。GPT 三档为 32/48/96 请求，Claude 为 48/72/120；另保留 6 请求预览档。上游 Python 与本地评分 192 案例对照通过。
 - 收录提供的 7727 条 OpenRouter 可信端样本，按 17 个模型、16 道题及采样条件展示参考频数。这批样本用于参考分布展示，评分参数与阈值仍使用上游正式版。
 - KBF 接入 16 个公开历史模型参考、4359 个探针，支持一批试采及完整 CP99/单侧二项检验。One Token 提供 10 类英文任务；Astra 提供原帖五组任务的观测适配。
 
 One Token / Astra 默认每题 1 次预览。要建立参考，在可信渠道设每题至少 10 次，核验完成后从“历史核验报告”导出分布档案；随后在“设置 → 核验 → 核验校准档案”导入。比较要求模型、协议、提示词和采样参数一致；导出档案不自动生成判定阈值。Astra 原帖未公开精确题库/分布，One Token 未包含论文四语言全集。
 
-`gpt56apidetector` 使用后续 Meow 实现。两篇 Juice 指定原文目前不可公开读取，仍列为待补资料；现有 Juice 原始观测和可信校准独立可用。Ztest 当前通过官网检测后导入报告。
+`gpt56apidetector` 使用后续 Meow 实现。两篇 Juice 指定原文目前不可公开读取，仍列为待补资料；现有 Juice 原始观测和可信校准独立可用。Ztest 提供官方 Turnstile 浏览器流程与本地兼容探针两种入口；本地探针只保存可重复响应证据，不冒充官网评分。
+
+### 余额监测
+
+概览页会读取本机 CC Switch、已保存可信渠道和 Agent 渠道的余额。支持 OpenRouter、New API/Sub API、常见 `/v1/usage`/`/user/balance` 接口及安全的自定义 JSON 字段映射；凭据只在本机使用。首次有效余额作为满环基准，余额充值超过基准时环保持满，可在设置中重置基准。
 
 ## 0.3.0
 

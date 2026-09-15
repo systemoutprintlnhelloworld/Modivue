@@ -1,6 +1,7 @@
 import { registerEvaluator } from "./quality.mjs";
 import { getSettings } from "./storage.mjs";
 import { readCalibration } from "./calibration.mjs";
+import { calibrationReference } from "./calibration-reference.js";
 import { normalizeMeowAnswer } from "./evaluator-meow.mjs";
 import { distributionJsd } from "./evaluator-one-token.mjs";
 
@@ -15,11 +16,12 @@ export const astraPrompts = [
 ];
 registerEvaluator({ id: "astra-community", label: "Astra 社区五组观测", version: "1.0.0", conditionsId: "astra-community:adapted:v1",
   async run(input) {
+    const requestedEffort = input.reasoningEffort || null;
     const repetitions = getSettings().astraSamples;
     const archive = await readCalibration();
-    const reference = archive?.models?.[input.canonicalModelId] || archive?.models?.[input.observedModel];
+    const reference = calibrationReference(archive, { ...input, reasoningEffort: requestedEffort }, "astra-community:adapted:v1");
     const compatible = reference?.probability?.method === "astra-community:adapted:v1" && reference.probability.temperature === 1
-      && reference.maxOutputTokens === 128 && reference.reasoningEffort === "low" && reference.wireApi === input.wireApi && !reference.probability.system;
+      && reference.maxOutputTokens === 128 && !reference.probability.system;
     input.requireBudget?.(5 * repetitions);
     const observations = astraPrompts.map((prompt, i) => ({ id: `astra-${i}`, prompt, counts: Object.create(null), responses: [], planned: repetitions, sampleCount: 0, group: i < 3 ? "primary" : "auxiliary" }));
     const failures = [];
@@ -27,7 +29,7 @@ registerEvaluator({ id: "astra-community", label: "Astra 社区五组观测", ve
     sampling: for (let repetition = 0; repetition < repetitions; repetition++) for (const row of observations) {
       attempts++;
       try {
-        const raw = await input.request(row.prompt, { temperature: 1, maxOutputTokens: 128, reasoningEffort: "low", conditionsId: "astra-community:adapted:v1" });
+        const raw = await input.request(row.prompt, { temperature: 1, maxOutputTokens: 128, reasoningEffort: requestedEffort, conditionsId: "astra-community:adapted:v1" });
         const answer = normalizeMeowAnswer(raw);
         row.responses.push(raw);
         if (answer) { row.counts[answer] = (row.counts[answer] || 0) + 1; row.sampleCount++; }
@@ -42,9 +44,10 @@ registerEvaluator({ id: "astra-community", label: "Astra 社区五组观测", ve
       row.reference = cell?.distribution || null;
       row.jsd = cell && row.sampleCount >= 10 ? distributionJsd(Object.fromEntries(Object.entries(row.counts).map(([answer, count]) => [answer, count / row.sampleCount])), cell.distribution) : null;
     }
-    return { status: failures.length ? "error" : "ok", rationale: "五组分布已记录；原帖强指向基准未导入",
+    const jsd = observations.every(row => row.jsd !== null) ? observations.reduce((sum, row) => sum + row.jsd, 0) / observations.length : null;
+    return { status: failures.length ? "error" : "ok", rationale: jsd === null ? "五组分布已记录；原帖强指向基准未导入" : `JSD ${jsd.toFixed(4)}`,
       metadata: { verdict: "inconclusive", source: "https://linux.do/t/topic/2861517", revision: "modivue-adapted-v1", observations, failures, attempts,
-        sampling: { system: "", temperature: 1, maxOutputTokens: 128, reasoningEffort: "low" },
+        jsd, reasoningEffort: requestedEffort, sampling: { system: "", temperature: 1, maxOutputTokens: 128, reasoningEffort: requestedEffort },
         sampleCount: observations.reduce((sum, row) => sum + row.sampleCount, 0), plannedSamples: 5 * repetitions,
         conditionNotice: "按原帖五类任务实现的观测适配：前三类为主组，后两类为辅助组，周期单位固定为天。默认每类 1 次，可改为原帖的每类 10 次。原帖没有公开精确提示词与参考分布；这里使用明确标注的适配提示词，不输出原帖的模型强指向结论。" } };
   }

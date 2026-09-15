@@ -23,6 +23,7 @@
     "check:desktop": "swiftc -parse-as-library -typecheck -framework AppKit -framework WebKit desktop/ModivueApp.swift && swiftc -typecheck -framework CoreGraphics -framework ImageIO -framework UniformTypeIdentifiers scripts/make-macos-icon.swift",
     "check": "node --check server.mjs && node --check app.js && node --check src/core/metrics.js && node --check src/core/model-match.js && node --check src/core/storage.mjs && node --check src/core/proxy.mjs && node --check src/core/upstreams.mjs && node --check src/core/agents.mjs && node --check src/core/quality.mjs && node --check src/core/evaluator-coding.mjs && node --check src/core/evaluator-meow.mjs && node --check src/core/evaluator-hlwy.mjs && node --check src/core/verification-stream.mjs && node --check cli/statusline.mjs && node --check cli/agent-session.mjs && npm run check:desktop",
     "check:js": "node scripts/check-js.mjs",
+    "check:i18n": "node scripts/check-i18n.mjs",
     "windows:build": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows.ps1",
     "cli": "node cli/modivue.mjs"
   },
@@ -32,9 +33,7 @@
     "json5": "^2.2.3",
     "motion": "^13.2.0",
     "smol-toml": "1.6.0",
-    "yaml": "^2.9.1"
-  },
-  "devDependencies": {
+    "yaml": "^2.9.1",
     "playwright-core": "^1.63.0"
   }
 }

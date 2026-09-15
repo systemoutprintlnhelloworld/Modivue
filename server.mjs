@@ -15,13 +15,17 @@ import "./src/core/evaluator-question.mjs";
 import { listQuestions, saveQuestion, deleteQuestion, questionWindowSummaries } from "./src/core/storage.mjs";
 import { verificationReferences } from "./src/data/question-tests.js";
 import { trustedHLWYReference } from "./src/core/hlwy-reference.js";
-import { probeState, probeTargets, runProbeBatch, scheduleProbes, requestTargetVerification } from "./src/core/probe.mjs";
+import { probeState, probeTargets, runProbeBatch, scheduleProbes, requestTargetVerification, controlTargetVerification } from "./src/core/probe.mjs";
 import { syncCatalog, catalogRefreshMs } from "./src/core/catalog.mjs";
 import { resolveProxyRoute, upstreamRoutes } from "./src/core/upstreams.mjs";
 import { readCalibration, saveCalibration } from "./src/core/calibration.mjs";
 import { collectTrustedCalibration, trustedCalibrationState, cancelTrustedCalibration } from "./src/core/trusted-calibration.mjs";
 import { normalizeBaseUrl, upstreamEndpoint } from "./src/core/identity.mjs";
-import { publicBaselineState, syncPublicBaselines } from "./src/core/public-baselines.mjs";
+import { publicBaselineState, publicBaselineExport, importPublicBaselines, syncPublicBaselines } from "./src/core/public-baselines.mjs";
+import { listTrustedProviders, saveTrustedProvider, resolveTrustedProvider } from "./src/core/trusted-providers.mjs";
+import { listBalances, configureBalance, balanceAdapters } from "./src/core/balance.mjs";
+import { ztestState, startZtest, closeZtest, tickZtest } from "./src/core/ztest-browser.mjs";
+import { listChannelPricing, saveChannelPricing } from "./src/core/storage.mjs";
 
 const root = fileURLToPath(new URL(".", import.meta.url));
 const port = Number(process.env.MODIVUE_PORT || 4173);
@@ -33,6 +37,7 @@ async function readJsonBody(request, maxBytes = 1024 * 1024) {
 }
 
 async function trustedApiRequest(input) {
+  input = await resolveTrustedProvider(input);
   const base = normalizeBaseUrl(input.baseUrl);
   const key = String(input.apiKey || "").trim();
   if (!key) throw new TypeError("请填写 API Key");
@@ -106,12 +111,18 @@ async function routeRequest(request, response) {
         source: agent.source || "runtime", startedAt: agent.startedAt, lastSeenAt: agent.lastSeenAt,
         endedAt: agent.endedAt || null, statusSource: agent.statusSource || null, cacheHitRate: agent.cacheHitRate ?? null,
       }));
-    const seen = new Set();
-    const sessions = [...persisted, ...runtime].filter((session) => {
+    // Runtime discovery is fresher than the persisted heartbeat. Merge by
+    // host/session identity instead of concatenating both lists; otherwise a
+    // Codex thread can appear once as an idle database row and again as an
+    // active process row.
+    const merged = new Map();
+    for (const session of persisted) merged.set(`${session.host}:${session.sessionId}`, session);
+    for (const session of runtime) {
       const key = `${session.host}:${session.sessionId}`;
-      if (seen.has(key)) return false;
-      seen.add(key); return true;
-    });
+      const previous = merged.get(key);
+      merged.set(key, previous ? { ...previous, ...session, metadata: { ...previous.metadata, ...session.metadata } } : session);
+    }
+    const sessions = [...merged.values()];
     response.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" })
       .end(JSON.stringify({ sessions }));
     return;
@@ -120,20 +131,53 @@ async function routeRequest(request, response) {
     response.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" }).end(JSON.stringify({ events: listEvents(filters), acknowledgedAt: getSettings().acknowledgedAt }));
     return;
   }
+  if (url.pathname === "/api/iq/providers") {
+    if (request.method === "GET") {
+      response.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" }).end(JSON.stringify({ providers: await listTrustedProviders() }));
+    } else if (request.method === "POST") {
+      const provider = await saveTrustedProvider(await readJsonBody(request));
+      response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ provider, providers: await listTrustedProviders() }));
+    } else response.writeHead(405).end();
+    return;
+  }
+  if (url.pathname === "/api/balances") {
+    if (request.method === "PATCH") await configureBalance(await readJsonBody(request));
+    else if (request.method !== "GET") { response.writeHead(405).end(); return; }
+    response.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" }).end(JSON.stringify({
+      balances: await listBalances({ refresh: request.method === "PATCH" || url.searchParams.get("refresh") === "1" }), adapters: balanceAdapters }));
+    return;
+  }
+  if (url.pathname === "/api/pricing") {
+    if (request.method === "PATCH") saveChannelPricing(await readJsonBody(request));
+    else if (request.method !== "GET") { response.writeHead(405).end(); return; }
+    response.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" })
+      .end(JSON.stringify({ pricing: listChannelPricing() }));
+    return;
+  }
   if (url.pathname === "/api/quality/evaluators" && request.method === "GET") {
     response.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" }).end(JSON.stringify({ evaluators: listEvaluators() }));
     return;
   }
   if (url.pathname === "/api/quality/baselines" && request.method === "GET") {
-    response.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" }).end(JSON.stringify(publicBaselineState()));
+    const payload = url.searchParams.get("full") === "1" ? publicBaselineExport() : publicBaselineState();
+    response.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" }).end(JSON.stringify(payload));
     return;
   }
   if (url.pathname === "/api/quality/baselines/sync" && request.method === "POST") {
     response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(await syncPublicBaselines()));
     return;
   }
+  if (url.pathname === "/api/quality/baselines/import" && request.method === "POST") {
+    try {
+      const state = await importPublicBaselines(await readJsonBody(request, 6 * 1024 * 1024));
+      response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(state));
+    } catch (error) {
+      response.writeHead(400, { "Content-Type": "application/json" }).end(JSON.stringify({ error: error.message }));
+    }
+    return;
+  }
   if (url.pathname === "/api/iq/calibration/collect") {
-    const result = request.method === "POST" ? collectTrustedCalibration(await readJsonBody(request))
+    const result = request.method === "POST" ? collectTrustedCalibration(await resolveTrustedProvider(await readJsonBody(request)))
       : request.method === "DELETE" ? cancelTrustedCalibration() : request.method === "GET" ? trustedCalibrationState() : null;
     response.writeHead(result ? request.method === "POST" ? 202 : 200 : 405, { "Content-Type": "application/json", "Cache-Control": "no-store" }).end(JSON.stringify(result));
     return;
@@ -154,11 +198,17 @@ async function routeRequest(request, response) {
   }
   if (url.pathname === "/api/iq/calibration" && request.method === "PUT") {
     try {
-      const calibration = await saveCalibration(await readJsonBody(request));
+      const calibration = await saveCalibration(await readJsonBody(request, 6 * 1024 * 1024));
       response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" }).end(JSON.stringify({ calibration }));
     } catch (error) {
       response.writeHead(400, { "Content-Type": "application/json; charset=utf-8" }).end(JSON.stringify({ error: error.message }));
     }
+    return;
+  }
+  if (url.pathname === "/api/quality/control" && request.method === "POST") {
+    const input = await readJsonBody(request);
+    const result = controlTargetVerification(input.targetId, input.action);
+    response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(result));
     return;
   }
   if (url.pathname === "/api/quality/run" && request.method === "POST") {
@@ -213,10 +263,23 @@ async function routeRequest(request, response) {
     }));
     return;
   }
+  if (url.pathname === "/api/quality/ztest") {
+    if (request.method === "GET") {
+      response.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" }).end(JSON.stringify(await ztestState()));
+    } else if (request.method === "POST") {
+      const input = await readJsonBody(request);
+      const target = (await probeTargets()).find(target => target.id === input.targetId);
+      if (!target) throw new TypeError("请选择可用的四元组");
+      response.writeHead(202, { "Content-Type": "application/json" }).end(JSON.stringify(await startZtest(target, input)));
+    } else if (request.method === "DELETE") {
+      response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(await closeZtest((await readJsonBody(request)).targetId)));
+    } else response.writeHead(405).end();
+    return;
+  }
   if (url.pathname === "/api/quality/ztest/import" && request.method === "POST") {
     const input = await readJsonBody(request);
     if (input.confirmTarget !== true) throw new TypeError("请确认报告属于当前四元组");
-    const target = summary({ hours: 0 }).find(group => group.observedModel === input.observedModel
+    const target = [...await probeTargets(), ...summary({ hours: 0 })].find(group => group.observedModel === input.observedModel
       && group.baseUrl === input.baseUrl && group.keyGroup === input.keyGroup && (group.reasoningEffort || null) === (input.reasoningEffort || null));
     if (!target) throw new TypeError("请选择已有观测的四元组后导入报告");
     let report = input.report;
@@ -287,7 +350,8 @@ async function routeRequest(request, response) {
     const route = resolveProxyRoute(url.pathname, url.search);
     await proxyStream({ request, response, upstreamUrl: route?.upstreamUrl, baseUrl: route?.baseUrl,
       protocol: route?.protocol, saveSample, agent: request.headers["x-modivue-agent"] || "unknown",
-      timeoutMs: /^\d+$/.test(request.headers["x-modivue-timeout-ms"] || "") ? Math.max(30000, Math.min(900000, Number(request.headers["x-modivue-timeout-ms"]))) : undefined });
+      timeoutMs: request.headers["x-modivue-timeout-ms"] === "0" ? null
+        : /^\d+$/.test(request.headers["x-modivue-timeout-ms"] || "") ? Math.max(1000, Math.min(3600000, Number(request.headers["x-modivue-timeout-ms"]))) : undefined });
     return;
   }
   // Browsers request /favicon.ico automatically even when the document does
@@ -303,7 +367,7 @@ async function routeRequest(request, response) {
     return;
   }
   const requested = url.pathname === "/" ? "/index.html" : url.pathname;
-  if (!/^\/src\/data\/agent-icons\/[a-z-]+\.svg$/.test(requested) && !["/index.html", "/styles.css", "/app.js", "/src/core/metrics.js", "/src/core/model-match.js", "/src/core/quality-summary.js", "/src/core/answer-comparison.js", "/src/core/calibration-export.js", "/src/core/model-identity.js", "/src/core/agent-activity.js", "/src/core/island-state.js", "/src/core/island-display.js", "/src/core/preferences.js", "/src/core/i18n.js", "/src/core/hlwy-reference.js", "/src/data/question-tests.js", "/src/data/app-icon.png", "/src/data/meow-contract.json"].includes(requested)) {
+  if (!/^\/src\/data\/agent-icons\/[a-z-]+\.svg$/.test(requested) && !["/index.html", "/styles.css", "/app.js", "/src/core/calibration-reference.js", "/src/core/bazaarlink-summary.js", "/src/core/island-bridge.js", "/src/core/metrics.js", "/src/core/request-cost.js", "/src/core/model-match.js", "/src/core/quality-summary.js", "/src/core/answer-comparison.js", "/src/core/calibration-export.js", "/src/core/model-identity.js", "/src/core/agent-activity.js", "/src/core/island-state.js", "/src/core/island-display.js", "/src/core/preferences.js", "/src/core/i18n.js", "/src/core/hlwy-reference.js", "/src/data/question-tests.js", "/src/data/app-icon.png", "/src/data/meow-contract.json"].includes(requested)) {
     response.writeHead(404).end("Not found");
     return;
   }
@@ -335,6 +399,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   // follow the configured interval and remain serialised by probe.mjs.
   scheduleProbes();
   if (!process.env.MODIVUE_UI_ARTIFACTS) {
+    const pollZtest = () => { void tickZtest().catch(error => console.error(error.message)); };
+    pollZtest(); setInterval(pollZtest, 5000).unref();
     const poll = async () => { try { await tickBazaarlink(await probeTargets()); } catch (error) { console.error(error.message); } };
     void poll();
     setInterval(poll, 5000).unref();

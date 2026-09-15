@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { homedir, platform } from "node:os";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { calibrationRecords, calibrationWire } from "./calibration-reference.js";
 
 const defaultDirectory = platform() === "darwin" ? join(homedir(), "Library", "Application Support", "Modivue")
   : fileURLToPath(new URL("../../.local/", import.meta.url));
@@ -27,7 +28,7 @@ function validModel(record) {
   if (!record.probability && !record.juice) return false;
   if (record.probability) {
     const p = record.probability;
-    if (p.method !== undefined && !["one-token:en:v1", "astra-community:adapted:v1"].includes(p.method)) return false;
+    if (p.method !== undefined && !["one-token:en:v1", "astra-community:adapted:v1", "meow:empirical:v1"].includes(p.method)) return false;
     if (p.system !== undefined && (typeof p.system !== "string" || p.system.length > 2000)) return false;
     if (p.method && !p.cells?.every(cell => Number.isSafeInteger(cell.sampleCount) && cell.sampleCount >= 10)) return false;
     if (!isRecord(p) || !Array.isArray(p.cells) || !p.cells.length || p.cells.length > 60
@@ -58,7 +59,8 @@ export function validateCalibration(payload) {
   if (Object.entries(candidates).some(([model, record]) => !model.trim() || !validCandidate(record))) {
     throw new TypeError("候选模型档案包含无效的 reasoningEffort 或 Juice 范围");
   }
-  return { version: 2, source: payload.source, updatedAt: payload.updatedAt || null, models: payload.models, candidates };
+  if (payload.references !== undefined && (!Array.isArray(payload.references) || payload.references.some(record => !record.model?.trim() || !validModel(record)))) throw new TypeError("参考分布档案无效");
+  return { version: 2, source: payload.source, updatedAt: payload.updatedAt || null, models: payload.models, candidates, ...(payload.references ? { references: payload.references } : {}) };
 }
 
 export async function readCalibration() {
@@ -77,3 +79,13 @@ export async function saveCalibration(payload) {
 }
 
 export { path as calibrationPath };
+
+export async function saveCalibrationRecord(model, record) {
+  const current = await readCalibration();
+  const identity = item => JSON.stringify([item.model, calibrationWire(item.wireApi), item.juice ? item.reasoningEffort : null,
+    item.probability?.method || (item.probability ? "probability" : "juice"), item.probability?.cells.map(cell => cell.prompt)]);
+  const reference = { model, ...record };
+  const unique = new Map([reference, ...calibrationRecords(current)].map(item => [identity(item), item]).reverse());
+  return saveCalibration({ version: 2, source: current?.source || record.source,
+    models: { ...current?.models, [model]: record }, candidates: current?.candidates, references: [...unique.values()] });
+}

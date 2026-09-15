@@ -1,3 +1,9 @@
+> 2026-09-15 Codex 五项截图复查：Finder 未继承 Herdr neo socket，默认会话协议错误触发进程回退。已改为发现各本地命名会话；最新原生包精简环境（无 HERDR_*）API 返回 3 个顶层 Codex，证据 finder-clean-oW42lk/agents.json。当前旧实例需完全退出重开 dist/Modivue.app。鼠标回归 1789484754296-ui 重新锁屏 UNTESTED；上一轮终端 3 个不构成 Finder 验证。
+
+> 2026-09-15 六项反馈最新状态：专注/标准详细界面横向环复选栏、四环高度与余额单选已改；Codex 现场 3 个顶层 pane 与 API 一致；HLWY 默认 10 次（1–500），少于 50 个有效样本仅预览。文件导入改为所属窗口 sheet 回调，Edit 菜单使用原生 responder chain；玻璃主题修复覆盖并增加原生材质。Web 48 PASS（1789483419966-web），手动浏览器证据 feedback-sf3O1z，JS/i18n/core/Swift 和最终 macOS 构建签名通过。原生 1789483679289-ui 锁屏 UNTESTED，导入崩溃、Cmd+C/V 与桌面玻璃效果尚未验收；不能援引旧原生 PASS。最新 dist/Modivue.app 未发布，详见 HANDOFF 顶部。
+
+> 2026-09-15 原生 hover 已修复并复验：`.ui-artifacts/1789405112503-ui/result.json` 全部 PASS；激活灵动岛不再误打开主窗口，原生引导 7 步断言已同步。余额通知、Windows 实机、GUI Agent、官方 Ztest 和真实多批校准仍未完成。
+
 ## 2026-09-13 — 0.4.1 修订验收
 
 44 个英文界面场景（含 title、placeholder、aria-label；主视图、全部方法/设置、三个新方法的展开报告、灵动岛三态及中英往返）全部无遗漏。完整 Web 47 项 PASS：`.ui-artifacts/1789309444661-web/result.json`；覆盖 One Token 分布档案实际下载读回、后台通知归属去重、KBF full 参考/错误、Astra/One Token 条件隔离与推理排除。已审阅英文灵动岛截图，环的缺失数值用 `--`，完整状态留在详情，修复英文长状态裁切。

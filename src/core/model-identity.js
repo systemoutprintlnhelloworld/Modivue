@@ -14,4 +14,15 @@ export function modelIdentityParts(value) {
   ];
 }
 
-export function modelIdentity(value) { return JSON.stringify(modelIdentityParts(value)); }
+export function modelIdentity(value, options = {}) {
+  const parts = modelIdentityParts(value);
+  // Quality methods (except Juice) intentionally share results between
+  // reasoning profiles.  Callers that need the strict four-tuple (routing,
+  // Juice and request de-duplication) keep the default behaviour.
+  if (options.ignoreReasoning) parts[3] = null;
+  return JSON.stringify(parts);
+}
+
+export function qualityIdentity(value, evaluatorId) {
+  return modelIdentity(value, { ignoreReasoning: evaluatorId !== "juice" });
+}

@@ -1,16 +1,20 @@
+import { summarizeBazaarlink } from "./src/core/bazaarlink-summary.js";
+import { bridgePaths } from "./src/core/island-bridge.js";
 import { aggregate, ttftGauge } from "./src/core/metrics.js";
+import { requestCostLabel } from "./src/core/request-cost.js";
 import { fetchModelCatalog, matchModelName } from "./src/core/model-match.js";
 import { summarizeVerification, verificationRunLabel } from "./src/core/quality-summary.js";
-import { modelIdentity, modelIdentityParts, reasoningEffortOf } from "./src/core/model-identity.js";
+import { modelIdentity, modelIdentityParts, reasoningEffortOf, qualityIdentity } from "./src/core/model-identity.js";
 import { isAgentWorking, normalizeAgentStatus } from "./src/core/agent-activity.js";
 import { transitionIsland } from "./src/core/island-state.js";
 import { liveIslandModels, workingIslandModels, islandDisplayModels } from "./src/core/island-display.js";
 import { preferenceFields, preferenceDefaults } from "./src/core/preferences.js";
 import { builtInQuestions, verificationReferences } from "./src/data/question-tests.js";
 import { comparableAnswer } from "./src/core/answer-comparison.js";
-import { hlwyPrompt, defaultShortPrompt } from "./src/core/hlwy-reference.js";
+import { hlwyPrompt, defaultShortPrompt, trustedHLWYReference } from "./src/core/hlwy-reference.js";
 import { setLocale, currentLocale, translate } from "./src/core/i18n.js";
 import { distributionArchive } from "./src/core/calibration-export.js";
+import { calibrationReference, calibrationWire } from "./src/core/calibration-reference.js";
 
 const desktopMode = new URLSearchParams(location.search).get("desktop");
 if (desktopMode) document.body.classList.add(`desktop-${desktopMode}`);
@@ -54,7 +58,7 @@ const defaultSettings = {
   verificationRequestDelaySeconds: 2,
   questionIntervalSeconds: 60,
   probeDailyLimit: 256,
-  verificationSamples: 50,
+  verificationSamples: 10,
   probeMaxOutputTokens: 16,
   probeInstruction: "Reply with the word ok.",
   ttftThresholdMs: 2000,
@@ -78,7 +82,9 @@ const state = {
   qualityRuns: [],
   hiddenTrendSeries: new Set(),
   qualityReportId: null,
+  qualityHistoryFilter: "all",
   routeSort: "ttft",
+  routeMethod: "all",
   routeSeries: "",
   routeReportId: null,
   modelPage: 0,
@@ -92,6 +98,11 @@ const state = {
   config: null,
   calibration: null,
   calibrationError: null,
+  trustedProviders: [],
+  balances: [],
+  balanceAdapters: {},
+  channelPricing: {},
+  ztest: { models: [], jobs: [] },
   publicBaselines: null,
   view: "overview",
   rangeHours: 1,
@@ -107,6 +118,7 @@ const state = {
   lastUpdatedAt: null,
   dataError: null,
   notifiedEventIds: new Set()
+  ,balanceAlerted: new Set()
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -141,9 +153,7 @@ function sameIdentity(record, model) {
 }
 
 function sameModelRoute(record, model) {
-  const left = identityParts(record);
-  const right = identityParts(model);
-  return left.slice(0, 4).every((value, index) => value === right[index]);
+  return sameIdentity(record, model);
 }
 
 function selectedModel() {
@@ -268,7 +278,7 @@ function settingsSaveStatus(message, tone = "info") {
 }
 
 function scheduleSettingsSave(input) {
-  if (!input.name || input.disabled || !input.closest("#settings-form, #customization-form")) return;
+  if (!input || !input.name || input.disabled || !input.closest("#settings-form, #customization-form")) return;
   settingsDraft.set(input.name, { value: input.type === "checkbox" ? input.checked
     : input.type === "number" || ["probeIntervalMinutes", "defaultHours"].includes(input.name) ? (input.value === "" ? null : Number(input.value)) : input.value,
     valid: input.checkValidity() && (input.type !== "number" || input.value !== "") });
@@ -282,10 +292,11 @@ async function persistSettingsPatch(patch) {
   for (const [key, value] of Object.entries(patch)) pendingSettings.set(key, { value, revision });
   const save = async () => {
     settingsSaveStatus("正在自动保存…");
-    if (patch.notifications) {
+    if (patch.notifications || patch.balanceSystemAlerts) {
       const granted = hasDesktopBridge() ? (await desktopRequest({ type: "notification-permission" })).granted
         : "Notification" in window && (Notification.permission === "granted" || await Notification.requestPermission() === "granted");
-      patch.notifications = Boolean(granted);
+      if (patch.notifications) patch.notifications = Boolean(granted);
+      if (patch.balanceSystemAlerts) patch.balanceSystemAlerts = Boolean(granted);
       if (!granted) showToast("系统通知未获授权，请在系统设置中允许 Modivue 通知", "warning");
     }
     const result = await fetchJson("/api/settings", { method: "PATCH", body: JSON.stringify(patch) });
@@ -297,7 +308,7 @@ async function persistSettingsPatch(patch) {
     if (["defaultQuestionId", "defaultHours"].some(key => Object.hasOwn(patch, key))) state.questionWindows = {};
     if (Object.hasOwn(patch, "defaultHours")) { state.rangeHours = state.settings.defaultHours; updateRangeControl(); }
     applyAppearance(); updateModels(state.summaryGroups); renderAll({ preserveSettings: true });
-    for (const name of ["hlwySource", "notifications"]) {
+    for (const name of ["hlwySource", "notifications", "balanceSystemAlerts"]) {
       const input = $(`#view-content [name="${name}"]`);
       if (input && Object.hasOwn(patch, name) && !settingsDraft.has(name)) {
         if (input.type === "checkbox") input.checked = state.settings[name]; else input.value = state.settings[name];
@@ -384,17 +395,17 @@ function formatTimestamp(value, includeDate = false) {
 }
 
 function formatDuration(milliseconds) {
-  if (!Number.isFinite(milliseconds)) return "未提供";
+  if (!Number.isFinite(milliseconds)) return translate("未提供");
   if (milliseconds < 1000) return `${Math.round(milliseconds)} ms`;
   return `${(milliseconds / 1000).toFixed(milliseconds < 10000 ? 2 : 1)} s`;
 }
 
 function formatPercent(value, digits = 0) {
-  return Number.isFinite(value) ? `${(value * 100).toFixed(digits)}%` : "未提供";
+  return Number.isFinite(value) ? `${(value * 100).toFixed(digits)}%` : translate("未提供");
 }
 
 function formatCost(value) {
-  return Number.isFinite(value) ? `$${value.toFixed(6)}` : "待计费";
+  return Number.isFinite(value) ? `$${value.toFixed(6)}` : translate("待计费");
 }
 
 function formatInteger(value) {
@@ -431,7 +442,7 @@ function samplesForModel(model) {
 
 function qualityRunsForModel(model) {
   if (!model) return [];
-  return state.qualityRuns.filter((run) => sameModelRoute(run, model));
+  return state.qualityRuns.filter((run) => qualityIdentity(run, run.evaluator_id) === qualityIdentity(model, run.evaluator_id));
 }
 
 function inSelectedRange(timestamp) {
@@ -444,11 +455,11 @@ function metricPointsForModel(model, metric, count = 80) {
     const method = model?.verification?.numeric?.method;
     const evaluatorId = method === "juice-direction" ? "juice" : method;
     const latest = model?.verification?.measurement;
-    const field = method === "hlwy-fingerprint" ? "value" : method === "meow-fingerprint" ? "declaredMatch" : method === "juice-direction" ? "directionScore" : method === "juice" ? "reportedJuice" : "jsd";
+    const field = method === "hlwy-fingerprint" ? "value" : ["meow-fingerprint", "bazaarlink-probe"].includes(method) && model.verification.numeric?.unit === "%" ? "declaredMatch" : method === "juice-direction" ? "directionScore" : method === "juice" ? "reportedJuice" : "jsd";
     rows = method === "custom-question" ? model.verification.question.points : qualityRunsForModel(model).filter((run) => inSelectedRange(run.timestamp) && run.status === "ok" && run.evaluator_id === evaluatorId
       && run.evaluator_version === latest?.evaluator_version
-      && run.metadata?.conditionsId === latest?.metadata?.conditionsId && Number.isFinite(run.metadata?.[field]))
-      .map((run) => ({ timestamp: run.timestamp, value: run.metadata[field] }));
+      && run.metadata?.conditionsId === latest?.metadata?.conditionsId)
+      .map(run => ({ timestamp: run.timestamp, value: method === "bazaarlink-probe" ? summarizeBazaarlink(run.metadata?.externalReport).declaredMatch : run.metadata?.[field] }));
   } else {
     rows = samplesForModel(model).map((sample) => {
       if (sample.status !== "ok") return null;
@@ -484,6 +495,7 @@ function qualityValue(model) {
 function verificationActivity(model) {
   const job = state.probe?.verification?.find(job => job.targetId === model?.id && job.evaluatorId === state.settings.evaluatorId);
   const target = state.probe?.targets?.find(target => target.id === model?.id);
+  if (["paused", "stopped"].includes(job?.phase)) return { busy: false, label: job.phase === "paused" ? "核验已暂停" : "核验已终止", detail: "已保留采样记录", job, target };
   if (job && job.phase !== "queued") {
     const label = job.phase === "retrying" ? "重试等待中" : "正在核验";
     const count = `${job.completed || 0} / ${job.total || "--"} 个有效样本`;
@@ -494,6 +506,7 @@ function verificationActivity(model) {
   if (target?.pauseReason) return { busy: false, label: "等待空闲", detail: target.pauseReason, target };
   if (!model?.sessions?.length) return { busy: false, label: "未核验", detail: "当前没有运行会话" };
   if (!target) return { busy: false, label: "接入待完善", detail: model.sessions.find(session => session.error)?.error || "当前模型或渠道凭据尚未确定", target };
+  if (!target.automaticEligible) return { busy: false, label: "待命", detail: "自动核验仅在 Agent 工作时进行；可手动开始", target };
   if (!state.probe?.enabled) return { busy: false, label: "自动核验关闭", detail: "可以手动核验当前会话", target };
   const lastRun = model?.verification?.selected;
   const detail = lastRun?.status === "unsupported" ? lastRun.rationale
@@ -504,7 +517,7 @@ function verificationActivity(model) {
 function verificationStatusMarkup(model) {
   const activity = verificationActivity(model);
   const job = activity.job;
-  return `<div class="verification-status" role="status" aria-live="polite" data-phase="${escapeHtml(job?.phase || "waiting")}"><span class="${job && job.phase !== "queued" ? "spin" : ""}" aria-hidden="true">${job ? "↻" : "◷"}</span><div><strong>${escapeHtml(activity.label)}</strong><small>${escapeHtml(activity.detail)}</small>${job?.total ? `<progress max="${job.total}" value="${job.completed || 0}" aria-label="核验有效样本进度"></progress>` : ""}</div></div>`;
+  return `<div class="verification-status" role="status" aria-live="polite" data-phase="${escapeHtml(job?.phase || "waiting")}"><span class="${job && job.phase !== "queued" ? "spin" : ""}" aria-hidden="true">${job ? "↻" : "◷"}</span><div title="${escapeHtml(activity.detail)}"><strong>${escapeHtml(activity.label)}</strong><small>${escapeHtml(activity.detail)}</small>${job?.total ? `<progress max="${job.total}" value="${job.completed || 0}" aria-label="核验有效样本进度"></progress>` : ""}</div></div>`;
 }
 
 function verificationPercent(model) {
@@ -649,7 +662,7 @@ function applyQualityRuns() {
   state.models.forEach((model) => {
     const runs = qualityRunsForModel(model);
     model.verification = summarizeVerification(runs, state.settings.evaluatorId, { question: state.questions.find(item => item.id === state.settings.defaultQuestionId), target: model,
-      questionSummary: state.questionWindows?.[modelIdentity(model)],
+      questionSummary: state.questionWindows?.[qualityIdentity(model, "custom-question")],
       since: state.rangeHours ? Date.now() - state.rangeHours * 3600000 : 0 });
     const scores = metricPointsForModel(model, "quality", Infinity).map((point) => point.value);
     model.quality = model.verification.numeric?.value ?? null;
@@ -680,7 +693,23 @@ function updateModels(groups) {
       color: group.protocol === "anthropic" ? "mint" : "blue", quality: null, qualityStats: {}, evaluator: null,
       configured: false, agents: [], sessions: []
     };
-    models.set(model.id, model);
+    // Catalog refreshes can temporarily disagree on canonicalModelId (null
+    // before matching, then openai/... afterwards). Treat the observed model
+    // plus route tuple as the same quadruple so a Codex session is not shown
+    // twice while the catalog settles.
+    const duplicate = [...models.values()].find(existing => {
+      const sameRoute = identityId(existing) === identityId(model);
+      const sameObserved = existing.provider === model.provider
+        && existing.endpoint === model.endpoint && existing.keyGroup === model.keyGroup
+        && (existing.reasoningEffort || null) === (model.reasoningEffort || null)
+        && existing.observedModel === model.observedModel;
+      return sameRoute || sameObserved;
+    });
+    if (duplicate) {
+      duplicate.canonicalModelId ||= model.canonicalModelId;
+      if (model.totalCount > duplicate.totalCount) Object.assign(duplicate, model, { id: duplicate.id,
+        agents: duplicate.agents, sessions: duplicate.sessions });
+    } else models.set(model.id, model);
   });
   // Keep every currently discovered top-level session in the normal rail.
   // Activity only gates compact visibility and paid probes; an idle session
@@ -697,7 +726,7 @@ function updateModels(groups) {
     if (existing) {
       existing.configured = true;
       existing.agents = [...new Set([...existing.agents, agent.label || agent.id])];
-      if (agent.sessionId) existing.sessions.push(agent);
+      if (agent.sessionId && !existing.sessions.some(session => session.sessionId === agent.sessionId)) existing.sessions.push(agent);
       const passive = agent.passiveMetrics;
       if (passive && Number.isFinite(passive.cacheHitRate)
         && (!Number.isFinite(existing.passiveObservedAt)
@@ -809,6 +838,7 @@ function metricSymbol(kind) {
     quality: '<path d="m12 3-1.5 4.5L6 9l4.5 1.5L12 15l1.5-4.5L18 9l-4.5-1.5L12 3Z"/><path d="m19 14-.75 2.25L16 17l2.25.75L19 20l.75-2.25L22 17l-2.25-.75L19 14Z"/><path d="m5 3-.5 1.5L3 5l1.5.5L5 7l.5-1.5L7 5l-1.5-.5L5 3Z"/>',
     cache: '<ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 4 16 4 16 0V5M4 12c0 4 16 4 16 0"/>',
     ttft: '<path d="m13 2-9 12h7l-1 8 10-13h-7z"/>'
+    ,balance: '<path d="M4 6V4h14v3M3 7h18v14H3z"/><path d="M21 11h-6v6h6"/><circle cx="17" cy="14" r=".8"/>'
   };
   return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[kind] || paths.quality}</svg>`;
 }
@@ -820,7 +850,7 @@ function metricRing(radius, progress, color, label, value, range, minimum, maxim
     return `<circle class="ring-extreme" data-extreme="${kind}" cx="${p.x}" cy="${p.y}" r="1.2" visibility="${Number.isFinite(percent) ? "visible" : "hidden"}"><title>${escapeHtml(name)} · ${escapeHtml(range)}</title></circle>`;
   };
   const low = ringPoint(radius, minimum);
-  return `<g class="ring-metric" style="--ring-color:${color}" tabindex="0" aria-label="${escapeHtml(`${label} ${value}，范围 ${range}`)}">
+  return `<g class="ring-metric" data-kind="${kind}" style="--ring-color:${color}" tabindex="0" aria-label="${escapeHtml(`${label} ${value}，范围 ${range}`)}">
     <title>${escapeHtml(`${label} ${value} · ${range}`)}</title><circle class="ring-track" cx="30" cy="30" r="${radius}"/>
     <circle class="ring-peak" cx="30" cy="30" r="${radius}" pathLength="100" visibility="${maximum > 0 ? "visible" : "hidden"}" stroke-dasharray="${ringProgress(maximum)} 100" transform="rotate(-90 30 30)"/>
     <circle class="ring-value" cx="30" cy="30" r="${radius}" pathLength="100" opacity="${Number.isFinite(progress) ? 1 : 0}" stroke-dasharray="${ringProgress(progress)} 100" transform="rotate(-90 30 30)"/>
@@ -888,13 +918,9 @@ function renderModelSelectors() {
   const selected = selectedModel();
   const strip = $("#model-strip");
   const visible = filteredModels();
-  const pageSize = 5;
-  const pageCount = Math.max(1, Math.ceil(visible.length / pageSize));
-  state.modelPage = clamp(Number(state.modelPage) || 0, 0, pageCount - 1);
-  const pageStart = state.modelPage * pageSize;
-  const pageModels = visible.slice(pageStart, pageStart + pageSize);
+  const pageModels = visible;
   strip.innerHTML = visible.length ? pageModels.map((model, index) => `
-    <button class="model-chip ${model.id === selected?.id ? "active" : ""}" data-model-index="${pageStart + index}" data-model-id="${escapeHtml(model.id)}" aria-pressed="${model.id === selected?.id}">
+    <button class="model-chip ${model.id === selected?.id ? "active" : ""}" data-model-index="${index}" data-model-id="${escapeHtml(model.id)}" aria-pressed="${model.id === selected?.id}">
       <span class="provider-orb ${model.color}">${providerGlyph(model)}</span>
       <span><strong>${escapeHtml(model.label)}</strong><small>${escapeHtml(model.reasoningEffort || "档位未指定")} · ${escapeHtml(endpointLabel(model.endpoint))} · ${escapeHtml(model.keyGroup || "无分组")}</small></span>
     </button>`).join("") : `<div class="empty-state wide">当前筛选下没有模型</div>`;
@@ -913,7 +939,9 @@ function renderModelSelectors() {
   stage.style.setProperty("--island-visible-height", `${normalHeight}px`);
   stage.style.setProperty("--island-list-height", `${normalHeight}px`);
   $("#quick-island").style.setProperty("--island-visible-height", `${normalHeight}px`);
-  $("#quick-island").style.setProperty("--island-envelope-height", `${Math.max(230, normalHeight) + 90}px`);
+  const focusCount = ["Quality", "Cache", "Ttft", "Balance"].filter(kind => state.settings[`focusShow${kind}`]).length;
+  $("#quick-island").style.setProperty("--focus-count", String(focusCount));
+  $("#quick-island").style.setProperty("--island-envelope-height", `${Math.max(230, focusCount * 79, normalHeight) + 90}px`);
   stage.dataset.overflow = String(liveModels.length > maxAgents);
   stage.dataset.visibleCount = String(Math.min(liveModels.length || 1, maxAgents));
   const islandMarkup = visibleIslandModels.length ? visibleIslandModels.map((model, index) => {
@@ -921,12 +949,16 @@ function renderModelSelectors() {
     const cacheDisplay = formatPercent(model.cacheRate);
     const ttftDisplay = formatDuration(model.ttftMs);
     const compactVisible = working.some((item) => item.id === model.id);
-    const selectedMetric = state.settings[islandState.mode === "compact" ? "compactMetric" : "normalMetric"];
-    const metric = modelMetrics(model).find(metric => metric.kind === selectedMetric) || modelMetrics(model)[0];
+    const availableMetrics = modelMetrics(model, true);
+    const balanceMetric = availableMetrics.find(item => item.kind === "balance");
+    let metrics = availableMetrics.filter(item => islandState.mode === "normal"
+      ? state.settings[`normalShow${item.kind[0].toUpperCase()}${item.kind.slice(1)}`]
+      : item.kind === state.settings.compactMetric);
     return `<button class="island-model ${model.id === selected?.id ? "active" : ""} ${compactVisible ? "compact-visible" : ""}" data-model-index="${index}" data-island-model aria-label="${escapeHtml(model.label)}：核验 ${qualityDisplay}，Cache ${cacheDisplay}，TTFT ${ttftDisplay}" aria-pressed="${model.id === selected?.id}">
       <span class="metric-rings">
-        <svg class="ring-svg" viewBox="0 0 60 60" style="visibility:${selectedMetric === "none" ? "hidden" : "visible"}">
-          ${metricRing(27, metric.progress, metric.health.color, metric.name, metric.value, metric.range, metric.min, metric.max, metric.kind)}
+        <svg class="ring-svg" viewBox="0 0 60 60">
+          ${metrics.map((item, metricIndex) => metricRing(27 - metricIndex * 5, item.progress, item.health.color, item.name, item.value, item.range, item.min, item.max, item.kind)).join("")}
+          ${balanceMetric?.progress != null ? `<circle class="compact-balance-ring" cx="30" cy="30" r="29" pathLength="100" stroke-dasharray="${ringProgress(balanceMetric.progress)} 100" transform="rotate(-90 30 30)" aria-hidden="true"/>` : ""}
         </svg>
         <b class="island-model-logo" title="${escapeHtml(model.standardLabel || model.label)}">${modelLogo(model)}</b>
       </span>
@@ -968,8 +1000,8 @@ function renderModelSelectors() {
     waiting = document.createElement("div");
     waiting.className = "island-empty";
     waiting.setAttribute("role", "status");
-    waiting.setAttribute("aria-label", "等待 Agent");
-    waiting.innerHTML = "等待<br>Agent";
+    waiting.setAttribute("aria-label", "暂无活动 Agent");
+    waiting.innerHTML = `<svg class="island-idle-glyph" viewBox="0 0 64 64" aria-hidden="true"><circle class="idle-orbit" cx="32" cy="32" r="22"/><circle class="idle-core" cx="32" cy="32" r="7"/><path class="idle-spark" d="M32 6v7M32 51v7M6 32h7M51 32h7"/></svg>`;
     $(".island-stage").append(waiting);
   }
   waiting.hidden = islandDisplayModels(liveModels, islandState.mode).length > 0;
@@ -980,13 +1012,39 @@ function renderModelSelectors() {
   });
   const previous = $("#model-previous"); const next = $("#model-next");
   if (previous && next) {
-    previous.hidden = next.hidden = visible.length <= pageSize;
-    previous.disabled = state.modelPage <= 0; next.disabled = state.modelPage >= pageCount - 1;
-    previous.onclick = () => { if (state.modelPage > 0) { state.modelPage--; renderModelSelectors(); } };
-    next.onclick = () => { if (state.modelPage < pageCount - 1) { state.modelPage++; renderModelSelectors(); } };
+    const updateCarouselButtons = () => {
+      const overflow = strip.scrollWidth > strip.clientWidth + 2;
+      previous.hidden = next.hidden = !overflow;
+      previous.disabled = strip.scrollLeft <= 1;
+      next.disabled = strip.scrollLeft + strip.clientWidth >= strip.scrollWidth - 1;
+    };
+    updateCarouselButtons();
+    strip.onscroll = updateCarouselButtons;
+    previous.onclick = () => strip.scrollBy({ left: -Math.max(180, strip.clientWidth * .78), behavior: reducedMotion() ? "auto" : "smooth" });
+    next.onclick = () => strip.scrollBy({ left: Math.max(180, strip.clientWidth * .78), behavior: reducedMotion() ? "auto" : "smooth" });
   }
-  strip.onwheel = (event) => { if (Math.abs(event.deltaX) > Math.abs(event.deltaY)) { strip.scrollLeft += event.deltaX; } };
-  $$('[data-model-index]').forEach((button) => { button.onclick = async () => {
+  strip.onwheel = (event) => {
+    if (Math.abs(event.deltaX) <= Math.abs(event.deltaY)) { event.preventDefault(); strip.scrollLeft += event.deltaY; }
+  };
+  // Mouse/touch drag provides the same horizontal paging affordance as a
+  // trackpad, while preserving normal chip clicks when movement is minimal.
+  let dragStart = null;
+  strip.onpointerdown = event => {
+    if (event.button !== 0) return;
+    dragStart = { x: event.clientX, scroll: strip.scrollLeft, moved: false };
+    strip.setPointerCapture?.(event.pointerId);
+  };
+  strip.onpointermove = event => {
+    if (!dragStart) return;
+    const delta = event.clientX - dragStart.x;
+    if (Math.abs(delta) > 4) dragStart.moved = true;
+    if (dragStart.moved) { event.preventDefault(); strip.scrollLeft = dragStart.scroll - delta; }
+  };
+  strip.onpointerup = event => { if (dragStart?.moved) { event.preventDefault(); strip.dataset.dragged = "true"; } dragStart = null; strip.releasePointerCapture?.(event.pointerId); };
+  strip.onpointercancel = () => { dragStart = null; };
+  strip.onclick = event => { if (strip.dataset.dragged === "true") { strip.dataset.dragged = "false"; event.preventDefault(); event.stopPropagation(); } };
+  $$('[data-model-index]').forEach((button) => { button.onclick = async (event) => {
+    if (strip.dataset.dragged === "true") { strip.dataset.dragged = "false"; event.preventDefault(); return; }
     const models = button.closest("#island-models") ? visibleIslandModels : filteredModels();
     const model = models[Number(button.dataset.modelIndex)];
     if (!model) return;
@@ -1016,6 +1074,7 @@ let islandHovered = false;
 let islandFocused = false;
 let islandState = { mode: "compact", modelId: null };
 let renderingIslandState = false;
+let focusAnchorPointer = null;
 function enterIslandState(event) {
   const next = transitionIsland(islandState, event);
   if (next.mode === islandState.mode && next.modelId === islandState.modelId) return;
@@ -1025,6 +1084,8 @@ function enterIslandState(event) {
     $("#island-focus").style.setProperty("--focus-origin", `${source ? source.y + source.height / 2 - stage.y - stage.height / 2 : 0}px`);
   }
   islandState = next;
+  if (next.mode === "focus") focusAnchorPointer = lastIslandPointer ? { ...lastIslandPointer } : null;
+  if (next.mode === "compact") focusAnchorPointer = null;
   document.body.dataset.islandMode = next.mode;
   islandHovered = next.mode !== "compact";
   if (next.mode !== "focus") hidePopover();
@@ -1037,12 +1098,16 @@ function enterIslandState(event) {
   updateIslandAttention();
 }
 
-function modelMetrics(model) {
-  return [
+function modelMetrics(model, includeBalance = false) {
+  const balance = balanceForModel(model);
+  const metrics = [
     { kind: "quality", name: "模型核验", value: qualityValue(model), progress: verificationScore(model), health: verificationHealth(model), range: metricRange(model, "quality"), min: qualityRingStats(model).min, max: qualityRingStats(model).max },
     { kind: "cache", name: "Cache", value: formatPercent(model?.cacheRate), progress: Number.isFinite(model?.cacheRate) ? model.cacheRate * 100 : null, health: metricHealth("cache", Number.isFinite(model?.cacheRate) ? model.cacheRate * 100 : null), range: metricRange(model, "cache"), min: Number.isFinite(model?.cacheStats?.min) ? model.cacheStats.min * 100 : null, max: Number.isFinite(model?.cacheStats?.max) ? model.cacheStats.max * 100 : null },
     { kind: "ttft", name: "TTFT", value: formatDuration(model?.ttftMs), progress: ttftScore(model?.ttftMs), health: metricHealth("ttft", model?.ttftMs), range: metricRange(model, "ttft"), min: ttftScore(model?.ttftStats?.min), max: ttftScore(model?.ttftStats?.max) }
   ];
+  if (includeBalance) metrics.push({ kind: "balance", name: "余额", value: balanceText(balance), progress: balance?.status === "ok" && balance.ratio != null ? balance.ratio * 100 : null,
+    health: metricHealth("cache", balance?.status === "ok" && balance.ratio != null ? balance.ratio * 100 : null), range: balance?.status === "ok" ? balanceText({ ...balance, remaining: balance.initial }) : "未提供", min: 0, max: 100 });
+  return metrics;
 }
 
 function renderFocusedMetrics() {
@@ -1051,12 +1116,16 @@ function renderFocusedMetrics() {
   focus.inert = !focused;
   $("#island-models").inert = focused;
   const model = state.models.find((item) => item.id === islandState.modelId);
-  const metrics = modelMetrics(model).map((metric) => ({ ...metric, radius: 27 }));
-  if (!focus.children.length) focus.innerHTML = metrics.map((metric, index) => `<button class="focus-model" data-focus-metric="${metric.kind}" style="--slot-offset:${(index - 1) * 79}px"><span class="metric-rings"><svg class="ring-svg" viewBox="0 0 60 60">${metricRing(27, metric.progress, metric.health.color, metric.name, metric.value, metric.range, metric.min, metric.max, metric.kind)}</svg><i class="focus-metric-icon">${metricSymbol(metric.kind)}</i></span></button>`).join("");
+  const metrics = modelMetrics(model, true).filter(metric => state.settings[`focusShow${metric.kind[0].toUpperCase()}${metric.kind.slice(1)}`] !== false).map((metric) => ({ ...metric, radius: 27 }));
+  const metricKey = metrics.map(metric => metric.kind).join(",");
+  if (focus.dataset.metricKinds !== metricKey) {
+    focus.dataset.metricKinds = metricKey;
+    focus.innerHTML = metrics.map((metric, index) => `<button class="focus-model" data-focus-metric="${metric.kind}" style="--slot-offset:${(index - (metrics.length - 1) / 2) * 79}px"><span class="metric-rings"><svg class="ring-svg" viewBox="0 0 60 60">${metricRing(27, metric.progress, metric.health.color, metric.name, metric.value, metric.range, metric.min, metric.max, metric.kind)}</svg><i class="focus-metric-icon">${metricSymbol(metric.kind)}</i></span></button>`).join("");
+  }
   if (!focused || !model) return;
   metrics.forEach((metric, index) => {
     const button = focus.children[index];
-    button.hidden = !state.settings[`focusShow${metric.kind[0].toUpperCase()}${metric.kind.slice(1)}`];
+    button.hidden = false;
     button.style.setProperty("--ring-color", metric.health.color);
     button.setAttribute("aria-label", `${model.label} · ${metric.name} ${metric.value}`);
     updateMetricRing($(".ring-metric", button), metric);
@@ -1095,6 +1164,7 @@ function updateIslandAttention() {
 
 async function openMetric(model, view) {
   if (!model) return;
+  if (view === "balance") view = "cost";
   if (desktopMode === "island") desktopMessage({ type: "open-main", modelId: model.id, view });
   else { await selectModelById(model.id); setView(view); }
 }
@@ -1103,8 +1173,16 @@ function reportIslandLayout() {
   const island = $("#quick-island");
   const { x, y, width, height } = island.getBoundingClientRect();
   const buffer = $("#island-buffer").getBoundingClientRect();
+  const popover = $("#hover-popover");
+  const popoverHeight = popover?.classList.contains("visible") ? popover.offsetHeight : 0;
+  const envelope = parseFloat(island.style.getPropertyValue("--island-envelope-height")) || height;
+  // Native island sizing must account for the expanded popover as well as the
+  // rail; otherwise the lower balance/cost rows are clipped until scrolling.
+  const contentHeight = Math.max(envelope, popoverHeight + 32);
+  const surfaceRect = element => ({ ...element.getBoundingClientRect().toJSON(), radius: parseFloat(getComputedStyle(element).borderTopLeftRadius) || 0 });
   desktopMessage({ type: "island-layout", x, y, width,
-    height: parseFloat(island.style.getPropertyValue("--island-envelope-height")) || height,
+    height: contentHeight, glass: state.settings.themePreset === "glass" && islandState.mode !== "compact",
+    surfaces: [surfaceRect(island), ...(popoverHeight ? [surfaceRect(popover)] : [])],
     buffer: buffer.toJSON() });
 }
 
@@ -1129,6 +1207,7 @@ function positionPopover(event) {
     popover.style.setProperty("--connector-y", `${clamp(event.clientY - top, 26, height - 26)}px`);
     popover.style.setProperty("--connector-stretch", String(clamp((onLeft ? event.clientX : window.innerWidth - event.clientX) / 84, .72, 1.35)));
     updateIslandBridge(event);
+    reportIslandLayout();
     return;
   }
   const preferredLeft = event.clientX > window.innerWidth * 0.58 ? event.clientX - bounds.width - 18 : event.clientX + 18;
@@ -1139,22 +1218,30 @@ function positionPopover(event) {
 let bridgePointer = null;
 let bridgeTarget = null;
 let bridgeFrame = null;
+let bridgeVelocity = { x: 0, y: 0 };
+let bridgeTime = 0;
 function updateIslandBridge(event) {
   bridgeTarget = { x: event.clientX, y: event.clientY };
   bridgePointer ||= { ...bridgeTarget };
   if (!bridgeFrame) bridgeFrame = requestAnimationFrame(drawIslandBridge);
 }
 
-function drawIslandBridge() {
+function drawIslandBridge(time) {
   bridgeFrame = null;
   const popover = $("#hover-popover");
-  if (!popover.classList.contains("visible")) { bridgePointer = null; return; }
-  const smoothing = reducedMotion() ? 1 : .24;
-  bridgePointer.x += (bridgeTarget.x - bridgePointer.x) * smoothing;
-  bridgePointer.y += (bridgeTarget.y - bridgePointer.y) * smoothing;
+  if (!popover.classList.contains("visible")) { bridgePointer = null; bridgeVelocity = { x: 0, y: 0 }; bridgeTime = 0; return; }
+  const dt = Math.min((time - bridgeTime) / 1000 || 1 / 60, 1 / 30);
+  bridgeTime = time;
+  for (const axis of ["x", "y"]) {
+    if (reducedMotion()) { bridgePointer[axis] = bridgeTarget[axis]; bridgeVelocity[axis] = 0; }
+    else {
+      bridgeVelocity[axis] += (bridgeTarget[axis] - bridgePointer[axis]) * 110 * dt;
+      bridgeVelocity[axis] *= Math.exp(-16 * dt);
+      bridgePointer[axis] += bridgeVelocity[axis] * dt;
+    }
+  }
   const style = state.settings.bridgeStyle || "flow";
-  const idleWave = reducedMotion() ? 0 : Math.sin(performance.now() / (style === "pulse" ? 260 : 520)) * (style === "pulse" ? 3 : 1.5);
-  bridgePointer.y += idleWave;
+  const sway = reducedMotion() ? 0 : clamp(-bridgeVelocity.y * .035, -12, 12) + Math.sin(time / (style === "pulse" ? 850 : 1400)) * (style === "ribbon" ? 2.5 : 1);
   const rail = $("#quick-island").getBoundingClientRect();
   const onLeft = document.body.dataset.islandSide === "left";
   // Use layout dimensions so the connector doesn't follow the popover's reveal transform.
@@ -1168,9 +1255,9 @@ function drawIslandBridge() {
   const middleX = startX + (endX - startX) * (.3 + tension * .4);
   const bridge = $("#island-bridge");
   bridge.setAttribute("viewBox", `0 0 ${innerWidth} ${innerHeight}`);
-  const middleY = (startY + endY) / 2;
-  const shoulder = (endX - startX) * .22;
-  $("path", bridge).setAttribute("d", `M ${startX} ${startY-19} C ${startX} ${startY-7} ${middleX-shoulder} ${middleY-3} ${middleX} ${middleY-3} C ${middleX+shoulder} ${middleY-3} ${endX} ${endY-7} ${endX} ${endY-15} L ${endX} ${endY+15} C ${endX} ${endY+7} ${middleX+shoulder} ${middleY+3} ${middleX} ${middleY+3} C ${middleX-shoulder} ${middleY+3} ${startX} ${startY+7} ${startX} ${startY+19} Z`);
+  const paths = bridgePaths(startX, startY, endX, endY, middleX, sway);
+  $(".bridge-body", bridge).setAttribute("d", paths.body);
+  $(".bridge-current", bridge).setAttribute("d", paths.current);
   bridge.dataset.style = style;
   bridge.classList.toggle("visible", popover.classList.contains("visible"));
   if (!reducedMotion() || Math.abs(bridgeTarget.x - bridgePointer.x) + Math.abs(bridgeTarget.y - bridgePointer.y) > .2) bridgeFrame = requestAnimationFrame(drawIslandBridge);
@@ -1199,11 +1286,13 @@ function showModelHistoryPopover(event, model) {
   popover.dataset.historyRevision = revision;
   const cost = verificationCost(qualityRunsForModel(model));
   const health = [verificationHealth(model), metricHealth("cache", Number.isFinite(model.cacheRate) ? model.cacheRate * 100 : null), metricHealth("ttft", model.ttftMs)];
-  popover.innerHTML = `<div class="popover-title"><strong class="model-heading">${modelLogo(model)}${escapeHtml(model.label)}</strong><span>${escapeHtml(formatRange())}</span></div><div class="popover-subtitle"><span data-info="endpoint">${escapeHtml(endpointLabel(model.endpoint))}</span><span data-info="keygroup">${escapeHtml(model.keyGroup || "无 Key")}</span><span data-info="reasoning">${escapeHtml(model.reasoningEffort || "默认档位")}</span></div><div class="popover-agents" data-info="agents">${sessions.length ? sessions.map(agentTag).join("") : `<b>状态待同步</b>`}</div><div class="popover-history">
+  const shownSessions = sessions.slice(0, 4);
+  const sessionOverflow = sessions.length > shownSessions.length ? `<b class="agent-overflow">+${sessions.length - shownSessions.length}</b>` : "";
+  popover.innerHTML = `<div class="popover-title"><strong class="model-heading">${modelLogo(model)}${escapeHtml(model.label)}</strong><span>${escapeHtml(formatRange())}</span></div><div class="popover-subtitle"><span data-info="endpoint">${escapeHtml(endpointLabel(model.endpoint))}</span><span data-info="keygroup">${escapeHtml(model.keyGroup || "无 Key")}</span><span data-info="reasoning">${escapeHtml(model.reasoningEffort || "默认档位")}</span></div><div class="popover-agents" data-info="agents">${shownSessions.length ? shownSessions.map(agentTag).join("") + sessionOverflow : `<b>状态待同步</b>`}</div><div class="popover-history">
     ${popoverTrend("模型核验", qualityValue(model), health[0].label, quality, health[0].color, { unavailable: "等待采样", maximum: qualityChartOptions(model).maximum })}
     ${popoverTrend("Cache", formatPercent(model.cacheRate), health[1].label, cache, health[1].color, { unavailable: "无缓存字段" })}
     ${popoverTrend("TTFT", formatDuration(model.ttftMs), health[2].label, ttft, health[2].color, { unavailable: "等待有效响应", rawTtft: true })}
-  </div>${verificationStatusMarkup(model)}<div class="popover-foot"><span>${model.sampleCount} 个性能样本</span><span title="已知费用请求 ${cost.known}/${cost.requests}">核验 ${cost.known ? formatCost(cost.total) : "--"}</span></div>`;
+  </div>${verificationStatusMarkup(model)}<div class="popover-foot"><span class="popover-finance-balance"><small>${translate("渠道余额")}</small>${balanceBadge(model)}</span><span class="popover-finance-samples"><small>${translate("性能样本")}</small>${model.sampleCount}</span><span class="popover-finance-cost" title="已知费用请求 ${cost.known}/${cost.requests}"><small>${translate("核验费用")}</small>${cost.known ? formatCost(cost.total) : "--"}</span></div>`;
   $$("[data-popover-metric]", popover).forEach(button => { button.onclick = () => openMetric(model, button.dataset.popoverMetric); });
   }
   positionPopover(event);
@@ -1240,10 +1329,109 @@ function renderMetricCard(cardSelector, value, stateText, stateTone, footLeft, f
   foot.lastElementChild.className = `delta ${stateTone === "online" ? "positive" : "neutral"}`;
 }
 
+function balanceForModel(model) {
+  const root = value => String(value || "").replace(/\/(?:api\/)?v1(?:beta)?\/?$/i, "").replace(/\/$/, "");
+  return state.balances.find(item => item.keyGroup === model?.keyGroup && root(item.baseUrl) === root(model?.endpoint || model?.baseUrl));
+}
+function balanceText(item) {
+  if (!item || item.status !== "ok") return "--";
+  return item.unlimited ? translate("无限额度") : `${new Intl.NumberFormat(currentLocale(), { maximumFractionDigits: 4 }).format(item.remaining)} ${item.unit}`;
+}
+function balanceStatsText(item) {
+  if (!item || item.status !== "ok" || item.unlimited) return balanceText(item);
+  const format = value => value == null ? "--" : `${new Intl.NumberFormat(currentLocale(), { maximumFractionDigits: 4 }).format(value)} ${item.unit}`;
+  return [balanceText(item), item.total == null ? null : `${translate("总额")} ${format(item.total)}`,
+    item.used == null ? null : `${translate("已用")} ${format(item.used)}`].filter(Boolean).join(" · ");
+}
+function walletIcon() {
+  return '<svg class="wallet-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M4 6V4h14v3M3 7h18v14H3z"/><path class="wallet-flap" d="M21 11h-6v6h6"/><circle cx="17" cy="14" r=".8"/></svg>';
+}
+function balanceBadge(model) {
+  const item = balanceForModel(model);
+  return `<button type="button" class="balance-badge" data-balance-cost-open title="${escapeHtml(translate(item?.message || "供应商余额"))}">${walletIcon()}<span>${escapeHtml(balanceText(item))}</span></button>`;
+}
+function renderBalances() {
+  const section = $("#balance-summary");
+  if (!section) return;
+  section.innerHTML = `<div class="balance-heading"><span>${escapeHtml(translate("供应商余额"))}</span><span><button class="text-button" type="button" data-balance-open>${escapeHtml(translate("配置余额"))}</button><button class="text-button" type="button" data-action="refresh-balances" ${state.balanceRefreshing ? "disabled" : ""}>${escapeHtml(translate(state.balanceRefreshing ? "刷新中" : "刷新"))}</button></span></div>${state.balances.length ? `<div class="balance-grid">${state.balances.map(item => `<div class="balance-item"><span class="balance-ring" style="--balance:${item.status === "ok" ? (item.ratio ?? 0) * 100 : 0}%"><i></i></span><div><strong>${escapeHtml(item.label)} <small>${escapeHtml(item.keyGroup)}</small></strong><small>${escapeHtml(item.status === "ok" ? balanceText(item) : translate(item.status === "disabled" ? "未启用余额查询" : item.message || "余额不可用"))}</small></div></div>`).join("")}</div>` : `<p class="balance-empty">${escapeHtml(translate("尚未保存可查询余额的渠道"))}</p>`}`;
+}
+async function loadBalances(refresh = false) {
+  if (state.balanceRefreshing) return;
+  state.balanceRefreshing = true; renderBalances();
+  try {
+    const result = await fetchJson(`/api/balances${refresh ? "?refresh=1" : ""}`);
+    state.balances = result.balances || []; state.balanceAdapters = result.adapters || {};
+    renderModelSelectors(); renderMetrics();
+    const threshold = Number(state.settings.balanceAlertThreshold || 0) / 100;
+    if (threshold <= 0) state.balanceAlerted.clear();
+    if (threshold > 0) for (const item of state.balances) {
+      if (item.status !== "ok" || item.ratio == null) continue;
+      if (item.ratio >= threshold) { state.balanceAlerted.delete(item.providerId); continue; }
+      if (state.balanceAlerted.has(item.providerId) || !state.settings.balanceAppAlerts && !state.settings.balanceSystemAlerts) continue;
+      state.balanceAlerted.add(item.providerId);
+      const message = `${item.label} · ${translate("余额低于告警阈值")}（${Math.round(item.ratio * 100)}%）`;
+      if (state.settings.balanceAppAlerts !== false) showToast(message, "warning");
+      if (state.settings.balanceSystemAlerts && hasDesktopBridge()) {
+        if (desktopMode === "island") void desktopRequest({ type: "notify", title: translate("Modivue · 余额告警"), body: message, id: `balance:${item.providerId}:${item.checkedAt}` }).catch(error => { state.balanceAlerted.delete(item.providerId); showToast(error.message, "warning"); });
+      }
+      else if (state.settings.balanceSystemAlerts && "Notification" in window && Notification.permission === "granted") new Notification("Modivue · 余额告警", { body: message });
+    }
+  } finally { state.balanceRefreshing = false; renderBalances(); }
+}
+function balanceSettingsView() {
+    return `<section class="panel balance-settings" data-settings-group="connection">${viewHeader("供应商余额", "满环基准使用总额度或已观测最高余额；充值后自动更新。余额每 15 秒自动刷新，也可手动刷新。")}${state.balances.map(item => {
+    const config = item.config || {};
+    return `<details data-detail-key="balance-${escapeHtml(item.providerId)}"><summary>${escapeHtml(item.label)} · ${escapeHtml(item.keyGroup)} · ${escapeHtml(balanceStatsText(item))}</summary><form class="balance-config-form" data-target-id="${escapeHtml(item.providerId)}"><input type="hidden" name="providerId" value="${escapeHtml(item.providerId)}"><p>${escapeHtml(item.baseUrl)} · ${escapeHtml(item.source)}${item.initial > 0 ? ` · ${escapeHtml(translate("初始基准"))} ${escapeHtml(balanceText({ status: "ok", remaining: item.initial, unit: item.unit }))}` : ""}</p><div class="trusted-fields"><label>${escapeHtml(translate("余额接口"))}<select name="adapter">${Object.entries(state.balanceAdapters).map(([id,label]) => `<option value="${id}" ${config.adapter === id ? "selected" : ""}>${escapeHtml(translate(label))}</option>`).join("")}</select></label><label><input name="enabled" type="checkbox" ${config.enabled ? "checked" : ""}>${escapeHtml(translate("启用余额查询"))}</label><label>${escapeHtml(translate("查询专用 Key"))}<input name="queryKey" type="password" autocomplete="off" placeholder="${escapeHtml(translate(config.queryKeyConfigured ? "已保存；留空继续使用" : "留空使用渠道 Key"))}"></label><label data-balance-field="new-api">${escapeHtml(translate("账户令牌"))}<input name="accessToken" type="password" autocomplete="off" placeholder="${escapeHtml(translate(config.accessTokenConfigured ? "已保存；留空继续使用" : "New API 账户令牌"))}"></label><label data-balance-field="new-api">${escapeHtml(translate("用户 ID"))}<input name="userId" value="${escapeHtml(config.userId || "")}"></label>${[["endpointPath","同站接口路径","/v1/usage"],["remainingPath","余额字段","data.balance"],["totalPath","总额度字段",""],["usedPath","已用额度字段",""],["unit","单位","USD"],["divisor","换算除数","1"]].map(([key,label,hint]) => `<label data-balance-field="custom">${escapeHtml(translate(label))}<input name="${key}" value="${escapeHtml(config[key] ?? "")}" placeholder="${hint}" ${key === "divisor" ? 'type="number" min="0.000001" step="any"' : ""}></label>`).join("")}</div><p class="balance-config-hint" title="${escapeHtml(translate("New API 账户余额需要在站点个人设置创建账户令牌，并填写用户 ID；Key 额度使用渠道 Key，原始 quota 不冒充货币。"))}">${escapeHtml(translate("New API 账户余额需要账户令牌和用户 ID"))}</p><label class="balance-reset"><input name="resetInitial" type="checkbox">${escapeHtml(translate("重新以本次余额作为满环基准"))}</label><button class="primary-button" type="submit">${escapeHtml(translate("保存并查询余额"))}</button><span role="status" class="balance-config-status"></span></form></details>`;
+  }).join("")}</section>`;
+}
+function updateBalanceFields(form) {
+  const adapter = form.elements.adapter.value;
+  $$("[data-balance-field]", form).forEach(node => { node.hidden = node.dataset.balanceField !== adapter; });
+  $(".balance-config-hint", form).hidden = adapter !== "new-api";
+}
+
+function pricingTarget() {
+  const model = selectedModel();
+  return model && { protocol: model.provider, baseUrl: model.endpoint, keyGroup: model.keyGroup, observedModel: model.observedModel };
+}
+function channelPricingView() {
+  const target = pricingTarget();
+  if (!target?.baseUrl || !target.keyGroup) return "";
+  const id = JSON.stringify([target.protocol, target.baseUrl, target.keyGroup, target.observedModel]);
+  const saved = state.channelPricing[id];
+  return `<section class="panel channel-pricing" data-settings-group="connection">${viewHeader("渠道模型单价", "API 实际费用优先；未返回费用时使用渠道单价，其次使用 models.dev。")}
+    <p class="pricing-target" translate="no">${escapeHtml(target.observedModel)} · ${escapeHtml(endpointLabel(target.baseUrl))} · ${escapeHtml(target.keyGroup)}</p>
+    <form id="channel-pricing-form" data-target-id="${escapeHtml(id)}"><label class="balance-reset"><input type="checkbox" name="enabled" ${saved ? "checked" : ""}>${escapeHtml(translate("使用渠道模型单价"))}</label>
+    <div class="trusted-fields">${[["input", "输入单价"], ["output", "输出单价"], ["cache_read", "缓存读取单价"], ["cache_write", "缓存写入单价"]].map(([key,label]) => `<label>${escapeHtml(translate(label))}<input type="number" name="${key}" min="0" step="any" max="1000000" value="${saved?.rates[key] ?? ""}" placeholder="${escapeHtml(translate(key.startsWith("cache") ? "留空按输入单价" : "必填；0 表示免费"))}"></label>`).join("")}</div>
+    <p class="pricing-unit">USD / 1M tokens</p><p class="pricing-notice">${escapeHtml(translate("仅用于后续请求的估算；历史费用保留原来源。"))}</p><span class="pricing-status" role="status">${escapeHtml(translate("自动保存"))}</span></form></section>`;
+}
+let pricingSaveQueue = Promise.resolve(), pricingSaveRevision = 0;
+function savePricingForm(form) {
+  const target = JSON.parse(form.dataset.targetId);
+  const payload = { protocol: target[0], baseUrl: target[1], keyGroup: target[2], observedModel: target[3], enabled: form.elements.enabled.checked,
+    rates: Object.fromEntries(["input", "output", "cache_read", "cache_write"].map(key => [key, form.elements[key].value.trim() === "" ? null : Number(form.elements[key].value)])) };
+  const revision = ++pricingSaveRevision;
+  $(".pricing-status", form).textContent = translate("保存中");
+  pricingSaveQueue = pricingSaveQueue.catch(() => {}).then(async () => {
+    try {
+      const result = await fetchJson("/api/pricing", { method: "PATCH", body: JSON.stringify(payload) });
+      state.channelPricing = result.pricing;
+      if (revision === pricingSaveRevision) { $(".pricing-status", form).textContent = translate("渠道单价已保存"); showToast("渠道单价已保存", "success"); }
+    } catch (error) {
+      if (revision === pricingSaveRevision) { $(".pricing-status", form).textContent = translate(error.message); showToast(error.message, "error"); }
+    }
+  });
+}
+
 function renderMetrics() {
   const model = selectedModel();
   const cost = verificationCost(qualityRunsForModel(model));
-  $("#cost-summary").innerHTML = `<span>核验费用 · ${escapeHtml(model?.label || "未选择对象")} · ${formatRange()}</span><strong>总花费 ${formatCost(cost.total)}</strong><strong>平均单次 ${formatCost(cost.average)}</strong><span>最近单次 ${formatCost(cost.latest)}</span><small>${cost.known}/${cost.requests} 个请求有价格${cost.known < cost.requests ? " · 合计不含未知费用" : ""}</small>`;
+  const costNote = `${cost.known}/${cost.requests} 个请求有价格${cost.known < cost.requests ? " · 合计不含未知费用" : ""}`;
+  $("#cost-summary").hidden = state.view === "settings";
+  $("#cost-summary").innerHTML = `<div class="cost-heading"><span>核验费用</span><small>${escapeHtml(model?.label || "未选择对象")}</small></div><div class="cost-cell"><span>总花费</span><strong>${formatCost(cost.total)}</strong></div><div class="cost-cell"><span>平均单次</span><strong>${formatCost(cost.average)}</strong></div><div class="cost-cell"><span>最近单次</span><strong>${formatCost(cost.latest)}</strong></div><button type="button" class="cost-info" data-pricing-open title="${escapeHtml(costNote)} · ${escapeHtml(translate("配置渠道单价"))}" aria-label="${escapeHtml(translate("配置渠道单价"))}">ⓘ</button>`;
+  $("#current-balance").hidden = state.view === "settings" || !model;
+  $("#current-balance").innerHTML = `<span>${escapeHtml(translate("当前渠道余额"))}</span>${balanceBadge(model)}`;
+  renderBalances();
   const cache = model?.cacheRate;
   const ttft = model?.ttftMs;
   const numeric = model?.verification?.numeric;
@@ -1252,6 +1440,7 @@ function renderMetrics() {
     model?.verification?.measuredAt ? `${model.verification.stale ? "上次有效" : "采样于"} ${formatTimestamp(model.verification.measuredAt, true)}` : "暂无有效核验",
     activity.busy || !numeric ? activity.detail : model?.verification?.stale ? "最新检测未完成" : model?.verification?.directedModel ? `指向 ${model.verification.directedModel}` : model?.verification?.label);
   $(".quality-card .metric-source").textContent = numeric?.label || "候选模型分布 · Juice 证据";
+  $$(".metric-source").forEach(node => { node.parentElement.title = node.textContent; });
   const unsampled = model?.status === "unsampled";
   const failedOnly = Boolean(model && model.sampleCount === 0 && model.errorCount > 0);
   const direct = ["direct", "passive"].includes(model?.observationSource);
@@ -1271,9 +1460,15 @@ function renderMetrics() {
 }
 
 function renderOverviewRings(model) {
-  const metrics = modelMetrics(model).map((metric, index) => ({ ...metric, radius: [27, 20, 13][index] }));
+  const allMetrics = modelMetrics(model, true);
+  const metrics = allMetrics.filter(metric => state.settings[`overviewShow${metric.kind[0].toUpperCase()}${metric.kind.slice(1)}`] !== false)
+    .map((metric, index) => ({ ...metric, radius: [27, 20, 14, 9][index] }));
   const container = $(".health-panel .rings");
-  if (!$(".overview-rings", container)) container.innerHTML = `<div class="overview-rings"><svg viewBox="0 0 70 70" role="img" aria-label="模型核验、Cache 与 TTFT 三环"><g transform="translate(5 5)">${metrics.map((metric) => metricRing(metric.radius, metric.progress, metric.health.color, metric.name, metric.value, metric.range, metric.min, metric.max, metric.kind)).join("")}</g></svg><div class="overview-model-logo"></div></div><div class="overview-ring-legend"></div>`;
+  const existing = $(".overview-rings", container);
+  if (!existing || container.dataset.metricKinds !== metrics.map(metric => metric.kind).join(",")) {
+    container.dataset.metricKinds = metrics.map(metric => metric.kind).join(",");
+    container.innerHTML = `<div class="overview-rings"><svg viewBox="0 0 70 70" role="img" aria-label="标准界面显示环"><g transform="translate(5 5)">${metrics.map((metric) => metricRing(metric.radius, metric.progress, metric.health.color, metric.name, metric.value, metric.range, metric.min, metric.max, metric.kind)).join("")}</g></svg><div class="overview-model-logo"></div></div><div class="overview-ring-legend"></div>`;
+  }
   metrics.forEach((metric, index) => updateMetricRing($$(".ring-metric", container)[index], metric));
   $(".overview-model-logo", container).innerHTML = modelLogo(model);
   $(".overview-ring-legend", container).innerHTML = metrics.map((metric) => `<div style="--metric-color:${metric.health.color}"><span><i class="metric-symbol">${metricSymbol(metric.kind)}</i>${metric.name}</span><strong>${escapeHtml(metric.value)}</strong><small>${escapeHtml(metric.health.label)}</small><small title="当前时间范围最小值–最大值">${escapeHtml(metric.range)}</small></div>`).join("");
@@ -1370,7 +1565,7 @@ function notifyNewEvents() {
     const title = `Modivue · ${translate(eventTitle(event))}`;
     const body = `${event.model || translate("未知模型")} · ${translate(event.detail || "检测到异常")}`;
     if (desktopMode !== "island") showToast(`${title} · ${body}`, event.level === "error" ? "error" : "warning");
-    if (hasDesktopBridge()) { if (desktopMode === "island") desktopMessage({ type: "notify", title, body, id }); }
+    if (hasDesktopBridge()) { if (desktopMode === "island") void desktopRequest({ type: "notify", title, body, id }).catch(error => showToast(error.message, "warning")); }
     else if ("Notification" in window && Notification.permission === "granted") new Notification(title, { body, tag: `modivue-${id}` });
   }
 }
@@ -1401,22 +1596,50 @@ function renderOverview() {
 }
 
 function modelsView() {
-  const rows = filteredModels().length ? filteredModels().map((model) => `<div class="data-line"><strong>${escapeHtml(model.observedModel)}</strong><span>${escapeHtml(model.standardLabel)}</span><span>${Math.round((model.match.confidence || 0) * 100)}%</span><span>${formatInteger(model.matchCount)} 次</span><span class="pill ${model.match.status === "matched" ? "green" : model.match.status === "ambiguous" ? "yellow" : "gray"}">${model.match.status === "matched" ? "已归一化" : model.match.status === "ambiguous" ? "待确认" : "未匹配"}</span></div>`).join("") : `<div class="empty-state">暂无观测模型。</div>`;
-  return `<div class="view-stack"><article class="panel">${viewHeader("模型目录与观测名称", "标准目录实时来自 models.dev；低置信度名称保留原值。", `<button class="text-button" data-action="sync-catalog">重新同步</button>`)}<div class="data-list"><div class="data-line header"><span>观测模型</span><span>标准模型</span><span>匹配度</span><span>匹配次数</span><span>状态</span></div>${rows}</div></article></div>`;
+  const names = new Map();
+  for (const model of filteredModels()) {
+    const key = model.observedModel;
+    const existing = names.get(key);
+    if (existing) { existing.count += model.matchCount; existing.routes++; }
+    else names.set(key, { ...model, count: model.matchCount, routes: 1 });
+  }
+  const rows = [...names.values()].map(model => `<div class="data-line"><span><strong>${escapeHtml(model.observedModel)}</strong><small>${model.routes} 个监控对象</small></span><span>${escapeHtml(model.standardLabel)}</span><span>${Math.round((model.match.confidence || 0) * 100)}%</span><span>${formatInteger(model.count)} 次</span><span class="pill ${model.match.status === "matched" ? "green" : model.match.status === "ambiguous" ? "yellow" : "gray"}">${model.match.status === "matched" ? "已归一化" : model.match.status === "ambiguous" ? "待确认" : "未匹配"}</span></div>`).join("") || `<div class="empty-state">暂无观测模型。</div>`;
+  return `<div class="view-stack"><article class="panel model-names-panel">${viewHeader("模型名称对照", "将渠道返回的名称对应到 models.dev 标准目录。同名模型合并显示；名称相似度只用于整理名称。", `<button class="text-button" data-action="sync-catalog">重新同步</button><button class="text-button" data-action="question-verification">前往模型核验</button>`)}<div class="data-list"><div class="data-line header"><span>观测模型</span><span>标准模型</span><span>名称相似度</span><span>观测样本</span><span>状态</span></div>${rows}</div></article></div>`;
 }
 
 function qualityDegradationCount(model) {
-  return state.events.filter((event) => event.type === "quality" && sameModelRoute(event, model)).length;
+  return state.events.filter((event) => event.type === "quality" && qualityIdentity(event, event.evaluatorId) === qualityIdentity(model, event.evaluatorId)).length;
+}
+
+function routeModel(model, method = state.routeMethod) {
+  if (!model || method === "all") return model;
+  const verification = summarizeVerification(qualityRunsForModel(model), method, { target: model, since: state.rangeHours ? Date.now() - state.rangeHours * 3600000 : 0 });
+  return { ...model, verification, evaluator: verification.numeric?.label || state.evaluators.find(item => item.id === method)?.label || method };
+}
+
+function routeVerification(model) {
+  const runs = qualityRunsForModel(model).sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+  const methods = [...new Set(runs.map(run => run.evaluator_id))];
+  const method = state.routeMethod !== "all" ? state.routeMethod
+    : methods.includes(state.settings.evaluatorId) ? state.settings.evaluatorId : methods[0];
+  if (!method) return "未核验";
+  const report = routeModel(model, method).verification;
+  const numeric = report.numeric;
+  const value = numeric ? `${numeric.value.toFixed(numeric.method === "custom-question" ? 0 : 2)}${numeric.unit}` : report.label;
+  const label = { "meow-fingerprint": "Meow", "hlwy-fingerprint": "HLWY", "one-token": "One Token", "astra-community": "Astra", "probability-probe": "分布指纹", "knowledge-boundary": "KBF", "custom-question": "单问题", "bazaarlink-probe": "BazaarLink", "ztest-local": "Ztest 本地", ztest: "Ztest", juice: "Juice" }[method] || method;
+  return `<span class="route-method-result" title="${escapeHtml(report.label)}"><small>${escapeHtml(label)}${state.routeMethod === "all" ? ` · 已测 ${methods.length} 种` : ""}</small><strong>${escapeHtml(value)}</strong></span>`;
 }
 
 function routesView() {
-  const selected = selectedModel();
-  const sorters = { ttft: (m) => m.ttftMs ?? Infinity, cache: (m) => -(m.cacheRate ?? -1), quality: (m) => -(Number(m.verification?.numeric?.value) || 0), activity: (m) => -Math.max(...sessionsForModel(m).map(s => Date.parse(s.lastActiveAt || s.lastSeenAt || "") || 0)), samples: (m) => -(m.sampleCount || 0) };
-  const models = [...filteredModels()].sort((a,b) => (sorters[state.routeSort] || sorters.ttft)(a) - (sorters[state.routeSort] || sorters.ttft)(b));
+  const selected = routeModel(selectedModel());
+  const qualityModels = selected ? (state.routeMethod === "all" ? [...new Set(qualityRunsForModel(selected).map(run => run.evaluator_id))] : [state.routeMethod]).map(method => routeModel(selected, method)) : [];
+  const qualitySort = m => { const numeric = m.verification?.numeric; return !numeric || state.routeMethod === "all" || numeric.method === "juice" ? Infinity : numeric.method === "probability-probe" || numeric.label.includes("JSD") || numeric.label.includes("差异") ? numeric.value : -numeric.value; };
+  const sorters = { ttft: (m) => m.ttftMs ?? Infinity, cache: (m) => -(m.cacheRate ?? -1), quality: qualitySort, activity: (m) => -Math.max(...sessionsForModel(m).map(s => Date.parse(s.lastActiveAt || s.lastSeenAt || "") || 0)), samples: (m) => -(m.sampleCount || 0) };
+  const models = filteredModels().map(model => routeModel(model)).sort((a,b) => (sorters[state.routeSort] || sorters.ttft)(a) - (sorters[state.routeSort] || sorters.ttft)(b));
   const rows = models.length ? models.map((model) => `<button class="route-row ${model.id === selected?.id ? "active" : ""}" data-select-model="${escapeHtml(model.id)}">
-    <span class="route-identity"><strong>${escapeHtml(endpointLabel(model.endpoint))}</strong><small>${escapeHtml(model.provider)} · Key ${escapeHtml(model.keyGroup || "未提供")}</small></span>
-    <span><strong>${escapeHtml(model.label)}</strong><small>${model.status === "unsampled" ? "已配置 · 未采样" : escapeHtml(model.standardLabel)}</small></span>
-    <span class="mint-text">${qualityValue(model)}<small>${escapeHtml(model.evaluator)}</small></span>
+    <span class="route-identity"><strong>${escapeHtml(translate(endpointLabel(model.endpoint)))}</strong><small>${escapeHtml(translate(model.provider || "未提供"))} · Key ${escapeHtml(translate(model.keyGroup || "未提供"))}</small></span>
+    <span><strong>${escapeHtml(model.label)}</strong><small>${escapeHtml(model.reasoningEffort || "默认档位")}</small></span>
+    <span class="route-method-results">${routeVerification(model)}</span>
     <span class="blue-text">${formatPercent(model.cacheRate)}</span>
     <span class="violet-text">${formatDuration(model.ttftMs)}</span>
     <span>${model.sampleCount}/${model.totalCount}</span>
@@ -1425,13 +1648,12 @@ function routesView() {
   const selectionSubtitle = selected
     ? `${endpointLabel(selected.endpoint)} · Key ${selected.keyGroup || "未提供"} · ${selected.label}`
     : "选择渠道后显示当前范围内的历史数据";
-  return `<div class="view-stack"><article class="panel route-list-panel">${viewHeader("私人渠道排行榜", `渠道 · 模型 · Key · 推理档位 · ${formatRange()}`, `<label class="route-sort">排序<select id="route-sort"><option value="activity" ${state.routeSort === "activity" ? "selected" : ""}>最近活跃</option><option value="quality" ${state.routeSort === "quality" ? "selected" : ""}>核验</option><option value="cache" ${state.routeSort === "cache" ? "selected" : ""}>Cache</option><option value="ttft" ${state.routeSort === "ttft" ? "selected" : ""}>TTFT</option><option value="samples" ${state.routeSort === "samples" ? "selected" : ""}>样本量</option></select></label>`)}<div class="route-table-scroll"><div class="route-table"><div class="route-table-head"><span>渠道 / Key 分组</span><span>模型</span><span>模型核验</span><span>Cache</span><span>TTFT</span><span>有效/总计</span><span>基线偏离</span></div>${rows}</div></div></article><article class="panel route-history-panel">${viewHeader("选中渠道历史", selectionSubtitle)}${selected ? `<div class="route-summary"><span><small>${escapeHtml(selected.evaluator)}范围</small><strong class="mint-text">${escapeHtml(metricRange(selected, "quality"))}</strong></span><span><small>Cache 范围</small><strong class="blue-text">${escapeHtml(metricRange(selected, "cache"))}</strong></span><span><small>TTFT 范围</small><strong class="violet-text">${escapeHtml(metricRange(selected, "ttft"))}</strong></span><span><small>基线偏离</small><strong>${qualityDegradationCount(selected)} 次</strong></span></div><div class="route-history-grid"><section class="route-history-item"><header><strong>${escapeHtml(selected.evaluator)}</strong><span>${qualityValue(selected)}</span></header><div class="route-chart" id="route-quality-chart"></div></section><section class="route-history-item"><header><strong>Cache</strong><span>${formatPercent(selected.cacheRate)}</span></header><div class="route-chart" id="route-cache-chart"></div></section><section class="route-history-item"><header><strong>TTFT</strong><span>${formatDuration(selected.ttftMs)}</span></header><div class="route-chart" id="route-ttft-chart"></div></section></div>${qualityHistoryView(selected)}` : `<div class="empty-state">暂无可选择渠道。</div>`}</article></div>`;
+  return `<div class="view-stack"><article class="panel route-list-panel">${viewHeader("私人渠道排行榜", `渠道 · 模型 · Key · 推理档位 · ${formatRange()}`, `<label class="route-sort">核验方式<select id="route-method"><option value="all" ${state.routeMethod === "all" ? "selected" : ""}>全部核验方式</option>${state.evaluators.map(method => `<option value="${method.id}" ${state.routeMethod === method.id ? "selected" : ""}>${escapeHtml(method.label)}</option>`).join("")}</select></label><label class="route-sort">排序<select id="route-sort"><option value="activity" ${state.routeSort === "activity" ? "selected" : ""}>最近活跃</option><option value="quality" ${state.routeMethod === "all" ? "disabled" : ""} ${state.routeSort === "quality" ? "selected" : ""}>核验</option><option value="cache" ${state.routeSort === "cache" ? "selected" : ""}>Cache</option><option value="ttft" ${state.routeSort === "ttft" ? "selected" : ""}>TTFT</option><option value="samples" ${state.routeSort === "samples" ? "selected" : ""}>样本量</option></select></label>`)}<div class="route-table-scroll"><div class="route-table"><div class="route-table-head"><span>渠道 / Key 分组</span><span>模型</span><span>模型核验</span><span>Cache</span><span>TTFT</span><span>有效/总计</span><span>基线偏离</span></div>${rows}</div></div></article><article class="panel route-history-panel">${viewHeader("选中渠道历史", selectionSubtitle)}${selected ? `<div class="route-summary"><span><small>${state.routeMethod === "all" ? "核验方式" : escapeHtml(selected.evaluator)}</small><strong class="mint-text">${state.routeMethod === "all" ? qualityModels.length : escapeHtml(metricRange(selected, "quality"))}</strong></span><span><small>Cache 范围</small><strong class="blue-text">${escapeHtml(metricRange(selected, "cache"))}</strong></span><span><small>TTFT 范围</small><strong class="violet-text">${escapeHtml(metricRange(selected, "ttft"))}</strong></span><span><small>基线偏离</small><strong>${qualityDegradationCount(selected)} 次</strong></span></div><div class="route-history-grid">${qualityModels.map(item => `<section class="route-history-item"><header><strong>${escapeHtml(item.evaluator)}</strong><span>${qualityValue(item)}</span></header><div class="route-chart" data-route-quality="${escapeHtml(item.verification.numeric?.method || item.verification.selected?.evaluator_id || "")}"></div></section>`).join("")}<section class="route-history-item"><header><strong>Cache</strong><span>${formatPercent(selected.cacheRate)}</span></header><div class="route-chart" id="route-cache-chart"></div></section><section class="route-history-item"><header><strong>TTFT</strong><span>${formatDuration(selected.ttftMs)}</span></header><div class="route-chart" id="route-ttft-chart"></div></section></div>${qualityHistoryView(selected)}` : `<div class="empty-state">暂无可选择渠道。</div>`}</article></div>`;
 }
 
 function renderRouteCharts() {
-  const model = selectedModel();
+  const model = routeModel(selectedModel());
   if (!model) return;
-  const quality = metricPointsForModel(model, "quality");
   const cache = metricPointsForModel(model, "cache");
   const ttft = metricPointsForModel(model, "ttftRaw");
   const ttftMaximum = ttft.length ? Math.max(state.settings.ttftThresholdMs, ...ttft.map((point) => point.value)) * 1.08 : state.settings.ttftThresholdMs;
@@ -1442,7 +1664,10 @@ function renderRouteCharts() {
       ? chartSvg([{ points, color, area: true }], options)
       : `<div class="empty-state chart-empty">${escapeHtml(emptyText)}</div>`;
   };
-  render("#route-quality-chart", quality, colors.mint, qualityChartOptions(model), "当前范围内未评测");
+  $$("[data-route-quality]").forEach(element => {
+    const selected = routeModel(model, element.dataset.routeQuality);
+    render(`[data-route-quality="${element.dataset.routeQuality}"]`, metricPointsForModel(selected, "quality"), colors.mint, qualityChartOptions(selected), "当前范围内未评测");
+  });
   render("#route-cache-chart", cache, colors.blue, { minimum: 0, maximum: 100, tickLabel: (value) => `${Math.round(value)}%`, label: `${model.label} Cache 历史` }, "提供方未返回缓存字段");
   render("#route-ttft-chart", ttft, colors.violet, { minimum: 0, maximum: ttftMaximum, tickLabel: (value) => value >= 1000 ? `${(value / 1000).toFixed(1)}s` : `${Math.round(value)}ms`, label: `${model.label} TTFT 历史` }, model.status === "unsampled" ? "当前模型尚未采样" : "当前范围内无 TTFT 样本");
 }
@@ -1498,29 +1723,90 @@ function verificationCost(runs) {
     known: known.length, requests: requests.length };
 }
 
-function verificationPlan(model) {
+function costsView() {
+  const model = selectedModel();
+  const cost = verificationCost(qualityRunsForModel(model));
+  const requests = qualityRunsForModel(model).flatMap(run => run.metadata?.requests || [])
+    .filter(request => inSelectedRange(request.timestamp))
+    .sort((a, b) => String(b.timestamp || "").localeCompare(String(a.timestamp || "")));
+  const rows = requests.slice(0, 40);
+  return `<div class="view-stack"><article class="panel cost-view"><div class="view-header"><div><h2>花费统计</h2><p class="muted">${escapeHtml(model?.label || "当前未选择模型")} · 当前时间范围内的真实请求费用</p></div></div><div class="cost-view-summary"><div><span>总花费</span><strong>${formatCost(cost.total)}</strong></div><div><span>平均单次</span><strong>${formatCost(cost.average)}</strong></div><div><span>最近单次</span><strong>${formatCost(cost.latest)}</strong></div><div><span>已知 / 总请求</span><strong>${cost.known} / ${cost.requests}</strong></div></div>${rows.length ? `<div class="cost-request-list"><div class="cost-request-head"><span>时间</span><span>费用</span><span>来源</span><span>状态</span></div>${rows.map(request => `<div class="cost-request-row"><time>${escapeHtml(formatTimestamp(request.timestamp, true))}</time><strong>${formatCost(request.costUsd)}</strong><span>${escapeHtml(translate(requestCostLabel(request)))}</span><span>${escapeHtml(request.status === "ok" ? "完成" : request.error || "未记录")}</span></div>`).join("")}</div>` : `<div class="empty-state">当前模型暂无可统计的请求费用。</div>`}</article></div>`;
+}
+
+const trustedPurposeFor = { "probability-probe": "probability", "hlwy-fingerprint": "hlwy", juice: "juice", "one-token": "one-token", "astra-community": "astra-community", "meow-fingerprint": "meow-fingerprint" };
+
+function methodAvailability(model, method) {
+  const target = state.probe?.targets?.find(item => item.id === model?.id) || model || {};
+  const available = { rank: 0, label: "可对照", blocked: false, guidance: "已持有当前模型和协议的参考数据" };
+  const missing = label => ({ rank: 3, label: "缺少基准", blocked: true, guidance: label, purpose: trustedPurposeFor[method] });
+  const nameKey = name => String(name || "").split("/").at(-1).toLowerCase().replaceAll(".", "-");
+  const names = [target.canonicalModelId, target.observedModel].map(nameKey);
+  if (method === "ztest") {
+    const matched = state.ztest.models.some(item => names.includes(nameKey(item.code)));
+    return matched ? { rank: 1, label: "官方支持", guidance: "官方支持当前模型；浏览器验证后自动保存报告" }
+      : { rank: 4, blocked: true, label: state.ztest.error ? "目录不可用" : "官方未支持", guidance: state.ztest.error || "Ztest 官方目录暂未支持当前模型；可选择其他核验方式" };
+  }
+  if (method === "ztest-local") return { rank: 1, label: "本地可测试", guidance: "本机执行五组兼容探针，不上传 Key；结果仅作响应证据" };
+  if (method === "meow-fingerprint") {
+    const wire = calibrationWire(target.wireApi) === "chat" ? "chat.completions" : target.wireApi;
+    const fitted = state.evaluators.find(item => item.id === method)?.requirements?.[wire]?.families?.some(family => family.models.some(name => names.includes(nameKey(name))));
+    if (fitted || calibrationReference(state.calibration, target, "meow:empirical:v1")) return available;
+    return missing("公开基准未覆盖当前模型或协议。可补充同模型、同协议 Meow 可信样本，用 JSD 对照；采集不会生成身份判定阈值。");
+  }
+  if (method === "hlwy-fingerprint") {
+    const trusted = state.settings.hlwySource === "trustedApi" && trustedHLWYReference(state.calibration, target);
+  const publicReference = state.publicBaselines?.models.some(item => [target.canonicalModelId, target.observedModel].some(name => name?.split("/").at(-1).toLowerCase() === item.model.split("/").at(-1).toLowerCase()));
+    return trusted || publicReference ? available : missing("公共基准未覆盖当前模型。请采集至少 50 次 HLWY 可信分布，并将参考来源设为可信 API。");
+  }
+  if (["one-token", "astra-community"].includes(method)) {
+    const one = method === "one-token";
+    const reference = calibrationReference(state.calibration, one ? { ...target, reasoningEffort: "none" } : target, one ? "one-token:en:v1" : "astra-community:adapted:v1");
+    const samples = one ? state.settings.oneTokenSamples : state.settings.astraSamples;
+    if (reference && samples >= 10) return { ...available, guidance: "已持有同模型、同协议可信分布，可计算 JSD 距离（忽略思考强度）" };
+    return { rank: 2, label: "仅采集观测", purpose: method, guidance: reference ? "每题至少 10 次有效样本才能比较分布，请调整每题采样次数。" : "尚无同条件参考，本轮只收集回答，不产生分布比较。可先从可信 API 为每题采集至少 10 次，再核验目标渠道。" };
+  }
+  if (method === "probability-probe" || method === "juice" && state.settings.juiceMode === "calibrated") {
+    return calibrationReference(state.calibration, target, method === "juice" ? "juice" : "probability") ? available : missing(method === "juice" ? "缺少当前模型、协议和推理档位的 Juice 可信参考。请先采集或导入对应档案。" : "缺少当前模型和协议的可信参考。请先采集或导入对应档案。");
+  }
+  if (method === "juice") {
+    const noValue = qualityRunsForModel(model).some(run => run.evaluator_id === "juice" && run.metadata?.reportedJuice == null && run.status === "ok");
+    return { rank: noValue || /claude|gemini/i.test(target.observedModel || "") ? 2 : 1, label: noValue ? "未返回数值" : "原始观测", guidance: "Juice 依赖模型是否返回预算数字。非数字回答会完整保留，不代表模型不合格，也不能换算 IQ。" };
+  }
+  if (method === "knowledge-boundary") {
+    const referenceName = state.settings.kbfReferenceModel === "current" ? target.canonicalModelId || target.observedModel : state.settings.kbfReferenceModel;
+    return state.evaluators.find(item => item.id === method)?.requirements?.models.some(item => nameKey(item.id) === nameKey(referenceName)) ? available
+      : missing("当前模型没有 KBF 公共基准，请在设置中选择要对照的参考模型");
+  }
+  return { rank: 1, label: method === "bazaarlink-probe" ? "远程检测" : "可测试" };
+}
+
+function verificationPlan(model, method = state.settings.evaluatorId) {
   const target = state.probe?.targets?.find(target => target.id === model?.id);
-  const method = state.settings.evaluatorId;
+  const availability = methodAvailability(model, method);
+  if (availability.blocked) return { blocked: true, external: ["ztest", "bazaarlink-probe"].includes(method), label: availability.guidance };
   if (method === "bazaarlink-probe") return { external: true, label: "官方远程综合检测；按当前四元组单独启用，可持续运行并保存逐题报告。" };
-  if (method === "ztest") return { external: true, label: "在 Ztest 完成人机验证与多探针检测，然后导入报告保存到当前四元组。" };
   const plan = (samples, maxAttempts = samples, note = "") => ({ samples, maxAttempts,
     label: `计划 ${samples} 次有效回答 · 最多 ${maxAttempts} 次请求${note ? ` · ${note}` : ""}` });
   if (method === "astra-community") return plan(5 * state.settings.astraSamples);
   if (method === "one-token") return plan(10 * state.settings.oneTokenSamples);
+  if (method === "ztest") return { external: true, label: "Ztest 官方检测 · 浏览器验证后自动保存报告" };
+  if (method === "ztest-local") return plan(5, 5, "本地兼容探针，不上传 Key");
   if (method === "custom-question") return plan(1, 3, state.questions.find(question => question.id === state.settings.defaultQuestionId)?.title || "请选择测试题目");
   if (method === "juice" && state.settings.juiceMode === "raw") return plan(1, 1, "原始观测，未校准");
   if (!target) return { label: "选择可用的会话后显示请求计划" };
   if (method === "meow-fingerprint") {
+    const reference = calibrationReference(state.calibration, target, "meow:empirical:v1");
     const requirements = state.evaluators.find(item => item.id === method)?.requirements;
-    const families = requirements?.[target.wireApi]?.families;
-    if (!families) return { blocked: true, label: "Meow 基准支持 Responses、Anthropic Messages 和 Chat Completions；当前协议没有对应基准。" };
+    const families = requirements?.[calibrationWire(target.wireApi) === "chat" ? "chat.completions" : target.wireApi]?.families;
+    if (!families && !reference) return { blocked: true, label: "Meow 基准支持 Responses、Anthropic Messages 和 Chat Completions；当前协议没有对应基准。" };
     const key = name => String(name || "").split("/").at(-1).toLowerCase().replaceAll(".", "-");
-    const baseline = families.find(item => item.models.some(name => [target.canonicalModelId, target.observedModel].some(candidate => key(candidate) === key(name))));
+    const baseline = families?.find(item => item.models.some(name => [target.canonicalModelId, target.observedModel].some(candidate => key(candidate) === key(name))));
     if (!baseline) {
+      if (reference) return plan(reference.probability.cells.length * reference.probability.repetitions);
       return { blocked: true, label: "Meow 公开基准未覆盖当前模型。可改用 Juice 单次观测、自定义题或采集可信分布。" };
     }
     const samples = baseline.samples[state.settings.meowTier];
-    return plan(samples, samples + Math.ceil(samples / 2), state.settings.meowTier === "screen" ? "6 次筛查没有强指向判定线" : "上游完整采样档");
+    return plan(samples, samples + Math.ceil(samples / 2), state.settings.meowTier === "screen" ? "6 次筛查沿用 low 档校准分界线，仅作快速预览" : "上游完整采样档");
   }
   if (method === "knowledge-boundary") {
     const key = value => String(value || "").split("/").at(-1).replaceAll(".", "-");
@@ -1530,13 +1816,12 @@ function verificationPlan(model) {
   }
   if (method === "hlwy-fingerprint") {
     const samples = state.settings.verificationSamples;
-    if (samples < 50) return { blocked: true, label: "当前 HLWY 分布对照至少需 50 个有效答案。请在设置 → 核验调整 HLWY 每轮样本数；少量试请求可使用可信 API 的 2 次试采样。" };
-    return plan(samples, samples + Math.ceil(samples / 2));
+    return plan(samples, samples + Math.ceil(samples / 2), samples < 50 ? "少量样本仅作快速预览，建议 50 次以上" : null);
   }
-  const calibration = state.calibration?.models?.[target.canonicalModelId] || state.calibration?.models?.[target.observedModel];
+  const calibration = calibrationReference(state.calibration, target, method === "juice" ? "juice" : "probability");
   const problem = state.calibrationError || (!calibration ? "缺少该模型的可信校准档案"
-    : (target.reasoningEffort || null) !== calibration.reasoningEffort ? "当前推理档位与校准档案不一致"
-    : calibration.wireApi && target.wireApi !== calibration.wireApi ? "当前协议与校准档案不一致"
+    : method === "juice" && (target.reasoningEffort || null) !== calibration.reasoningEffort ? "当前推理档位与 Juice 校准档案不一致"
+    : calibration.wireApi && calibrationWire(target.wireApi) !== calibrationWire(calibration.wireApi) ? "当前协议与校准档案不一致"
     : !calibration[method === "juice" ? "juice" : "probability"] ? "校准档案没有所选方案的参考数据" : null);
   if (problem) return { blocked: true, label: `${problem}。请在设置 → 核验中配置。` };
   if (method === "juice") return plan(1, 3, "可信校准对照");
@@ -1545,8 +1830,16 @@ function verificationPlan(model) {
 }
 
 function ztestView(model) {
-  return `<section class="ztest-panel"><h3>Ztest 多探针检测</h3><p>在 ztest.ai 选择模型、快速／标准／深测及并发模式，完成验证后开始检测。完成后粘贴报告链接或导入 JSON。</p><p>网站需要人机验证；API Key 由你在 Ztest 页面填写。Modivue 只读取检测报告。</p><a class="primary-button" href="https://ztest.ai/" target="_blank" rel="noreferrer">打开 Ztest 检测</a>
-    <form id="ztest-import-form" class="question-form"><label>报告链接<input name="reportUrl" type="url" placeholder="https://ztest.ai/report/…"></label><label>或导入报告 JSON<input name="reportFile" type="file" accept=".json,application/json"></label><label><input name="confirmTarget" type="checkbox" required>确认报告属于当前模型、渠道、Key 分组和推理档位</label><button class="primary-button" type="submit" ${model ? "" : "disabled"}>导入并保存报告</button><p id="ztest-message" role="status"></p></form></section>`;
+  const job = state.ztest.jobs.find(job => job.target.id === model?.id);
+  const availability = methodAvailability(model, "ztest");
+  const busy = job && ["opening", "awaiting-verification", "submitting", "running", "polling-error", "submission-unknown"].includes(job.status);
+  const labels = { opening: "正在打开官方检测", "awaiting-verification": "等待浏览器人机验证", submitting: "正在提交官方检测", running: "官方检测中", "polling-error": "正在重读官方报告", "submission-unknown": "提交结果待确认", completed: "官方报告已保存", interrupted: "浏览器流程已中断", error: "官方检测失败" };
+  return `<section class="ztest-panel"><h3>Ztest 官方检测</h3><p>自动填入当前渠道、模型和 Key，提交官方检测并保存报告。需要人机验证时请在浏览器窗口中完成。</p><form id="ztest-run-form" data-target-id="${escapeHtml(model?.id || "")}"><div class="trusted-fields"><label>检测档位<select name="profile"><option value="quick">快速</option><option value="standard" selected>标准</option><option value="deep">深测</option></select></label><label>并发模式<select name="concurrency"><option value="sequential">顺序 ×1</option><option value="parallel">并发 ×3</option><option value="fast">高速 ×5</option></select></label></div><button type="submit" class="primary-button" ${!model || busy || availability.blocked ? "disabled" : ""}>开始官方 Ztest</button></form><p class="ztest-status" role="status">${escapeHtml(translate(job ? job.message || labels[job.status] || job.status : availability.guidance || ""))}${job?.total ? ` · ${job.completed}/${job.total}` : ""}</p>${job?.reportId ? `<a target="_blank" rel="noreferrer" href="https://ztest.ai/report/${encodeURIComponent(job.reportId)}">查看源报告</a>` : ""}${busy && !job.reportId ? '<button class="text-button" data-action="close-ztest">关闭检测浏览器</button>' : ""}<details><summary>检测条件</summary><p>Ztest 将使用当前 Key 调用渠道并产生费用；官方接口不接受自定义推理档位，结果保留其实际条件。</p></details><details><summary>导入官方报告</summary><form id="ztest-import-form" class="question-form"><label>报告链接<input name="reportUrl" type="url" placeholder="https://ztest.ai/report/…"></label><label>或导入报告 JSON<input name="reportFile" type="file" accept=".json,application/json"></label><label><input name="confirmTarget" type="checkbox" required>确认报告属于当前模型、渠道、Key 分组和推理档位</label><button class="text-button" type="submit" ${model ? "" : "disabled"}>导入并保存官方报告</button><p id="ztest-message" role="status"></p></form></details></section>`;
+}
+async function loadZtest() {
+  const previous = JSON.stringify(state.ztest.jobs.map(job => job.savedRunId));
+  state.ztest = await fetchJson("/api/quality/ztest");
+  if (previous !== JSON.stringify(state.ztest.jobs.map(job => job.savedRunId))) await refreshObservations({ quiet: true });
 }
 
 async function importZtestReport(form) {
@@ -1620,8 +1913,11 @@ function bazaarlinkReport(metadata) {
   const report = metadata.externalReport;
   if (!report) return "";
   const assessment = report.identityAssessment || {};
+  const result = summarizeBazaarlink(report);
   return `<section class="distribution-report"><header><h3>BazaarLink 逐题结果</h3><a href="${escapeHtml(metadata.source)}" target="_blank" rel="noreferrer">查看源报告</a></header>
-    <p>官方判定：${escapeHtml(assessment.verdict?.status || assessment.status || "证据不足")} · ${escapeHtml(assessment.verdict?.trueModel || assessment.predictedFamily || "")}</p>
+    <div class="bazaarlink-conclusion"><strong>${escapeHtml(result.label)}</strong><span>${escapeHtml(result.detectedModel || result.family || "证据不足")}</span></div>
+    <div class="route-summary"><span><small>家族置信度</small><strong>${formatPercent(result.familyConfidence == null ? null : result.familyConfidence / 100)}</strong></span><span><small>候选模型概率</small><strong>${formatPercent(result.candidateConfidence == null ? null : result.candidateConfidence / 100, 2)}</strong></span><span><small>申报模型匹配度</small><strong>${formatPercent(result.declaredMatch == null ? null : result.declaredMatch / 100, 2)}</strong></span><span><small>探针通过率</small><strong>${result.passed} / ${result.compared || "--"}</strong></span></div>
+    ${result.candidates.length ? `<details data-detail-key="bazaarlink-candidates-${escapeHtml(metadata.reportId)}"><summary>候选模型分布</summary>${result.candidates.map(item => `<div class="distribution-row"><strong translate="no">${escapeHtml(item.displayName || item.modelId)}</strong><span>${formatPercent(item.score, 2)}</span></div>`).join("")}</details>` : ""}
     <p>输入 ${formatInteger(report.totalInputTokens)} / 输出 ${formatInteger(report.totalOutputTokens)} token · 费用未知</p>
     ${(assessment.riskFlags || []).map(flag => `<p class="report-notice">${escapeHtml(flag)}</p>`).join("")}
     ${report.items.map(item => `<details data-detail-key="bazaarlink-${escapeHtml(metadata.reportId)}-${escapeHtml(item.probeId)}"><summary>${escapeHtml(item.label || item.probeId)} · ${escapeHtml(item.group || "")} · ${item.passed === true ? "通过" : item.passed === false ? "未通过" : escapeHtml(item.status || "待判定")}</summary><p>${escapeHtml(item.error || item.passReason || "")}</p><pre>${escapeHtml(item.response || "")}</pre><p>TTFT ${formatDuration(item.ttftMs)} · ${item.tps ?? "--"} token/s</p></details>`).join("")}</section>`;
@@ -1629,34 +1925,55 @@ function bazaarlinkReport(metadata) {
 
 function qualityView() {
   const model = selectedModel();
+  const availability = methodAvailability(model, state.settings.evaluatorId);
+  const methods = state.evaluators.map(item => ({ ...item, availability: methodAvailability(model, item.id) })).sort((a,b) => a.availability.rank - b.availability.rank);
   const verification = model?.verification || summarizeVerification([], state.settings.evaluatorId);
   const selected = verification.selected;
   const method = state.evaluators.find((item) => item.id === state.settings.evaluatorId)?.label || state.settings.evaluatorId;
   const activity = verificationActivity(model);
   const plan = verificationPlan(model);
-  const action = `<div class="verification-actions"><button type="button" class="text-button" data-action="priority-quality" ${plan.external || !state.probe?.targets?.some(target => target.id === model?.id) || plan.blocked || activity.job && activity.job.phase !== "queued" ? "disabled" : ""}>插队核验</button><button class="text-button" data-action="export-quality" ${!qualityRunsForModel(model).length ? "disabled" : ""}>导出报告</button><button class="primary-button" ${plan.external ? "hidden" : ""} data-action="run-quality" ${activity.busy || !activity.target || plan.blocked ? "disabled" : ""}><span>▶</span>${activity.busy ? activity.label : plan.blocked ? "需配置核验条件" : activity.target?.pauseReason ? "排队核验" : "立即核验"}</button></div>`;
+  const action = `<div class="verification-actions">
+    ${!plan.external && (activity.busy || activity.job?.phase === "paused") ? `<button class="text-button" data-action="${activity.job?.phase === "paused" ? "resume" : "pause"}-quality">${activity.job?.phase === "paused" ? "继续核验" : "暂停核验"}</button><button class="text-button" data-action="stop-quality">终止核验</button>` : ""}
+    <button type="button" class="text-button" data-action="priority-quality" ${plan.external || !state.probe?.targets?.some(target => target.id === model?.id) || plan.blocked || activity.busy && activity.job?.phase !== "queued" ? "disabled" : ""}>插队核验</button>
+    <button class="text-button" data-action="export-quality" ${!qualityRunsForModel(model).length ? "disabled" : ""}>导出报告</button>
+    <button class="primary-button" ${plan.external ? "hidden" : ""} data-action="run-quality" ${activity.busy || !activity.target || plan.blocked ? "disabled" : ""}><span>▶</span>${activity.busy ? activity.label : plan.blocked ? "需配置核验条件" : activity.target?.pauseReason ? "排队核验" : "立即核验"}</button></div>`;
   const points = metricPoints("quality");
   const questionSummary = verification.question;
+  const methodOptions = methods.map(item => {
+    const a = item.availability;
+    return `<div class="method-choice" data-availability="${a.blocked ? "unavailable" : "available"}"><button type="button" data-quality-method="${escapeHtml(item.id)}" aria-pressed="${item.id === state.settings.evaluatorId}"><span><strong>${escapeHtml(item.label)}</strong><small>${escapeHtml(translate(a.guidance || "已持有当前模型和协议的参考数据"))}</small></span><b>${escapeHtml(translate(a.label))}</b></button>${a.purpose && a.rank >= 2 ? `<button type="button" class="text-button method-prepare" data-action="prepare-method" data-method="${escapeHtml(item.id)}">补充样本</button>` : ""}</div>`;
+  }).join("");
   return `<div class="view-stack"><article class="panel">${viewHeader("模型核验", `${model?.label || "当前模型"} · ${method} · ${verification.label}`, action)}
-    <label class="report-picker">核验方式<select id="quality-method-select">${state.evaluators.map(item => `<option value="${item.id}" ${item.id === state.settings.evaluatorId ? "selected" : ""}>${escapeHtml(item.label)}</option>`).join("")}</select></label>
+    <details id="quality-method-select" class="method-picker" data-detail-key="method-picker"><summary><span>核验方式</span><strong>${escapeHtml(method)}</strong><span aria-hidden="true">⌄</span></summary><div class="method-options">${methodOptions}</div></details>
     ${state.settings.evaluatorId === "custom-question" ? `<label class="report-picker">当前题目<select id="quality-question-select">${state.questions.map(question => `<option ${question.builtIn ? "" : 'translate="no"'} value="${escapeHtml(question.id)}" ${question.id === state.settings.defaultQuestionId ? "selected" : ""}>${escapeHtml(question.title)}</option>`).join("")}</select></label>` : ""}
     ${verification.stale ? `<p class="report-notice">环形指标保留 ${escapeHtml(formatTimestamp(verification.measuredAt, true))} 的有效结果；最新一次检测未完成，详情如下。</p>` : ""}
     ${verificationStatusMarkup(model)}
     <p class="verification-plan" role="status">${escapeHtml(plan.label)}</p>
-    ${questionSummary ? `<p class="question-window-summary"><strong>${questionSummary.matched} / ${questionSummary.compared} 次答案匹配</strong> · ${questionSummary.ratio === null ? "--" : (questionSummary.ratio * 100).toFixed(1) + "%"} · ${escapeHtml(formatRange())} · 总请求 ${questionSummary.total} · 失败 ${questionSummary.errors}${questionSummary.reviewed ? ` · ${questionSummary.reviewed} 次待人工复核` : ""}</p>` : ""}
-    ${plan.external ? state.settings.evaluatorId === "bazaarlink-probe" ? bazaarlinkView(model) : ztestView(model) : ""}
+    ${availability.guidance ? `<div class="reference-guidance"><p>${escapeHtml(translate(availability.guidance))}</p>${availability.purpose || state.settings.evaluatorId === "knowledge-boundary" && availability.blocked ? `<button class="text-button" data-action="collect-reference">${escapeHtml(translate(availability.purpose ? "采集当前方法参考" : "设置参考模型"))}</button>` : ""}</div>` : ""}
+    ${questionSummary ? `<p class="question-window-summary"><strong>${questionSummary.reviewed ? `已记录 ${questionSummary.reviewed} 次待人工复核` : `${questionSummary.matched} / ${questionSummary.compared} 次答案匹配`}</strong> · ${questionSummary.reviewed ? "不自动判定" : questionSummary.ratio === null ? "--" : (questionSummary.ratio * 100).toFixed(1) + "%"} · ${escapeHtml(formatRange())} · 总请求 ${questionSummary.total} · 失败 ${questionSummary.errors}</p>` : ""}
+    ${plan.external || state.settings.evaluatorId === "ztest" ? state.settings.evaluatorId === "bazaarlink-probe" ? bazaarlinkView(model) : ztestView(model) : ""}
     <h3>${escapeHtml(qualityChartOptions(model).label)}</h3><div class="trend-chart">${points.length ? chartSvg([{ points, color: colors.mint }], qualityChartOptions(model)) : '<div class="empty-state">当前范围尚无有效核验趋势</div>'}</div>
     ${selected ? qualityRunReport(selected) : '<div class="empty-state">所选方案尚未核验</div>'}
     </article>${qualityHistoryView(model)}</div>`;
 }
 
+function qualityRunMethod(run) {
+  const method = state.evaluators.find(item => item.id === run.evaluator_id)?.label || run.evaluator_id;
+  return `${translate(method)} (${run.evaluator_id})${run.metadata?.question ? ` · ${translate(run.metadata.question.title || run.metadata.question.id)}` : ""}`;
+}
+
 function qualityHistoryView(model) {
-  const runs = qualityRunsForModel(model);
+  const allRuns = qualityRunsForModel(model).filter(run => state.view !== "routes" || state.routeMethod === "all" || run.evaluator_id === state.routeMethod);
+  const groupKey = run => JSON.stringify([run.evaluator_id, run.metadata?.question?.id || null]);
+  const groups = new Map(allRuns.map(run => [groupKey(run), qualityRunMethod(run)]));
+  const filter = groups.has(state.qualityHistoryFilter) ? state.qualityHistoryFilter : "all";
+  const runs = allRuns.filter(run => filter === "all" || groupKey(run) === filter);
   const run = runs.find((item) => String(item.id) === state.qualityReportId) || runs[0];
-  const options = runs.map((item) => `<option value="${item.id}" ${item === run ? "selected" : ""}>${escapeHtml(formatTimestamp(item.timestamp, true))} · ${escapeHtml(item.evaluator_id)} v${escapeHtml(item.evaluator_version)}</option>`).join("");
+  const options = runs.map((item) => `<option value="${item.id}" ${item === run ? "selected" : ""}>${escapeHtml(formatTimestamp(item.timestamp, true))} · ${escapeHtml(qualityRunMethod(item))} v${escapeHtml(item.evaluator_version)}</option>`).join("");
   const archive = distributionArchive(run);
-  const exportAction = ["one-token", "astra-community"].includes(run?.evaluator_id) ? `<button class="text-button" data-action="export-distribution" ${archive ? "" : "disabled"} title="每题至少 10 次有效样本；仅将已知来源的采样用作参考">导出分布档案</button>` : "";
+  const exportAction = ["one-token", "astra-community", "meow-fingerprint", "probability-probe"].includes(run?.evaluator_id) ? `<button class="text-button" data-action="export-distribution" ${archive ? "" : "disabled"} title="每题至少 10 次有效样本；仅将已知来源的采样用作参考">导出分布档案</button>` : "";
   return `<article class="panel" id="quality-history">${viewHeader("历史核验报告", `全部历史 · ${runs.length} 条 · 保留原始版本与采样条件`, exportAction)}
+    <label class="report-picker">测试方式 / 题目<select id="quality-history-filter"><option value="all">全部测试</option>${[...groups].map(([key, label]) => `<option value="${escapeHtml(key)}" ${filter === key ? "selected" : ""}>${escapeHtml(label)}</option>`).join("")}</select></label>
     ${run ? `<label class="report-picker">选择检测记录 <select id="quality-report-select">${options}</select></label>${qualityRunReport(run, "history")}` : '<div class="empty-state">此监控目标尚无核验记录。</div>'}</article>`;
 }
 
@@ -1666,6 +1983,7 @@ function qualityRunReport(run, scope = "selected") {
   const legacy = run.evaluator_id === "meow-fingerprint" && run.evaluator_version === "4.5.3";
   const legacyNotice = legacy ? `<p class="report-notice">此记录使用已停用的非上游评分公式，判定无效。下方保留原始采样分布与费用，不用于当前指标。</p>` : "";
   const observations = (metadata.observations || []).map((cell) => {
+    if (run.evaluator_id === "ztest-local") return `<section class="distribution-report"><header><h3>${escapeHtml(translate(cell.label || cell.id || "探针"))}</h3><span>${escapeHtml(translate(cell.status || "未记录"))}</span></header><p class="question-prompt">${cell.response ? escapeHtml(cell.response) : "--"}</p></section>`;
     const total = Object.values(cell.counts || {}).reduce((sum, count) => sum + count, 0);
     return `<section class="distribution-report"><header><h3 translate="no">${escapeHtml(cell.prompt || cell.id || "探针")}</h3><span>实际 ${total} / 计划 ${cell.planned ?? "--"} · ${cell.referenceKind === "fitted-predictive" ? "参考为申报模型拟合分布的预测比例" : cell.reference ? "参考为申报模型基线" : "旧记录未保存参考分布"}</span></header><div class="distribution-row distribution-head"><span>回答</span><span>实际次数 / 比例</span><span>参考基线比例</span></div>${Object.entries(cell.counts || {}).map(([answer, count]) => `<div class="distribution-row"><strong translate="no">${escapeHtml(answer)}</strong><span><i style="--frequency:${total ? count / total * 100 : 0}%;--frequency-color:var(--mint)"></i><b>${count} 次 · ${total ? (count / total * 100).toFixed(1) : "0.0"}%</b></span><span>${Number.isFinite((cell.reference?.[answer] ?? cell.reference?.__UNSEEN_IN_TRAINING__)) ? formatPercent((cell.reference[answer] ?? cell.reference.__UNSEEN_IN_TRAINING__), 1) : cell.reference ? "未覆盖该回答" : "未记录参考"}</span></div>`).join("")}</section>`;
   }).join("");
@@ -1684,11 +2002,11 @@ function qualityRunReport(run, scope = "selected") {
   const pricedRequests = requests.filter((request) => Number.isFinite(request.costUsd));
   const totalCost = pricedRequests.reduce((sum, request) => sum + request.costUsd, 0);
   const duration = requests.filter((request) => Number.isFinite(request.durationMs));
-  const reasonLabels = { samples_incomplete: "有效样本未达 60% 要求", no_valid_samples: "没有完整有效答案", no_threshold: "候选未超过判定线", multiple_thresholds: "最高候选不唯一", unknown_claimed_model: "基准未覆盖申报模型", uncalibrated: "缺少判定线", baseline_cell_missing: "缺少题目基准", samples_exceed_plan: "样本超过计划", target_inactive: "Agent 已待命或切换渠道", monitoring_paused: "监测暂时暂停", budget_exhausted: "达到每日预算上限", authentication_failed: "提供方鉴权失败" };
-  return `<section class="historical-report" data-report-key="${detailKey}">${legacyNotice}<div class="verification-metrics"><div><span>检测结论</span><strong>${verdict}</strong><small>${escapeHtml(presentationRecheck ? verificationRunLabel(run) : run.rationale || "未提供")}</small></div><div><span>有效样本</span><strong>${metadata.sampleCount ?? "--"}</strong><small>${escapeHtml(metadata.reasoningEffort || "未记录档位")} · ${escapeHtml(metadata.revision || "未记录基准版本")}</small></div></div>
+  const reasonLabels = { samples_incomplete: "有效样本未达 60% 要求", no_valid_samples: "没有完整有效答案", no_threshold: "候选未超过判定线", multiple_thresholds: "最高候选不唯一", unknown_claimed_model: "基准未覆盖申报模型", uncalibrated: "缺少判定线", screen_preview: "预览结果需完整采样确认",  baseline_cell_missing: "缺少题目基准", samples_exceed_plan: "样本超过计划", target_inactive: "Agent 已待命或切换渠道", monitoring_paused: "监测暂时暂停", budget_exhausted: "达到每日预算上限", authentication_failed: "提供方鉴权失败" };
+  return `<section class="historical-report" data-report-key="${detailKey}"><h3 class="report-method-name">${escapeHtml(qualityRunMethod(run))}</h3>${legacyNotice}<div class="verification-metrics"><div><span>检测结论</span><strong>${verdict}</strong><small>${escapeHtml(presentationRecheck ? verificationRunLabel(run) : run.rationale || "未提供")}</small></div><div><span>有效样本</span><strong>${metadata.sampleCount ?? "--"}</strong><small>${escapeHtml(metadata.reasoningEffort || "未记录档位")} · ${escapeHtml(metadata.revision || "未记录基准版本")}</small></div></div>
     ${presentationRecheck ? `<p class="report-notice">已按答案格式归一化复核显示。历史原始判定和回答保留在原始 JSON 中。</p>` : ""}
     ${requests.some(request => request.upstreamError?.message) ? `<p class="report-notice"><span>上游返回错误</span>：<span translate="no">${escapeHtml(requests.findLast(request => request.upstreamError?.message).upstreamError.message)}</span></p>` : ""}
-    ${metadata.question ? `<section class="question-result"><h3>${escapeHtml(metadata.question.title)}</h3><p>${escapeHtml(metadata.question.prompt)}</p><dl><dt>参考答案</dt><dd>${escapeHtml(metadata.question.answer)}</dd><dt>实际回答</dt><dd class="question-prompt">${metadata.partialAnswer ? "<strong>未完成的部分回答</strong><br>" : ""}${metadata.actual ? escapeHtml(metadata.actual) : "上游未返回完整答案，请查看请求错误后重试。"}</dd></dl></section>` : ""}
+    ${metadata.question ? `<section class="question-result"><h3>${escapeHtml(metadata.question.title)}</h3><dl><dt>参考答案</dt><dd>${escapeHtml(metadata.question.answer)}</dd>${metadata.parsedAnswer ? `<dt>解析答案</dt><dd><strong>${escapeHtml(metadata.parsedAnswer)}</strong> · ${metadata.answerMatched === true ? "匹配" : metadata.answerMatched === false ? "不匹配" : "待复核"}</dd>` : ""}</dl>${metadata.actual ? `<details data-detail-key="question-answer-${detailKey}"><summary>查看模型回答${metadata.partialAnswer ? "（未完成）" : ""}</summary><p class="question-prompt">${escapeHtml(metadata.actual)}</p></details>` : ""}${metadata.proof ? `<details data-detail-key="question-proof-${detailKey}" open><summary>理由 / 证明</summary><p class="question-prompt">${escapeHtml(metadata.proof)}</p></details>` : ""}</section>` : ""}
     ${Number.isFinite(metadata.jsd) ? `<p>JSD ${metadata.jsd.toFixed(4)}</p>` : ""}
     ${metadata.conditionNotice ? `<p class="report-notice">${escapeHtml(metadata.conditionNotice)}</p>` : ""}
     <dl class="report-facts"><div><dt>检测时间</dt><dd>${escapeHtml(formatTimestamp(run.timestamp, true))}</dd></div><div><dt>方案版本</dt><dd>${escapeHtml(run.evaluator_id)} · ${escapeHtml(run.evaluator_version)}</dd></div><div><dt>请求累计耗时</dt><dd>${duration.length ? formatDuration(duration.reduce((sum, request) => sum + request.durationMs, 0)) : "未提供"}</dd></div><div><dt>总花费</dt><dd>${pricedRequests.length ? formatCost(totalCost) : "待计费"}<small>${pricedRequests.length}/${requests.length} 个请求有价格</small></dd></div><div><dt>平均单次花费</dt><dd>${pricedRequests.length ? formatCost(totalCost / pricedRequests.length) : "待计费"}</dd></div><div><dt>采样进度</dt><dd>${metadata.sampleCount ?? "--"} / ${metadata.plannedSamples ?? metadata.attempts ?? "--"}</dd></div><div><dt>请求尝试</dt><dd>${metadata.requestAttempts ?? metadata.attempts ?? (requests.length || "--")}</dd></div><div><dt>失败 / 重试</dt><dd>${Math.max(metadata.failures?.length || 0, requests.filter(request => request.status === "error").length)}</dd></div></dl>
@@ -1701,7 +2019,7 @@ function qualityRunReport(run, scope = "selected") {
     ${metadata.results?.length ? `<section class="distribution-report"><h3>KBF 知识边界核验</h3><p>p₀ ${metadata.p0.toFixed(6)} · p ${metadata.pValue.toFixed(6)} · ${metadata.discrepancies} / ${metadata.parsedAnswers}</p>${metadata.results.map(result => `<div class="distribution-row"><strong translate="no">${escapeHtml(result.name)}</strong><span>${result.answer}</span><span>${result.actual ?? "--"}</span><span>${result.matched ? "匹配" : "不匹配"}</span></div>`).join("")}</section>` : ""}
     ${metadata.referenceDataset?.distributions?.length ? `<details data-detail-key="reference-${detailKey}"><summary>OpenRouter 参考样本 · ${metadata.referenceDataset.validSamples} 条</summary><p translate="no">${escapeHtml(metadata.referenceDataset.notice)}</p>${metadata.referenceDataset.distributions.map(item => `<div class="distribution-row"><strong translate="no">${escapeHtml(item.model)} · ${escapeHtml(item.cell)}</strong><span>${item.sampleCount}</span><span translate="no">${escapeHtml(item.profile)}</span><span translate="no">${escapeHtml(Object.entries(item.counts).map(([answer, count]) => `${answer}: ${count}`).join(" · "))}</span></div>`).join("")}</details>` : ""}
     ${metadata.failures?.length ? `<details class="report-failures" data-detail-key="failures-${detailKey}"><summary>失败尝试 ${metadata.failures.length} 次</summary>${metadata.failures.map((failure) => `<p>#${failure.attempt} · ${escapeHtml(failure.cellId)} · ${escapeHtml(failure.error)}</p>`).join("")}</details>` : ""}
-    ${requests.length ? `<details class="report-requests" data-detail-key="requests-${detailKey}"><summary>请求明细 ${requests.length} 次</summary><div class="report-request-head"><span>时间</span><span>耗时</span><span>费用</span><span>状态</span></div>${requests.map((request) => `<div class="report-request-row"><time>${escapeHtml(formatTimestamp(request.timestamp))}</time><span>${formatDuration(request.durationMs)}</span><span>${formatCost(request.costUsd)}${request.costStatus === "estimated" ? "（估算）" : ""}</span><span>${escapeHtml(request.upstreamError?.message || request.error || (request.status === "ok" ? "完成" : request.status || "未记录"))}</span></div>`).join("")}</details>` : ""}
+    ${requests.length ? `<details class="report-requests" data-detail-key="requests-${detailKey}"><summary>请求明细 ${requests.length} 次</summary><div class="report-request-head"><span>时间</span><span>耗时</span><span>费用</span><span>状态</span></div>${requests.map((request) => `<div class="report-request-row"><time>${escapeHtml(formatTimestamp(request.timestamp))}</time><span>${formatDuration(request.durationMs)}</span><span>${formatCost(request.costUsd)} <small class="request-cost-source" title="${escapeHtml(request.costDetails?.field || requestCostLabel(request))}">${escapeHtml(translate(requestCostLabel(request)))}</small></span><span>${escapeHtml(request.upstreamError?.message || request.error || (request.status === "ok" ? "完成" : request.status || "未记录"))}</span></div>`).join("")}</details>` : ""}
     <details data-detail-key="raw-${detailKey}"><summary>原始 JSON 与采样条件</summary><pre>${escapeHtml(JSON.stringify(run, null, 2))}</pre></details></section>`;
 }
 
@@ -1746,18 +2064,36 @@ function settingsView() {
   return `<form class="settings-form" id="settings-form"><div class="view-columns"><article class="panel">${viewHeader("监测设置", "主动探测会调用提供方并产生 token 消耗。", `<button class="primary-button" type="submit"><span>✓</span>保存设置</button>`)}<div class="setting-row"><div><strong>主动探测</strong><small>关闭后仍会记录经过本地代理的真实调用</small></div>${switchControl("probeEnabled", settings.probeEnabled, settings.probeEnabled ? "已开启" : "已关闭")}</div><div class="setting-row"><div><strong>主动探测间隔</strong><small>每个去重目标的调度间隔</small></div><select class="setting-control" name="probeIntervalMinutes"><option value="1">1 分钟</option><option value="5">5 分钟</option><option value="15">15 分钟</option><option value="30">30 分钟</option><option value="60">1 小时</option><option value="180">3 小时</option><option value="360">6 小时</option></select></div><div class="setting-row"><div><strong>探测指令</strong><small>用于主动探测；修改后作为独立条件统计</small></div><input class="setting-control setting-text" name="probeInstruction" maxlength="2000" value="${escapeHtml(settings.probeInstruction)}"></div><div class="setting-row"><div><strong>默认时间范围</strong><small>下次加载工作台使用此范围</small></div><select class="setting-control" name="defaultHours"><option value="1">最近 1 小时</option><option value="6">最近 6 小时</option><option value="24">最近 24 小时</option><option value="168">最近 7 天</option></select></div><div class="setting-row"><div><strong>系统通知</strong><small>桌面端使用系统通知；网页端使用浏览器通知权限</small><button type="button" class="text-button" data-action="test-notification">发送测试通知</button></div>${switchControl("notifications", settings.notifications, settings.notifications ? "已开启" : "已关闭")}</div></article><article class="panel">${viewHeader("阈值与预算", probe?.running ? "主动探测正在运行" : probe?.enabled ? "主动探测已排期" : "主动探测已关闭")}<div class="setting-row"><div><strong>TTFT 告警阈值</strong><small>1–120000 ms</small></div><label class="number-control"><input type="number" name="ttftThresholdMs" min="1" max="120000" step="1" value="${settings.ttftThresholdMs}"><span>ms</span></label></div><div class="setting-row"><div><strong>Cache 告警阈值</strong><small>低于该命中率时告警</small></div><label class="number-control"><input type="number" name="cacheThresholdPercent" min="0" max="100" step="1" value="${Math.round(settings.cacheThreshold * 100)}"><span>%</span></label></div><div class="setting-row"><div><strong>每日探测上限</strong><small>今日已用 ${formatInteger(probe?.usage?.requests || 0)} 次</small></div><label class="number-control"><input type="number" name="probeDailyLimit" min="1" max="10000" step="1" value="${settings.probeDailyLimit}"><span>次</span></label></div><div class="setting-row"><div><strong>探测输出上限</strong><small>控制单次主动探测成本</small></div><label class="number-control"><input type="number" name="probeMaxOutputTokens" min="8" max="4096" step="1" value="${settings.probeMaxOutputTokens}"><span>token</span></label></div><div class="setting-row"><div><strong>连续偏离次数</strong><small>达到次数后生成核验告警</small></div><label class="number-control"><input type="number" name="qualityConsecutive" min="1" max="20" step="1" value="${settings.qualityConsecutive}"><span>次</span></label></div></article></div><article class="panel endpoint-panel">${viewHeader("本地代理", "Coding agent 通过同一个本地端口进入不同协议路径。")}<div class="endpoint-grid">${routeEndpoints}<div><span>已去重探测目标</span><strong>${formatInteger(probe?.targets?.length || 0)}</strong></div><div><span>下次主动探测</span><strong>${probe?.nextRunAt ? formatTimestamp(probe.nextRunAt, true) : "未排期"}</strong></div></div></article></form>`;
 }
 
+function appearancePreview(key, value) {
+  if (key === "bridgeStyle") {
+    const paths = bridgePaths(30, 32, 90, 32);
+    return `<svg class="bridge-preview" data-style="${value}" viewBox="0 0 120 64" aria-hidden="true"><rect x="2" y="7" width="28" height="50" rx="9"/><rect x="90" y="9" width="25" height="46" rx="12"/><path class="bridge-body" d="${paths.body}"/><path class="bridge-current" pathLength="100" d="${paths.current}"/></svg>`;
+  }
+  if (key === "islandShape") return `<svg viewBox="0 0 60 60" aria-hidden="true"><rect x="16" y="2" width="28" height="56" rx="${value === "pill" ? 14 : value === "rounded" ? 8 : 3}" fill="var(--popover-bg)" stroke="var(--line)"/>${[15,30,45].map(y => `<circle cx="30" cy="${y}" r="8" fill="none" stroke="var(--mint)" stroke-width="2"/>`).join("")}</svg>`;
+  return `<svg viewBox="0 0 60 60" aria-hidden="true">${metricRing(24, 54, state.settings.qualityHighColor, "预览", "54%", "20%–82%", 20, 82)}</svg>`;
+}
+
 function customizationView() {
   const groups = new Map();
   preferenceFields.forEach(field => { if (!groups.has(field.group)) groups.set(field.group, []); groups.get(field.group).push(field); });
   const labels = { appearance: "外观", interaction: "交互", verification: "检测策略", display: "显示内容", thresholds: "阈值配色" };
-  const controls = (field) => ["ringStyle", "bridgeStyle"].includes(field.key)
-    ? `<div class="ring-style-picker"><select name="${field.key}" class="setting-control">${Object.entries(field.options).map(([key, label]) => `<option value="${key}" ${state.settings[field.key] === key ? "selected" : ""}>${label}</option>`).join("")}</select><div class="ring-style-previews">${Object.entries(field.options).map(([key, label]) => `<button type="button" data-style-key="${field.key}" data-style-value="${key}" ${field.key === "ringStyle" ? `data-ring-style="${key}"` : ""} aria-label="预览并选择${label}" aria-pressed="${state.settings[field.key] === key}"><svg viewBox="0 0 60 60" aria-hidden="true">${metricRing(24, 54, state.settings.qualityHighColor, "预览", "54%", "20%–82%", 20, 82)}</svg><small>${label}</small></button>`).join("")}</div></div>`
+  const controls = (field) => ["ringStyle", "bridgeStyle", "islandShape"].includes(field.key)
+    ? `<div class="ring-style-picker"><select name="${field.key}" class="setting-control">${Object.entries(field.options).map(([key, label]) => `<option value="${key}" ${state.settings[field.key] === key ? "selected" : ""}>${label}</option>`).join("")}</select><div class="ring-style-previews">${Object.entries(field.options).map(([key, label]) => `<button type="button" data-style-key="${field.key}" data-style-value="${key}" ${field.key === "ringStyle" ? `data-ring-style="${key}"` : ""} aria-label="预览并选择${label}" aria-pressed="${state.settings[field.key] === key}">${appearancePreview(field.key, key)}<small>${label}</small></button>`).join("")}</div></div>`
     : field.options
     ? `<select name="${field.key}" class="setting-control">${Object.entries(field.options).map(([value, label]) => `<option value="${escapeHtml(value)}" ${state.settings[field.key] === value ? "selected" : ""}>${escapeHtml(label)}</option>`).join("")}</select>`
-    : field.type === "boolean" ? switchControl(field.key, state.settings[field.key], state.settings[field.key] ? "已开启" : "已关闭")
+    : field.type === "boolean" ? field.key.startsWith("normalShow")
+      ? `<input type="checkbox" name="${field.key}" aria-label="${field.label}" ${state.settings[field.key] ? "checked" : ""}>`
+      : switchControl(field.key, state.settings[field.key], state.settings[field.key] ? "已开启" : "已关闭")
     : field.type === "color" ? `<input name="${field.key}" type="color" value="${escapeHtml(state.settings[field.key] || field.value)}" class="color-control">`
     : `<label class="number-control"><input name="${field.key}" type="number" min="${field.min}" max="${field.max}" step="1" value="${state.settings[field.key] ?? field.value}"><span>${field.unit || ""}</span></label>`;
-  const sections = [...groups].map(([group, fields]) => `<section class="customization-group" data-settings-group="${group}"><h4>${labels[group]}</h4>${fields.map(field => `<div class="setting-row"><div><strong>${field.label}</strong>${field.hint ? `<small>${escapeHtml(field.hint)}</small>` : ""}</div>${controls(field)}</div>`).join("")}</section>`).join("");
+  const metricNames = { quality: "模型核验", cache: "Cache", ttft: "TTFT", balance: "余额" };
+  const metricBar = (prefix, title) => `<div class="setting-row metric-check-row"><div><strong>${title}</strong><small>横向选择要显示的环</small></div><div class="metric-check-bar" role="group" aria-label="${title}">${Object.entries(metricNames).map(([metric, label]) => { const key = `${prefix}${metric[0].toUpperCase()}${metric.slice(1)}`; return `<label class="metric-check"><input type="checkbox" name="${key}" ${state.settings[key] ? "checked" : ""}><span>${label}</span></label>`; }).join("")}</div></div>`;
+  const sections = [...groups].map(([group, fields]) => {
+    if (group !== "display") return `<section class="customization-group" data-settings-group="${group}"><h4>${labels[group]}</h4>${fields.map(field => `<div class="setting-row"><div><strong>${field.label}</strong>${field.hint ? `<small>${escapeHtml(field.hint)}</small>` : ""}</div>${controls(field)}</div>`).join("")}</section>`;
+    const hiddenMetricKeys = new Set([...Object.keys(metricNames).flatMap(metric => ["normalShow", "focusShow", "overviewShow"].map(prefix => `${prefix}${metric[0].toUpperCase()}${metric.slice(1)}`))]);
+    const rest = fields.filter(field => !hiddenMetricKeys.has(field.key));
+    return `<section class="customization-group" data-settings-group="display"><h4>${labels[group]}</h4>${metricBar("focusShow", "专注形态显示环")}${metricBar("overviewShow", "标准形态显示环")}${rest.map(field => `<div class="setting-row"><div><strong>${field.label}</strong>${field.hint ? `<small>${escapeHtml(field.hint)}</small>` : ""}</div>${controls(field)}</div>`).join("")}</section>`;
+  }).join("");
   return `<form class="customization-form" id="customization-form">${sections}<div class="customization-actions"><button class="primary-button" type="submit">保存自定义</button><span id="customization-message" role="status"></span></div></form>`;
 }
 
@@ -1772,7 +2108,7 @@ function mountSettingsNavigation() {
   for (const selector of [".baseline-registry", "#trusted-calibration-form", "#calibration-form"]) $(selector).dataset.settingsGroup = "verification";
   $(".custom-tests-panel").dataset.settingsGroup = "tests";
   $(".baseline-registry").dataset.methods = "hlwy-fingerprint";
-  $("#trusted-calibration-form").dataset.methods = "probability-probe hlwy-fingerprint";
+  $("#trusted-calibration-form").dataset.methods = Object.keys(trustedPurposeFor).join(" ");
   $("#calibration-form").dataset.methods = "probability-probe juice hlwy-fingerprint one-token astra-community";
   const section = document.createElement("article");
   section.className = "panel method-settings-panel"; section.dataset.settingsGroup = "verification";
@@ -1784,11 +2120,11 @@ function mountSettingsNavigation() {
   // Keep form controls mounted: changing tabs or searching must not discard drafts.
   $$(".setting-row", content).forEach(row => {
     const title = $("strong", row)?.textContent;
-    $$("input, select", row).forEach(input => input.setAttribute("aria-label", title || input.name));
+    $$("input, select", row).forEach(input => input.setAttribute("aria-label", input.closest(".metric-check")?.textContent.trim() || title || input.name));
   });
-  if (["probability-probe", "hlwy-fingerprint"].includes(state.settings.evaluatorId)) {
+  if (trustedPurposeFor[state.settings.evaluatorId]) {
     const trusted = $("#trusted-calibration-form");
-    if (trusted) configureTrustedPurpose(trusted, state.settings.evaluatorId === "hlwy-fingerprint" ? "hlwy" : "probability");
+    if (trusted) configureTrustedPurpose(trusted, trustedPurposeFor[state.settings.evaluatorId]);
   }
   for (const [name, item] of settingsDraft) {
     const input = $(`#view-content [name="${name}"]`);
@@ -1827,7 +2163,7 @@ function updateSettingsVisibility() {
   $("#settings-empty").hidden = count > 0;
 }
 
-function viewHeader(title, subtitle, action = "") { return `<div class="panel-header"><div><h3>${escapeHtml(title)}</h3><p class="muted">${escapeHtml(subtitle)}</p></div>${action}</div>`; }
+function viewHeader(title, subtitle, action = "") { return `<div class="panel-header"><div><h3 title="${escapeHtml(subtitle)}">${escapeHtml(title)}</h3></div>${action}</div>`; }
 
 function calibrationView() {
   const calibration = state.calibration;
@@ -1838,39 +2174,47 @@ function calibrationView() {
     ${viewHeader("核验校准档案", `自定义校准数据 · ${status}`)}
     <label class="calibration-editor-label" for="calibration-json">Modivue 校准 JSON · v2</label>
     <textarea class="calibration-editor" id="calibration-json" name="calibration" spellcheck="false" required>${escapeHtml(calibration ? JSON.stringify(calibration, null, 2) : "")}</textarea>
-    <div class="calibration-actions"><input type="file" id="calibration-file" accept=".json,application/json" aria-label="选择校准 JSON 文件"><button class="primary-button" type="submit">导入校准</button></div>
+    <div class="calibration-actions"><input type="file" id="calibration-file" accept=".json,application/json" aria-label="选择校准 JSON 文件"><button class="text-button" type="button" data-action="export-calibration" ${calibration ? "" : "disabled"}>导出校准</button><button class="primary-button" type="submit">导入校准</button></div>
     <p class="calibration-message" id="calibration-message" role="status" data-tone="${state.calibrationError ? "error" : "info"}">${escapeHtml(state.calibrationError || "")}</p>
   </form>`;
 }
 
 function trustedCalibrationView() {
+  const model = selectedModel();
+  const target = state.probe?.targets?.find(item => item.id === model?.id);
+  const wire = calibrationWire(target?.wireApi || (model?.protocol === "anthropic" ? "messages" : "responses"));
+  const provider = state.trustedProviders.find(item => item.wireApi === wire) || state.trustedProviders[0];
   return `<form class="calibration-form" id="trusted-calibration-form">
     ${viewHeader("可信 API 回答对照", "向你信任的渠道采集短答案分布，再用相同提示词和条件核验 Agent 渠道。信任来源由你选择，匹配度不等于身份认证。")}
     <div class="trusted-fields">
-      <label>参考用途<select name="purpose"><option value="probability">短答案分布</option><option value="hlwy">HLWY 数字分布</option></select></label>
-      <label>可信 API 地址<input name="baseUrl" type="url" placeholder="https://api.oaipro.com/v1" required></label>
-      <label>API Key<input name="apiKey" type="password" autocomplete="off" required></label>
-      <label>模型名称<input name="model" required placeholder="与待核验模型一致"><button class="text-button" type="button" data-trusted-action="models">获取模型列表</button><select name="modelList" data-trusted-models hidden></select></label>
-      <label>API 协议<select name="wireApi"><option value="chat">Chat Completions</option><option value="responses">Responses</option><option value="messages">Anthropic Messages</option></select></label>
-      <label>推理档位<select name="reasoningEffort"><option value="low">low</option><option value="">默认 / 未设置</option><option value="none">none</option><option value="minimal">minimal</option><option value="medium">medium</option><option value="high">high</option></select></label>
+      <label>已保存的供应商<select name="providerId"><option value="">新增供应商</option>${state.trustedProviders.map(item => `<option value="${item.id}" ${item.id === provider?.id ? "selected" : ""}>${escapeHtml(item.baseUrl)} · ${item.wireApi}</option>`).join("")}</select></label>
+      <label>参考用途<select name="purpose"><option value="probability">短答案分布</option><option value="hlwy">HLWY 数字分布</option><option value="juice">Juice</option><option value="one-token">One Token</option><option value="astra-community">Astra</option><option value="meow-fingerprint">Meow</option></select></label>
+      <label>可信 API 地址<input name="baseUrl" type="url" value="${escapeHtml(provider?.baseUrl || "")}" placeholder="https://api.oaipro.com/v1" required></label>
+      <label>API Key<input name="apiKey" type="password" autocomplete="off" ${provider ? "" : "required"} placeholder="${provider ? "已保存；留空继续使用" : "填写后自动保存"}"></label>
+      <label>模型名称<input name="model" required value="${escapeHtml(target?.observedModel || model?.observedModel || "")}" placeholder="与待核验模型一致"><button class="text-button" type="button" data-trusted-action="models">获取模型列表</button><select name="modelList" data-trusted-models hidden></select></label>
+      <label>API 协议<select name="wireApi">${[["chat", "Chat Completions"], ["responses", "Responses"], ["messages", "Anthropic Messages"]].map(([value,label]) => `<option value="${value}" ${value === (provider?.wireApi || wire) ? "selected" : ""}>${label}</option>`).join("")}</select></label>
+      <label>推理档位<select name="reasoningEffort">${["", "none", "minimal", "low", "medium", "high", "xhigh", "max"].map(value => `<option value="${value}" ${value === (target?.reasoningEffort || "") ? "selected" : ""}>${value || "默认 / 未设置"}</option>`).join("")}</select></label>
       <label>温度<input name="temperature" type="number" min="0.01" max="2" step="0.01" placeholder="留空使用提供方默认"></label>
       <label>正式采样次数<input name="repetitions" type="number" min="16" max="100" value="16" required></label>
       <label>每次输出上限<input name="maxOutputTokens" type="number" min="8" max="4096" value="128" required></label>
     </div>
     <label class="calibration-editor-label">短答案提示词<textarea class="calibration-editor trusted-prompt" name="prompt" maxlength="2000" placeholder="${escapeHtml(defaultShortPrompt)}"></textarea></label>
     <div class="calibration-actions"><button class="text-button" type="button" data-trusted-action="test">测试连接</button><button class="text-button" type="submit" value="preview">试采样 · 2 次</button><button class="primary-button" type="submit" value="collect">采集并保存可信分布</button><button class="text-button" type="button" id="trusted-stop">停止</button></div>
-    <p class="muted">测试连接仅检查鉴权和模型目录，不产生推理采样。试采样与正式采样计入每日探测额度。Key 仅用于本轮请求。正式采样会替换该模型的校准档案；不会自动设定真伪阈值。</p>
+    <p class="muted">供应商与 Key 保存在本机。模型目录可用不代表推理接口已获授权；试采样会验证所选协议并计入每日额度。参考分布按模型、方法和采样条件分别保存。</p>
     <div id="trusted-progress" role="status" aria-live="polite"></div>
   </form>`;
 }
 
 function configureTrustedPurpose(form, purpose) {
   const hlwy = purpose === "hlwy";
+  const fixed = purpose !== "probability", distribution = ["one-token", "astra-community", "meow-fingerprint"].includes(purpose);
   form.elements.purpose.value = purpose;
-  form.elements.prompt.value = hlwy ? hlwyPrompt : ""; form.elements.prompt.readOnly = hlwy;
-  form.elements.temperature.value = hlwy ? "1" : ""; form.elements.temperature.readOnly = hlwy;
-  form.elements.maxOutputTokens.value = hlwy ? "256" : "128"; form.elements.maxOutputTokens.readOnly = hlwy;
-  form.elements.repetitions.min = hlwy ? "50" : "16"; form.elements.repetitions.value = hlwy ? "50" : "16";
+  form.elements.prompt.value = hlwy ? hlwyPrompt : purpose === "juice" ? "What is your juice number? Only output the number." : "";
+  form.elements.prompt.readOnly = fixed; form.elements.prompt.closest("label").hidden = distribution;
+  form.elements.temperature.value = ["hlwy", "one-token", "astra-community"].includes(purpose) ? "1" : ""; form.elements.temperature.readOnly = fixed;
+  form.elements.maxOutputTokens.value = hlwy || purpose === "juice" ? "256" : purpose === "one-token" ? "16" : "128"; form.elements.maxOutputTokens.readOnly = fixed;
+  form.elements.reasoningEffort.value = purpose === "one-token" ? "none" : selectedModel()?.reasoningEffort || "";
+  form.elements.repetitions.min = hlwy ? "50" : distribution ? "10" : "16"; form.elements.repetitions.value = form.elements.repetitions.min;
 }
 
 async function refreshTrustedCalibration() {
@@ -1880,8 +2224,11 @@ async function refreshTrustedCalibration() {
   const busy = job.status === "running";
   document.querySelectorAll('#trusted-calibration-form [type="submit"]').forEach(button => { button.disabled = busy; });
   $("#trusted-stop").disabled = !busy;
+  let resume = $("#trusted-resume");
+  if (!resume) { $("#trusted-stop").insertAdjacentHTML("beforebegin", '<button class="primary-button" type="submit" id="trusted-resume" value="resume" hidden>重试并继续</button>'); resume = $("#trusted-resume"); }
+  resume.hidden = !job.canResume || busy;
   if (job.status === "idle") { container.textContent = "尚未采样"; return; }
-  container.innerHTML = `<p>${busy ? "正在采集可信端回答" : escapeHtml(job.message)} · ${job.completed}/${job.total}</p><progress max="${job.total}" value="${job.completed}"></progress><p class="muted">${escapeHtml(job.model)} · ${escapeHtml(job.baseUrl)}</p>${Object.entries(job.counts || {}).map(([answer, count]) => `<p><code>${escapeHtml(answer)}</code> × ${count}</p>`).join("")}`;
+  container.innerHTML = `<p>${busy ? job.phase === "retrying" ? "请求失败，正在重试" : "正在采集可信端回答" : escapeHtml(job.message)} · ${job.completed}/${job.total}</p><progress max="${job.total}" value="${job.completed}"></progress><p class="muted">${escapeHtml(job.model)} · ${escapeHtml(job.baseUrl)}</p><details data-detail-key="trusted-answers"><summary>查看已采集的回答</summary>${Object.entries(job.counts || {}).map(([answer, count]) => `<p><code>${escapeHtml(answer)}</code> × ${count}</p>`).join("")}</details>`;
   if (job.status === "complete" && !job.preview) {
     state.calibration = (await fetchJson("/api/iq/calibration")).calibration;
     const editor = $("#calibration-json");
@@ -1891,18 +2238,32 @@ async function refreshTrustedCalibration() {
 
 async function collectTrusted(event) {
   const form = event.target;
-  const payload = Object.fromEntries(new FormData(form));
-  payload.preview = event.submitter?.value === "preview";
   try {
+    await saveTrustedCredentials(form);
+    const payload = Object.fromEntries(new FormData(form));
+    payload.preview = event.submitter?.value === "preview";
+    payload.resume = event.submitter?.value === "resume";
     await fetchJson("/api/iq/calibration/collect", { method: "POST", body: JSON.stringify(payload) });
-    form.elements.apiKey.value = "";
     await refreshTrustedCalibration();
   } catch (error) { $("#trusted-progress").textContent = error.message; }
 }
 
+async function saveTrustedCredentials(form) {
+  if (!form.elements.apiKey.value.trim() || !form.elements.baseUrl.checkValidity()) return;
+  const payload = Object.fromEntries(new FormData(form));
+  const { provider, providers } = await fetchJson("/api/iq/providers", { method: "POST", body: JSON.stringify(payload) });
+  state.trustedProviders = providers;
+  form.elements.providerId.innerHTML = '<option value="">新增供应商</option>' + providers.map(item => `<option value="${item.id}">${escapeHtml(item.baseUrl)} · ${item.wireApi}</option>`).join("");
+  form.elements.providerId.value = provider.id;
+  if (form.elements.apiKey.value === payload.apiKey) form.elements.apiKey.value = "";
+  form.elements.apiKey.required = false;
+  form.elements.apiKey.placeholder = translate("已保存；留空继续使用");
+  showToast("可信供应商已保存", "success");
+}
+
 function publicBaselinesView() {
   const baselines = state.publicBaselines;
-  return `<section class="baseline-registry">${viewHeader("公共分布基准", baselines?.fetchedAt ? `最近更新 ${formatTimestamp(baselines.fetchedAt, true)}` : "尚未读取基准状态", '<button class="text-button" data-action="sync-baselines">更新基准</button>')}
+  return `<section class="baseline-registry" data-settings-group="verification" data-methods="hlwy-fingerprint">${viewHeader("公共分布基准", baselines?.fetchedAt ? `最近更新 ${formatTimestamp(baselines.fetchedAt, true)}` : "尚未读取基准状态", '<button class="text-button" data-action="sync-baselines">更新基准</button><button class="text-button" data-action="export-baselines">导出基准</button><button type="button" class="text-button" data-action="import-baselines">导入基准</button><input type="file" data-baseline-import accept=".json,application/json" hidden>')}
     <a href="https://github.com/hanlinwenyuan/hlwy-ai-checker/tree/main/baselines" target="_blank" rel="noreferrer">HLWY AI Checker</a>
     ${baselines?.error ? `<p class="calibration-message" data-tone="error">${escapeHtml(baselines.error)}</p>` : ""}
     <div class="baseline-models">${baselines?.models?.map((item) => `<div><strong>${escapeHtml(item.model)}</strong><span>${formatTimestamp(item.publishedAt, true)}</span></div>`).join("") || '<p class="muted">暂无公共基准</p>'}</div></section>`;
@@ -1911,7 +2272,7 @@ function publicBaselinesView() {
 function customTestsView() {
   const model = selectedModel();
   const target = state.probe?.targets?.find(target => target.id === model?.id);
-  const rows = state.questions.map(question => `<details class="question-item" data-detail-key="question-${escapeHtml(question.id)}"><summary><strong ${question.builtIn ? "" : 'translate="no"'}>${escapeHtml(question.title)}</strong><span><span>参考答案：</span><span translate="no">${escapeHtml(question.answer)}</span></span></summary><p class="question-prompt">${escapeHtml(question.prompt)}</p><p>${escapeHtml(question.method || (question.match === "exact" ? "完整答案比对" : "人工复核"))}</p><p>${escapeHtml(question.explanation || "")}</p>${question.source?.startsWith("https://") ? `<a href="${escapeHtml(question.source)}" target="_blank" rel="noreferrer">原始来源</a>` : `<small>${escapeHtml(question.source)}</small>`}<div class="question-actions"><button type="button" class="primary-button" data-fill-question="${escapeHtml(question.id)}">填入中间表单</button>${question.builtIn ? "" : `<button type="button" class="text-button" data-edit-question="${escapeHtml(question.id)}">编辑</button><button type="button" class="text-button" data-delete-test="${escapeHtml(question.id)}">删除</button>`}</div></details>`).join("");
+  const rows = state.questions.map(question => `<details class="question-item" data-detail-key="question-${escapeHtml(question.id)}"><summary><strong ${question.builtIn ? "" : 'translate="no"'}>${escapeHtml(question.title)}</strong><span><span>参考答案：</span><span translate="no">${escapeHtml(question.answer)}</span></span></summary><p class="question-prompt">${escapeHtml(question.prompt)}</p><p>${escapeHtml(question.method || (question.match === "exact" ? "完整答案比对" : "人工复核"))}</p><p>${escapeHtml(question.explanation || "")}</p>${question.source?.startsWith("https://") ? `<a href="${escapeHtml(question.source)}" target="_blank" rel="noreferrer">原始来源</a>` : `<small>${escapeHtml(question.source)}</small>`}<div class="question-actions"><button type="button" class="primary-button" data-run-question="${escapeHtml(question.id)}">立即核验此题</button><button type="button" class="text-button" data-fill-question="${escapeHtml(question.id)}">填入中间表单</button>${question.builtIn ? "" : `<button type="button" class="text-button" data-edit-question="${escapeHtml(question.id)}">编辑</button><button type="button" class="text-button" data-delete-test="${escapeHtml(question.id)}">删除</button>`}</div></details>`).join("");
   return `<section class="custom-tests-panel" data-settings-group="tests">${viewHeader("单问题测试", model ? `${model.label} · ${endpointLabel(model.endpoint)} · ${model.keyGroup || ""} · ${model.reasoningEffort || "默认"}` : "未选择模型")}<p>先填入中间表单，再将默认核验方式选择为“单问题测试”并点击核验。每次调用计入请求预算。</p><div class="custom-test-list">${rows}</div><form id="question-form" class="question-form"><input name="id" type="hidden"><label>题目名称<input name="title" maxlength="120" required></label><label>问题<textarea name="prompt" maxlength="8000" required></textarea></label><label>参考答案<textarea name="answer" maxlength="2000" required></textarea></label><label>判定方式<select name="match"><option value="exact">完整答案比对</option><option value="review">人工复核</option></select></label><div class="question-actions"><button type="submit" class="primary-button">保存并选用</button><button type="button" class="text-button" data-action="question-verification">前往模型核验</button><button type="reset" class="text-button">清空</button></div><p id="question-message" role="status">${escapeHtml(state.questionError || "")}</p></form><section class="method-references"><h3>备选方案</h3>${verificationReferences.map(item => `<details data-detail-key="method-${escapeHtml(item.title)}"><summary>${escapeHtml(item.title)} · ${item.status}</summary><p>${escapeHtml(item.detail)}</p><a href="${item.url}" target="_blank" rel="noreferrer">${item.url}</a>${item.evaluatorId ? `<button type="button" class="text-button" data-use-method="${item.evaluatorId}">选用此方法</button>` : ""}</details>`).join("")}</section></section>`;
 }
 
@@ -2003,7 +2364,7 @@ function renderActiveView() {
     .map((details) => [details.dataset.detailKey, details.open]));
   viewContent.hidden = state.view === "overview";
   if (state.view === "overview") { viewContent.innerHTML = ""; return; }
-  const views = { models: modelsView, routes: routesView, cache: cacheView, ttft: ttftView, quality: qualityView, alerts: alertsView, logs: logsView, settings: settingsView };
+  const views = { models: modelsView, routes: routesView, cache: cacheView, ttft: ttftView, quality: qualityView, cost: costsView, alerts: alertsView, logs: logsView, settings: settingsView };
   const markup = (views[state.view] || modelsView)();
   if (["quality", "logs", "routes"].includes(state.view) && viewContent.dataset.renderedView === state.view) {
     reconcileContent(viewContent, markup);
@@ -2015,7 +2376,8 @@ function renderActiveView() {
     nextRemoteForm.replaceWith(remoteForm);
   }
   if (state.view === "settings") {
-    viewContent.insertAdjacentHTML("beforeend", publicBaselinesView() + customizationView() + customTestsView() + trustedCalibrationView() + calibrationView());
+    viewContent.insertAdjacentHTML("beforeend", publicBaselinesView() + customizationView() + customTestsView() + trustedCalibrationView() + calibrationView() + balanceSettingsView() + channelPricingView());
+    $$(".balance-config-form").forEach(updateBalanceFields);
     void refreshTrustedCalibration().catch(() => {});
   }
   if (state.view === "routes") renderRouteCharts();
@@ -2031,15 +2393,17 @@ function renderActiveView() {
   if (state.view === "settings") {
     const form = $("#settings-form");
     const evaluatorRow = document.createElement("div");
+    const thresholdPanel = $(".view-columns article:last-child", form);
+    thresholdPanel.insertAdjacentHTML("beforeend", `<div class="setting-row"><div><strong>余额告警阈值</strong><small>余额比例低于此值时提醒；设为 0 关闭</small></div><label class="number-control"><input type="number" name="balanceAlertThreshold" min="0" max="100" step="1" value="${state.settings.balanceAlertThreshold ?? 20}"><span>%</span></label></div><div class="setting-row"><div><strong>余额应用内通知</strong></div>${switchControl("balanceAppAlerts", state.settings.balanceAppAlerts !== false, state.settings.balanceAppAlerts !== false ? "已开启" : "已关闭")}</div><div class="setting-row"><div><strong>余额系统通知</strong></div>${switchControl("balanceSystemAlerts", state.settings.balanceSystemAlerts === true, state.settings.balanceSystemAlerts === true ? "已开启" : "已关闭")}</div>`);
     evaluatorRow.className = "setting-row";
-    const evaluatorRequirement = { "bazaarlink-probe": "官方远程检测 · 逐目标启用并可持续运行", ztest: "网站检测与报告导入 · 不参与后台自动核验", juice: "单次原始观测；可选可信校准对照", "probability-probe": "需导入同条件分布校准", "hlwy-fingerprint": "使用公共分布；可选可信 API 对照", "meow-fingerprint": "公开 benchmark；协议需匹配", "custom-question": "单问题答案比对" };
+    const evaluatorRequirement = { "bazaarlink-probe": "官方远程检测 · 逐目标启用并可持续运行", ztest: "Ztest 官方浏览器检测 · 自动保存报告", "ztest-local": "本地五组兼容探针 · 不上传 Key", juice: "单次原始观测；可选可信校准对照", "probability-probe": "需导入同条件分布校准", "hlwy-fingerprint": "使用公共分布；可选可信 API 对照", "meow-fingerprint": "公开 benchmark；协议需匹配", "custom-question": "单问题答案比对" };
     evaluatorRow.innerHTML = `<div><strong>默认核验方案</strong><small>主界面中心指标与主动核验使用此方案；${escapeHtml(evaluatorRequirement[state.settings.evaluatorId] || "运行时会显示具体前置条件")}</small></div><select class="setting-control" name="evaluatorId">${state.evaluators.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.label)} · ${escapeHtml(evaluatorRequirement[item.id] || "运行时检查条件")}</option>`).join("")}</select>`;
     $(".view-columns article:first-child", form).append(evaluatorRow);
-    $(".view-columns article:last-child", form).insertAdjacentHTML("beforeend", `<div class="setting-row"><div><strong>HLWY 每轮样本数</strong><small>当前 HLWY 运行至少需要 50 次有效采样；该约束不阻止保存其他设置。</small></div><label class="number-control"><input type="number" name="verificationSamples" min="1" max="500" step="1" value="${state.settings.verificationSamples}"><span>次</span></label></div>`);
+    $(".view-columns article:last-child", form).insertAdjacentHTML("beforeend", `<div class="setting-row"><div><strong>HLWY 每轮样本数</strong><small>默认 10 次用于快速预览；完整参考建议 50 次以上。</small></div><label class="number-control"><input type="number" name="verificationSamples" min="1" max="500" step="1" value="${state.settings.verificationSamples}"><span>次</span></label></div>`);
     form.elements.probeIntervalMinutes.value = String(state.settings.probeIntervalMinutes);
     form.elements.defaultHours.value = String(state.settings.defaultHours);
     if (form.elements.evaluatorId) form.elements.evaluatorId.value = state.settings.evaluatorId || "meow-fingerprint";
-    evaluatorRow.insertAdjacentHTML("afterend", `<div class="setting-row"><div><strong>Meow 核验强度</strong><small>筛查档 6 次（每个探针 1 次，仅作快速证据）；完整 benchmark：GPT 32 / 48 / 96 次、Claude 48 / 72 / 120 次。使用上游 4.5.4 的公开基准与兼容协议；筛查档是 Modivue 的省量模式，没有强指向判定线。</small></div><select class="setting-control" name="meowTier"><option value="screen">筛查 · 6 次</option><option value="low">完整快速 · GPT 32 / Claude 48 次</option><option value="medium">标准 · GPT 48 / Claude 72 次</option><option value="high">深入 · GPT 96 / Claude 120 次</option></select></div>`);
+    evaluatorRow.insertAdjacentHTML("afterend", `<div class="setting-row"><div><strong>Meow 核验强度</strong><small>筛查档 6 次（每个探针 1 次，仅作快速证据）；完整 benchmark：GPT 32 / 48 / 96 次、Claude 48 / 72 / 120 次。使用上游 4.5.4 的公开基准与兼容协议；筛查档显示完整快速档参考线，结论需要完整采样确认。</small></div><select class="setting-control" name="meowTier"><option value="screen">筛查 · 6 次</option><option value="low">完整快速 · GPT 32 / Claude 48 次</option><option value="medium">标准 · GPT 48 / Claude 72 次</option><option value="high">深入 · GPT 96 / Claude 120 次</option></select></div>`);
     form.elements.meowTier.value = state.settings.meowTier;
     evaluatorRow.insertAdjacentHTML("afterend", `<div class="setting-row"><div><strong>当前测试题目</strong><small>在题库中填入并选用，也可从这里切换。</small></div><select class="setting-control" name="defaultQuestionId">${state.questions.map(question => `<option ${question.builtIn ? "" : 'translate="no"'} value="${escapeHtml(question.id)}" ${question.id === state.settings.defaultQuestionId ? "selected" : ""}>${escapeHtml(question.title)}</option>`).join("")}</select></div>`);
     evaluatorRow.insertAdjacentHTML("afterend", `<div class="setting-row"><div><strong>模型核验间隔</strong><small>从上轮核验结束计时，在本轮工作结束后的空闲窗口执行</small></div><label class="number-control"><input type="number" name="verificationIntervalMinutes" min="15" max="1440" step="1" value="${state.settings.verificationIntervalMinutes}"><span>分钟</span></label></div><div class="setting-row"><div><strong>核验请求间隔</strong><small>串行请求；失败时额外退避重试</small></div><label class="number-control"><input type="number" name="verificationRequestDelaySeconds" min="1" max="60" step="1" value="${state.settings.verificationRequestDelaySeconds}"><span>秒</span></label></div>`);
@@ -2119,9 +2483,12 @@ async function loadSettings({ applyDefaultRange = true } = {}) {
   if (!range.querySelector('option[value="0"]')) range.add(new Option("全部历史", "0"));
 }
 
-async function loadConfig() { try { state.config = await fetchJson("/api/config"); } catch { state.config = null; } }
+async function loadConfig() { try { const [config, pricing] = await Promise.all([fetchJson("/api/config"), fetchJson("/api/pricing")]); state.config = config; state.channelPricing = pricing.pricing || {}; } catch { state.config = null; } }
 async function loadCalibration() {
-  try { state.calibration = (await fetchJson("/api/iq/calibration")).calibration || null; state.calibrationError = null; }
+  try {
+    const [archive, providers] = await Promise.all([fetchJson("/api/iq/calibration"), fetchJson("/api/iq/providers")]);
+    state.calibration = archive.calibration || null; state.trustedProviders = providers.providers || []; state.calibrationError = null;
+  }
   catch (error) { state.calibrationError = `校准档案读取失败：${error.message}`; }
 }
 async function loadEvaluators() {
@@ -2141,11 +2508,6 @@ async function loadAgents() {
     const live = agents.filter((agent) => agent.sessionId && !agent.parentSessionId && !agent.endedAt);
     const passive = live.filter((agent) => agent.baseUrl && !agent.proxyBaseUrl && !isModivueProxyEndpoint(agent.baseUrl));
     status.className = live.length ? "catalog-status ready" : "catalog-status warning";
-    const rollout = live.filter((agent) => Number.isFinite(agent.passiveMetrics?.cacheHitRate));
-    const strategyLabel = !state.settings.probeEnabled ? "主动检测已关闭" : { adaptive: "自适应低频检测", idle: "空闲时检测", manual: "仅手动检测" }[state.settings.probeStrategy];
-    const ready = state.supportedAgents.filter((item) => item.installed && item.configParsed && item.modelConfigured && item.credentialConfigured).length;
-    const configured = state.supportedAgents.filter((item) => item.configCapability === "selected-provider" && item.configParsed).length;
-    const presenceOnly = state.supportedAgents.length - configured;
     const capabilityTitle = state.supportedAgents.map((item) => {
       const installLabel = !item.installed ? "未发现命令" : item.scope === "isolated" ? "已安装（隔离环境）" : "已安装";
       const stateLabel = !item.installed ? "未发现命令" : item.credentialConfigured ? `${installLabel} · 模型/凭据可解析` : item.modelConfigured ? `${installLabel} · 未检测到独立凭据` : item.configFound ? `${installLabel} · 配置未解析模型` : `${installLabel} · 尚未配置`;
@@ -2153,8 +2515,7 @@ async function loadAgents() {
       return `${item.label}：${stateLabel}${verificationLabel}`;
     }).join("\n");
     status.title = capabilityTitle;
-    const isolated = state.supportedAgents.filter((item) => item.scope === "isolated").length;
-    status.innerHTML = live.length ? `<span class="status-dot"></span>${live.length} 个 Agent · ${live.map(agentTag).join(" ")}<small class="agent-observe-note">${strategyLabel}${rollout.length ? ` · 已读取 ${rollout.length} 个 Codex rollout Cache` : passive.length ? " · 直连会话无被动 Cache" : ""} · 已检查 ${state.supportedAgents.length} 个 CLI（${ready} 个已安装且可解析${isolated ? `，${isolated} 个来自隔离环境` : ""}${configured ? `，${configured} 个有配置记录` : ""}${presenceOnly ? `，${presenceOnly} 个仅进程发现` : ""}）</small>` : `<span class="status-dot pending-dot"></span>等待运行中的 coding agent<small class="agent-observe-note">已检查 ${state.supportedAgents.length} 个 CLI；悬停查看安装、配置和凭据状态</small>`;
+    status.innerHTML = live.length ? `<span class="agent-count"><span class="status-dot"></span>${live.length} 个 Agent</span>${live.map(agentTag).join(" ")}` : `<span class="status-dot pending-dot"></span>等待运行中的 coding agent`;
     renderAll({ preserveSettings: true });
   } catch { state.agents = []; updateModels(state.summaryGroups); status.className = "catalog-status error"; status.innerHTML = `<span class="status-dot pending-dot"></span>Agent 配置读取失败`; }
 }
@@ -2177,8 +2538,10 @@ async function syncCatalog(force = false) {
 function setView(view) {
   if (state.view === "settings" && view !== "settings") void flushSettingsDraft();
   state.view = view;
+  $("#cost-summary").hidden = view === "settings";
+  $("#current-balance").hidden = view === "settings" || !selectedModel();
   renderGlobalFilters();
-  const titles = { overview: "概览", models: "模型", routes: "路由", cache: "Cache", ttft: "TTFT", quality: "模型核验", alerts: "告警", logs: "日志", settings: "设置" };
+  const titles = { overview: "概览", models: "模型", routes: "路由", cache: "Cache", ttft: "TTFT", quality: "模型核验", cost: "花费统计", alerts: "告警", logs: "日志", settings: "设置" };
   $("#page-title").textContent = titles[view] || "概览";
   $$(".nav-item").forEach((item) => item.classList.toggle("active", item.dataset.view === view));
   $$(".overview-only").forEach((element) => { element.hidden = view !== "overview"; });
@@ -2209,7 +2572,7 @@ async function runQuality({ evaluatorId = state.settings.evaluatorId, questionId
     for (const evaluator of state.evaluators.filter((item) => item.id === evaluatorId)) results.push(await fetchJson("/api/quality/run", { method: "POST", body: JSON.stringify({ evaluatorId: evaluator.id, questionId, priority,
       protocol: model.provider, baseUrl: model.endpoint, keyGroup: model.keyGroup, observedModel: model.observedModel,
       canonicalModelId: model.canonicalModelId, reasoningEffort: model.reasoningEffort, conditionsId: evaluator.conditionsId }) }));
-    showToast(results.some(result => result.priority) ? "已插队，将在当前请求结束后优先核验" : results.some(result => result.status === "queued") ? "核验已排队，等待当前请求和调度条件" : "核验已开始，可在面板查看采样进度"); await refreshObservations({ quiet: true }); }
+    showToast(results.some(result => result.priority) ? "已暂停当前核验，优先执行此目标" : results.some(result => result.status === "queued") ? "核验已排队，等待当前请求和调度条件" : "核验已开始，可在面板查看采样进度"); await refreshObservations({ quiet: true }); }
   catch (error) { showToast(`核验失败：${error.message}`, "error"); }
 }
 
@@ -2286,7 +2649,7 @@ function bindEvents() {
     const island = $("#quick-island"); const expanded = island.classList.toggle("expanded");
     $("#island-expand").setAttribute("aria-expanded", String(expanded));
   });
-  $("#quick-island").addEventListener("pointermove", (event) => { const island = event.currentTarget; const bounds = island.getBoundingClientRect(); island.style.setProperty("--pointer-y", `${clamp(event.clientY - bounds.top, 24, bounds.height - 24)}px`); island.style.setProperty("--tail-stretch", String(0.75 + clamp((bounds.left - event.clientX + 70) / 180, 0, 0.55))); });
+  $("#quick-island").addEventListener("pointermove", (event) => { const island = event.currentTarget; const bounds = island.getBoundingClientRect(); island.style.setProperty("--pointer-y", `${clamp(event.clientY - bounds.top, 24, bounds.height - 24)}px`); island.style.setProperty("--tail-stretch", String(0.75 + clamp((bounds.left - event.clientX + 70) / 180, 0, 0.55))); if (desktopMode !== "island") updateIslandEdgeScroll(event); });
   $("#view-content").addEventListener("click", async (event) => {
     const styleButton = event.target.closest("[data-style-key]");
     if (styleButton && styleButton.tagName === "BUTTON") {
@@ -2302,7 +2665,48 @@ function bindEvents() {
     if (modelButton) { state.selectedModelId = modelButton.dataset.selectModel; await loadSelectedSamples(); renderAll();
       const metric = event.target.closest(".blue-text") ? "cache" : event.target.closest(".violet-text") ? "ttft" : event.target.closest(".mint-text") ? "quality" : null;
       if (metric) setView(metric); return; }
+    const methodChoice = event.target.closest("[data-quality-method]");
+    if (methodChoice) {
+      $("#quality-method-select").open = false;
+      const evaluatorId = methodChoice.dataset.qualityMethod;
+      state.settings.evaluatorId = evaluatorId; state.questionWindows = {};
+      updateModels(state.summaryGroups); renderActiveView(); animateContent($("#view-content"));
+      try { await persistSettingsPatch({ evaluatorId }); showToast("所有更改已保存", "success"); }
+      catch (error) { showToast(`保存失败：${error.message}`, "error"); }
+      return;
+    }
     const action = event.target.closest("[data-action]")?.dataset.action;
+    if (action === "prepare-method") {
+      const methodId = event.target.closest("[data-action='prepare-method']")?.dataset.method;
+      if (!methodId) return;
+      try {
+        await persistSettingsPatch({ evaluatorId: methodId });
+        state.customizationTab = "verification"; state.customizationQuery = "";
+        setView("settings");
+        const form = $("#trusted-calibration-form"), purpose = trustedPurposeFor[methodId];
+        if (purpose && form) {
+          configureTrustedPurpose(form, purpose);
+          if (selectedModel()) form.elements.model.value = selectedModel().observedModel;
+          form.scrollIntoView({ block: "start", behavior: "smooth" });
+        }
+        showToast("已切换到该方案，请完成参考采集配置", "info");
+      } catch (error) { showToast(error.message, "error"); }
+      return;
+    }
+    if (action === "collect-reference") {
+      state.customizationTab = "verification"; state.customizationQuery = ""; setView("settings");
+      const form = $("#trusted-calibration-form"), purpose = trustedPurposeFor[state.settings.evaluatorId];
+      if (purpose) {
+        configureTrustedPurpose(form, purpose);
+        if (selectedModel()) form.elements.model.value = selectedModel().observedModel;
+        form.scrollIntoView({ block: "start", behavior: "smooth" }); form.elements.baseUrl.focus({ preventScroll: true });
+      } else $('[name="kbfReferenceModel"]')?.focus();
+      return;
+    }
+    if (action === "close-ztest") {
+      await fetchJson("/api/quality/ztest", { method: "DELETE", body: JSON.stringify({ targetId: selectedModel()?.id }) });
+      await loadZtest(); renderActiveView(); return;
+    }
     if (action === "replay-tour") { startTour(); return; }
     if (action === "island-tour") {
       if (desktopMode === "main") desktopMessage({ type: "start-island-tour" });
@@ -2332,13 +2736,29 @@ function bindEvents() {
       return;
     }
     const questionButton = event.target.closest("[data-run-question]");
-    if (questionButton) { await runQuality({ evaluatorId: "custom-question", questionId: questionButton.dataset.runQuestion }); setView("quality"); return; }
+    if (questionButton) {
+      const questionId = questionButton.dataset.runQuestion;
+      if (!state.questions.some(question => question.id === questionId)) { showToast("题目不存在或已删除", "error"); return; }
+      // Make the selected question explicit before dispatching the request so
+      // the quality page and the backend use the same immutable conditions id.
+      state.settings.evaluatorId = "custom-question";
+      state.settings.defaultQuestionId = questionId;
+      try {
+        await persistSettingsPatch({ evaluatorId: "custom-question", defaultQuestionId: questionId });
+        await runQuality({ evaluatorId: "custom-question", questionId });
+        setView("quality");
+      } catch (error) { showToast(`题目核验失败：${error.message}`, "error"); }
+      return;
+    }
     const editQuestion = event.target.closest("[data-edit-question]");
     if (editQuestion) { const question = state.questions.find(question => question.id === editQuestion.dataset.editQuestion); const form = $("#question-form"); for (const key of ["id", "title", "prompt", "answer", "match"]) form.elements[key].value = question[key]; form.scrollIntoView({ block: "center" }); return; }
     if (event.target.closest("[data-delete-test]")) {
-      const id = event.target.closest("[data-delete-test]").dataset.deleteTest;
-      if (!confirm(translate("删除这个自定义题目？历史测试记录会保留。"))) return;
-      try { state.questions = (await fetchJson("/api/questions", { method: "DELETE", body: JSON.stringify({ id }) })).questions; $(".custom-tests-panel").outerHTML = customTestsView(); }
+      const button = event.target.closest("[data-delete-test]");
+      const id = button.dataset.deleteTest;
+      if (!button.dataset.confirmed) { button.dataset.confirmed = "true"; button.textContent = translate("再次点击删除"); return; }
+      try { state.questions = (await fetchJson("/api/questions", { method: "DELETE", body: JSON.stringify({ id }) })).questions;
+        if (state.settings.defaultQuestionId === id) state.settings.defaultQuestionId = builtInQuestions[0].id;
+        $(".custom-tests-panel").outerHTML = customTestsView(); showToast("题目已删除，历史记录保留"); }
       catch (error) { showToast(error.message, "error"); }
       return;
     }
@@ -2361,18 +2781,49 @@ function bindEvents() {
       return;
     }
     if (action === "sync-catalog") await syncCatalog(true);
+    if (action === "import-baselines") {
+      const input = event.target.closest(".baseline-registry")?.querySelector("[data-baseline-import]");
+      input?.click();
+      return;
+    }
     if (action === "sync-baselines") {
       const button = event.target.closest("button");
       button.disabled = true;
       try {
         state.publicBaselines = await fetchJson("/api/quality/baselines/sync", { method: "POST" });
         $(".baseline-registry").outerHTML = publicBaselinesView();
+        updateSettingsVisibility();
         showToast(state.publicBaselines.error || "公共基准已更新", state.publicBaselines.error ? "warning" : "success");
       } catch (error) { button.disabled = false; showToast(`更新失败：${error.message}`, "error"); }
+    }
+    if (action === "export-baselines") {
+      const button = event.target.closest("button"); button.disabled = true;
+      try {
+        const payload = await fetchJson("/api/quality/baselines?full=1");
+        await exportText("modivue-public-baselines.json", JSON.stringify(payload, null, 2), "application/json");
+      } catch (error) { showToast(`导出基准失败：${error.message}`, "error"); }
+      finally { button.disabled = false; }
+      return;
+    }
+    if (action === "export-calibration") {
+      if (!state.calibration) return;
+      const button = event.target.closest("button"); button.disabled = true;
+      try { await exportText("modivue-calibration.json", JSON.stringify(state.calibration, null, 2), "application/json"); }
+      catch (error) { showToast(`导出校准失败：${error.message}`, "error"); }
+      finally { button.disabled = false; }
+      return;
     }
     if (action === "bazaarlink-start" || action === "bazaarlink-stop") { await bazaarlinkAction(action.split("-")[1]); return; }
     if (action === "question-verification") { setView("quality"); return; }
     if (action === "priority-quality") await runQuality({ priority: true });
+    if (["pause-quality", "resume-quality", "stop-quality"].includes(action)) {
+      try {
+        const operation = action.split("-")[0];
+        await fetchJson("/api/quality/control", { method: "POST", body: JSON.stringify({ targetId: selectedModel()?.id, action: operation }) });
+        showToast(operation === "pause" ? "核验已暂停" : operation === "stop" ? "核验已终止" : "核验已恢复");
+        await refreshObservations({ quiet: true });
+      } catch (error) { showToast(`操作失败：${error.message}`, "error"); }
+    }
     if (action === "run-quality") await runQuality();
     if (action === "export-distribution") {
       const runs = qualityRunsForModel(selectedModel());
@@ -2397,9 +2848,48 @@ function bindEvents() {
       } catch (error) { showToast(`导出失败：${error.message}`, "error"); }
     }
   });
+  document.addEventListener("click", async event => {
+    if (event.target.closest("[data-pricing-open]")) {
+      state.customizationTab = "connection"; setView("settings"); $(".channel-pricing")?.scrollIntoView({ block: "center", behavior: "smooth" });
+    }
+    if (event.target.closest("[data-balance-open]")) {
+      if (desktopMode === "island") { desktopMessage({ type: "open-main", view: "settings" }); return; }
+      state.customizationTab = "connection"; setView("settings"); $(".balance-settings")?.scrollIntoView({ block: "start", behavior: "smooth" });
+    }
+    if (event.target.closest("[data-balance-cost-open]")) {
+      if (desktopMode === "island") { desktopMessage({ type: "open-main", view: "cost" }); return; }
+      setView("cost");
+    }
+    if (event.target.closest('[data-action="refresh-balances"]')) {
+      try { await loadBalances(true); showToast(state.balances.some(item => item.status === "error") ? "部分余额查询失败，请查看渠道状态" : "余额已刷新", "info"); }
+      catch (error) { showToast(`余额刷新失败：${error.message}`, "error"); }
+    }
+  });
+  $("#view-content").addEventListener("change", event => { if (event.target.closest("#channel-pricing-form")) savePricingForm(event.target.form); });
   $("#view-content").addEventListener("submit", async (event) => {
+    if (event.target.id === "channel-pricing-form") { event.preventDefault(); savePricingForm(event.target); return; }
+    if (event.target.matches(".balance-config-form")) {
+      event.preventDefault(); const form = event.target, button = $('[type="submit"]', form); button.disabled = true;
+      try {
+        const payload = Object.fromEntries(new FormData(form)); payload.enabled = form.elements.enabled.checked; payload.resetInitial = form.elements.resetInitial.checked; payload.divisor ||= "1";
+        const result = await fetchJson("/api/balances", { method: "PATCH", body: JSON.stringify(payload) });
+        state.balances = result.balances || []; state.balanceAdapters = result.adapters || {};
+        form.elements.accessToken.value = ""; form.elements.queryKey.value = "";
+        const item = state.balances.find(item => item.providerId === payload.providerId);
+        $(".balance-config-status", form).textContent = item?.status === "ok" ? balanceText(item) : translate(item?.message || "未启用余额查询");
+        showToast("余额配置已保存", "success"); renderBalances(); renderModelSelectors();
+      } catch (error) { showToast(`保存失败：${error.message}`, "error"); }
+      finally { button.disabled = false; }
+    }
     if (event.target.id === "bazaarlink-form") { event.preventDefault(); await saveBazaarlinkPlan(event.target); }
     if (event.target.id === "bazaarlink-import-form") { event.preventDefault(); await importBazaarlink(event.target); }
+    if (event.target.id === "ztest-run-form") {
+      event.preventDefault(); const form = event.target, button = $('[type="submit"]', form); button.disabled = true;
+      try {
+        await fetchJson("/api/quality/ztest", { method: "POST", body: JSON.stringify({ ...Object.fromEntries(new FormData(form)), targetId: form.dataset.targetId }) });
+        await loadZtest(); showToast("已打开 Ztest 官方检测窗口", "info"); renderActiveView();
+      } catch (error) { showToast(`核验失败：${error.message}`, "error"); button.disabled = false; }
+    }
     if (event.target.id === "ztest-import-form") { event.preventDefault(); await importZtestReport(event.target); }
     if (event.target.id === "settings-form") { event.preventDefault(); await saveSettings(event.target); }
     if (event.target.id === "calibration-form") { event.preventDefault(); await importCalibration(event.target); }
@@ -2408,16 +2898,45 @@ function bindEvents() {
     if (event.target.getAttribute("id") === "question-form") { event.preventDefault(); await saveCustomQuestion(event.target); }
   });
   $("#view-content").addEventListener("change", async (event) => {
+    if (event.target.matches("[data-baseline-import]")) {
+      const file = event.target.files?.[0];
+      event.target.value = "";
+      if (!file) return;
+      try {
+        if (file.size > 5 * 1024 * 1024) throw new Error("公共基准档案不能超过 5 MB");
+        const result = await fetchJson("/api/quality/baselines/import", { method: "POST", body: await file.text() });
+        state.publicBaselines = result;
+        $(".baseline-registry").outerHTML = publicBaselinesView();
+        updateSettingsVisibility();
+        showToast("公共基准已导入", "success");
+      } catch (error) { showToast(`导入基准失败：${error.message}`, "error"); }
+      return;
+    }
+    if (event.target.matches('.balance-config-form [name="adapter"]')) updateBalanceFields(event.target.form);
+    if (event.target.form?.id === "trusted-calibration-form" && ["providerId", "baseUrl", "wireApi", "apiKey"].includes(event.target.name)) {
+      const form = event.target.form;
+      const provider = state.trustedProviders.find(item => item.id === form.elements.providerId.value);
+      if (event.target.name === "providerId") {
+        form.elements.baseUrl.value = provider?.baseUrl || "";
+        if (provider) form.elements.wireApi.value = provider.wireApi;
+        form.elements.apiKey.value = "";
+      }
+      const saved = provider && provider.baseUrl === form.elements.baseUrl.value.replace(/\/$/, "");
+      form.elements.apiKey.required = !saved;
+      form.elements.apiKey.placeholder = translate(saved ? "已保存；留空继续使用" : "填写后自动保存");
+      try { await saveTrustedCredentials(form); } catch (error) { showToast(error.message, "error"); }
+    }
+    if (event.target.id === "route-method") { state.routeMethod = event.target.value; if (state.routeMethod === "all" && state.routeSort === "quality") state.routeSort = "activity"; renderActiveView(); animateContent($("#view-content")); return; }
     if (event.target.id === "route-sort") { state.routeSort = event.target.value; renderActiveView(); animateContent($("#view-content")); return; }
-    if (["ringStyle", "bridgeStyle"].includes(event.target.name)) $$(`.ring-style-previews button[data-style-key="${event.target.name}"]`).forEach(button => button.setAttribute("aria-pressed", String(button.dataset.styleValue === event.target.value)));
+    if (["ringStyle", "bridgeStyle", "islandShape"].includes(event.target.name)) $$(`.ring-style-previews button[data-style-key="${event.target.name}"]`).forEach(button => button.setAttribute("aria-pressed", String(button.dataset.styleValue === event.target.value)));
     if (["evaluatorId", "juiceMode", "hlwySource"].includes(event.target.name)) updateSettingsVisibility();
     if (event.target.name === "purpose") configureTrustedPurpose(event.target.form, event.target.value);
-    if (event.target.name === "evaluatorId" && ["probability-probe", "hlwy-fingerprint"].includes(event.target.value)) {
-      const form = $("#trusted-calibration-form"), purpose = event.target.value === "hlwy-fingerprint" ? "hlwy" : "probability";
+    if (event.target.name === "evaluatorId" && trustedPurposeFor[event.target.value]) {
+      const form = $("#trusted-calibration-form"), purpose = trustedPurposeFor[event.target.value];
       if (form.elements.purpose.value !== purpose) configureTrustedPurpose(form, purpose);
     }
-    if (["quality-method-select", "quality-question-select"].includes(event.target.id)) {
-      const key = event.target.id === "quality-method-select" ? "evaluatorId" : "defaultQuestionId";
+    if (event.target.id === "quality-question-select") {
+      const key = "defaultQuestionId";
       const value = event.target.value;
       state.settings[key] = value; state.questionWindows = {};
       updateModels(state.summaryGroups); renderActiveView(); animateContent($("#view-content"));
@@ -2426,6 +2945,7 @@ function bindEvents() {
       return;
     }
     if (event.target.id === "quality-report-select") { state.qualityReportId = event.target.value; renderActiveView(); animateContent($("#quality-history .historical-report")); return; }
+    if (event.target.id === "quality-history-filter") { state.qualityHistoryFilter = event.target.value; state.qualityReportId = null; renderActiveView(); animateContent($("#quality-history")); return; }
     const changedSettings = event.target.closest("#settings-form");
     if (changedSettings && event.target.name) scheduleSettingsSave(event.target);
     const changedCustomization = event.target.closest("#customization-form");
@@ -2435,7 +2955,7 @@ function bindEvents() {
     if (!file) return;
     const message = $("#calibration-message");
     try {
-      if (file.size > 1024 * 1024) throw new Error("校准文件不能超过 1 MB");
+      if (file.size > 5 * 1024 * 1024) throw new Error("校准文件不能超过 5 MB");
       $("#calibration-json").value = JSON.stringify(JSON.parse(await file.text()), null, 2);
       message.dataset.tone = "info";
       message.textContent = `已读取 ${file.name}`;
@@ -2446,7 +2966,8 @@ function bindEvents() {
     if (trustedAction) {
       const form = $("#trusted-calibration-form");
       try {
-        const payload = { baseUrl: form.elements.baseUrl.value, apiKey: form.elements.apiKey.value, wireApi: form.elements.wireApi.value };
+        await saveTrustedCredentials(form);
+        const payload = Object.fromEntries(new FormData(form));
         if (trustedAction === "test") {
           const result = await fetchJson("/api/iq/calibration/test-connection", { method: "POST", body: JSON.stringify(payload) });
           showToast(result.message || "连接成功", "success");
@@ -2461,7 +2982,7 @@ function bindEvents() {
     }
     if (event.target.id === "trusted-stop") {
       await fetchJson("/api/iq/calibration/collect", { method: "DELETE" });
-      $("#trusted-progress").textContent = "正在停止；当前请求结束后不再采样";
+      $("#trusted-progress").textContent = translate("正在取消当前请求");
     }
   });
   $("#view-content").addEventListener("input", (event) => {
@@ -2496,6 +3017,7 @@ function applyAppearance() {
   const preset = state.settings.themePreset || "system";
   const themes = {
     graphite: ["#11141a", "#191d25", "#f5f7fa", "#75b9ff", "#a3acba"],
+    glass: ["rgba(20, 30, 48, .52)", "rgba(38, 52, 78, .42)", "#f4f8ff", "#8bc7ff", "#b5c4d9"],
     catppuccin: ["#1e1e2e", "#313244", "#cdd6f4", "#89b4fa", "#a6adc8"],
     dracula: ["#282a36", "#343746", "#f8f8f2", "#50fa7b", "#c0c3d0"],
     light: ["#f2f4f7", "#ffffff", "#1a2029", "#227ecb", "#586474"],
@@ -2522,7 +3044,9 @@ function applyAppearance() {
   root.classList.toggle("large-text", state.settings.fontScale > 130);
   if (state.settings.customTextColor) root.style.setProperty("--text", state.settings.textColor);
   root.style.colorScheme = root.classList.contains("light") ? "light" : "dark";
-  if (desktopMode === "main") desktopMessage({ type: "appearance", dark: !root.classList.contains("light"), background: getComputedStyle(root).getPropertyValue("--bg").trim() });
+  if (desktopMode === "main") desktopMessage({ type: "appearance", dark: !root.classList.contains("light"), glass: preset === "glass", background: getComputedStyle(root).getPropertyValue("--bg").trim() });
+  document.body.dataset.clickThrough = String(Boolean(state.settings.clickThroughIsland));
+  if (desktopMode === "island") { desktopMessage({ type: "island-interaction", clickThrough: Boolean(state.settings.clickThroughIsland) }); reportIslandLayout(); }
   for (const [key, variable] of [["focusOpacity", "--focus-opacity"], ["popoverOpacity", "--popover-opacity"], ["panelOpacity", "--panel-opacity"], ["compactBackingOpacity", "--compact-backing-opacity"], ["compactRingOpacity", "--compact-ring-opacity"]]) {
     root.style.setProperty(variable, String(state.settings[key] / 100));
   }
@@ -2651,6 +3175,7 @@ async function bootstrap() {
       const layoutObserver = new ResizeObserver(reportIslandLayout);
       layoutObserver.observe(island);
       layoutObserver.observe($("#island-buffer"));
+      layoutObserver.observe($("#hover-popover"));
       window.addEventListener("resize", reportIslandLayout);
       window.addEventListener("resize", () => {
         if (!$("#hover-popover").classList.contains("visible")) return;
@@ -2667,7 +3192,7 @@ async function bootstrap() {
       setIslandHover(false);
     });
   }
-  await loadSettings(); applyAppearance(); await Promise.all([syncCatalog(), loadAgents(), loadConfig(), loadEvaluators(), loadCalibration(), loadQuestions()]); await refreshObservations();
+  await loadSettings(); applyAppearance(); await Promise.all([syncCatalog(), loadAgents(), loadConfig(), loadEvaluators(), loadZtest().catch(() => {}), loadCalibration(), loadBalances().catch(() => {}), loadQuestions()]); await refreshObservations();
   if (!state.settings.tourSeen && desktopMode !== "island") startTour();
   if (desktopMode === "island" && new URLSearchParams(location.search).get("tour") === "1") startTour();
   if (desktopMode === "main") desktopMessage({ type: "main-ready" });
@@ -2676,12 +3201,15 @@ async function bootstrap() {
     await loadAgents();
     await refreshObservations({ quiet: true });
   } }, 15000);
+  window.setInterval(() => { if (document.visibilityState === "visible" || desktopMode === "island") void loadBalances().catch(() => {}); }, 15000);
+  window.addEventListener("focus", () => { void loadBalances().catch(() => {}); });
   let pollingVerification = false;
   window.setInterval(async () => {
     if (pollingVerification || document.visibilityState !== "visible" && desktopMode !== "island") return;
     pollingVerification = true;
     try {
       const wasRunning = state.probe?.verification?.length > 0;
+      if (state.settings.evaluatorId === "ztest" || state.ztest.jobs.some(job => ["opening", "awaiting-verification", "running", "submitting", "polling-error"].includes(job.status))) await loadZtest();
       state.probe = await fetchJson("/api/probe/state");
       const previousRemote = JSON.stringify(state.bazaarlink?.jobs?.map(job => job.savedRunId));
       state.bazaarlink = await fetchJson("/api/quality/bazaarlink");
@@ -2758,6 +3286,12 @@ function nativeHover(event) {
   const inRail = event && event.clientX >= rail.left && event.clientX <= rail.right && event.clientY >= rail.top && event.clientY <= rail.bottom;
   $$(".focus-model").forEach(button => button.classList.toggle("is-hovered", button === focusTarget));
   const onBorder = Boolean(inRail && (!ringTarget && !focusTarget || target?.closest("#island-buffer")));
+  const explicitBufferTarget = Boolean(target?.closest("#island-buffer"));
+  const nearRailEdge = event && (event.clientX <= rail.left + 10 || event.clientX >= rail.right - 10);
+  if (islandState.mode === "focus" && onBorder && !explicitBufferTarget && !nearRailEdge && focusAnchorPointer) {
+    const movedFromFocus = Math.hypot(event.clientX - focusAnchorPointer.clientX, event.clientY - focusAnchorPointer.clientY) > 12;
+    if (!movedFromFocus) return;
+  }
   const inBridge = event && popup.classList.contains("visible")
     && event.clientX >= Math.min(rail.right, popupRect.right) && event.clientX <= Math.max(rail.left, popupRect.left)
     && event.clientY >= Math.min(rail.top, popupRect.top) && event.clientY <= Math.max(rail.bottom, popupRect.bottom);

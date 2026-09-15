@@ -156,6 +156,23 @@ const sessionConnections = new Map();
 let detectCache = { at: 0, key: "", value: null };
 let detectInFlight = null;
 
+async function herdrPaneSnapshots(env, home) {
+  // Finder has no HERDR_SOCKET_PATH. Discover named sessions as well as the
+  // default socket, so a stale default server cannot hide the live workspace.
+  const directory = join(env.XDG_CONFIG_HOME || join(home, ".config"), "herdr");
+  const sessions = await readdir(join(directory, "sessions"), { withFileTypes: true }).catch(() => []);
+  const sockets = new Set([env.HERDR_SOCKET_PATH, join(directory, "herdr.sock"),
+    ...sessions.filter(entry => entry.isDirectory()).map(entry => join(directory, "sessions", entry.name, "herdr.sock"))].filter(Boolean));
+  const results = await Promise.allSettled([...sockets].map(async socket => {
+    const socketEnv = { ...env, HERDR_SOCKET_PATH: socket };
+    const { stdout } = await runFile("herdr", ["pane", "list"], { env: socketEnv, timeout: 1500, maxBuffer: 1024 * 1024 });
+    const payload = JSON.parse(stdout);
+    if (payload.error || !Array.isArray(payload.result?.panes)) throw new Error("Herdr pane list unavailable");
+    return { socket, env: socketEnv, panes: payload.result.panes };
+  }));
+  return results.filter(result => result.status === "fulfilled").map(result => result.value);
+}
+
 export async function detectAgents(env, home, cwd, { fresh = false } = {}) {
   const actualEnv = env || process.env;
   const actualHome = home || homedir();
@@ -182,17 +199,29 @@ async function detectAgentsFresh(actualEnv, actualHome, actualCwd, cacheKey) {
     const key = `${session.host}:${session.sessionId}`;
     const existing = unique.get(key);
     if (!existing || existing.source === "claude-transcript") unique.set(key, session);
+    else if (existing.host === "codex" && session.host === "codex" && session.source === "process") {
+      // A `codex resume <thread>` process is the visible owner of the same
+      // app-server thread. Keep the SQLite identity but retain its process
+      // PID so Herdr can attach the pane and prevent duplicate rows.
+      unique.set(key, { ...existing, cwd: existing.cwd || session.cwd,
+        metadata: { ...existing.metadata, ...session.metadata } });
+    }
   });
+  let herdrAuthoritative = false;
   try {
-    const { stdout } = await runFile("herdr", ["pane", "list"], { timeout: 1500, maxBuffer: 1024 * 1024 });
-    const panes = JSON.parse(stdout).result?.panes || [];
+    const snapshots = await herdrPaneSnapshots(actualEnv, actualHome);
+    // When Herdr responds, its pane list is the authoritative set of visible
+    // terminal sessions. The Codex app-server keeps writer locks for tabs
+    // that are no longer visible, so those rows must not become phantom
+    // models in the normal rail.
+    herdrAuthoritative = snapshots.length > 0;
     const hostForPane = (pane) => {
       const value = String(pane.agent || pane.agent_name || pane.command || "").toLowerCase();
       if (value === "codex" || value.includes("codex")) return "codex";
       if (value === "claude" || value.includes("claude")) return "claude-code";
       return agentAdapters.find((adapter) => value === adapter.id || value === adapter.command || adapter.aliases.includes(value))?.id || null;
     };
-    for (const pane of panes) {
+    for (const { pane, snapshot } of snapshots.flatMap(snapshot => snapshot.panes.map(pane => ({ pane, snapshot })))) {
       const host = hostForPane(pane);
       let sessionId = pane.agent_session?.value || pane.agent_session?.id || null;
       if (!host) continue;
@@ -201,7 +230,7 @@ async function detectAgentsFresh(actualEnv, actualHome, actualCwd, cacheKey) {
       let foreground = null;
       if (pane.pane_id) {
         try {
-          const info = JSON.parse((await runFile("herdr", ["pane", "process-info", "--pane", pane.pane_id], { timeout: 1500, maxBuffer: 128 * 1024 })).stdout).result?.process_info;
+          const info = JSON.parse((await runFile("herdr", ["pane", "process-info", "--pane", pane.pane_id], { env: snapshot.env, timeout: 1500, maxBuffer: 128 * 1024 })).stdout).result?.process_info;
           const pids = new Set((info?.foreground_processes || []).map((process) => process.pid));
           const matches = [...unique.values()].filter((session) => session.host === host && !session.parentSessionId
             && pids.has(session.metadata?.pid));
@@ -232,26 +261,42 @@ async function detectAgentsFresh(actualEnv, actualHome, actualCwd, cacheKey) {
         if (status && !(["working", "running"].includes(status) && ["planning", "tool"].includes(session.status))) {
           session.status = status; session.displayStatus = status; session.statusSource = "herdr";
         }
-        session.metadata = { ...session.metadata, paneId: pane.pane_id };
+        session.metadata = { ...session.metadata, paneId: pane.pane_id, herdrSocket: snapshot.socket };
         if (session.source === "process") Object.assign(session, enrichRuntimeSession({ ...session,
           model: connection.model || session.model, baseUrl: connection.baseUrl || null, keyGroup: connection.keyGroup || null,
           cwd: processCwd, metadata: { ...session.metadata, reasoningEffort: connection.reasoningEffort || null } }, connection));
       } else {
         const presenceStatus = "unknown";
-        unique.set(key, enrichRuntimeSession({ host, sessionId, status: status || presenceStatus, displayStatus: status || presenceStatus, source: "herdr",
+        unique.set(key, enrichRuntimeSession({ host, sessionId, status: status || presenceStatus, displayStatus: status || presenceStatus, statusSource: "herdr", source: "herdr",
           model: connection.model || null, protocol: connection.protocol || null,
           baseUrl: connection.baseUrl || null, keyGroup: connection.keyGroup || null,
-          cwd: processCwd, lastSeenAt: new Date().toISOString(), metadata: { detection: "herdr-pane", pid: foreground?.pid, paneId: pane.pane_id || pane.id || null, reasoningEffort: connection.reasoningEffort || null }
+          cwd: processCwd, lastSeenAt: new Date().toISOString(), metadata: { detection: "herdr-pane", pid: foreground?.pid, paneId: pane.pane_id || pane.id || null, herdrSocket: snapshot.socket, reasoningEffort: connection.reasoningEffort || null }
         }, { ...connection, id: host, label: connection.label || host }));
       }
     }
   } catch {}
-  // Transcript/process discovery and Herdr can expose the same pane with
-  // different session IDs. Merge by PID/pane before publishing so a stale
-  // Herdr `unknown` row cannot sit beside the live Claude row.
+  if (herdrAuthoritative) {
+    for (const [key, session] of unique) {
+      // Herdr is the source of truth for visible terminal panes.  A process
+      // row without a pane is commonly a stale child/app-server process and
+      // must not inflate the UI's Agent count (or become a probe target).
+      // Keep transcript-backed rows only when they were joined to a visible
+      // pane above; they otherwise describe historical work, not a live tab.
+      if (session.host === "codex" && !session.metadata?.paneId) unique.delete(key);
+    }
+  }
+  // A process fallback is redundant once a concrete thread is known. One
+  // Codex app-server can own multiple threads, so PID alone is not identity.
   const merged = new Map();
   for (const session of unique.values()) {
-    const mergeKey = `${session.host}:${session.metadata?.pid || session.metadata?.paneId || session.sessionId}`;
+    const siblings = [...unique.values()].filter(item => item.host === session.host && item.metadata?.pid
+      && item.metadata.pid === session.metadata?.pid && !item.sessionId.startsWith("pid:"));
+    if (session.sessionId.startsWith("pid:") && siblings.length) {
+      if (siblings.length === 1 && session.statusSource === "herdr") Object.assign(siblings[0], {
+        status: session.status, displayStatus: session.displayStatus, statusSource: "herdr" });
+      continue;
+    }
+    const mergeKey = `${session.host}:${session.sessionId}`;
     const previous = merged.get(mergeKey);
     if (!previous) { merged.set(mergeKey, session); continue; }
     const known = (value) => !["", "unknown", null, undefined].includes(value);
@@ -264,6 +309,18 @@ async function detectAgentsFresh(actualEnv, actualHome, actualCwd, cacheKey) {
   }
   unique.clear();
   for (const session of merged.values()) unique.set(`${session.host}:${session.sessionId}`, session);
+  // A Codex app-server thread and its foreground `codex` PID can be reported
+  // by different discovery paths. They describe one visible pane; keep the
+  // concrete thread identity and discard the synthetic PID row.
+  const concreteByPid = new Map();
+  for (const session of unique.values()) {
+    const pid = session.metadata?.pid;
+    if (pid && !String(session.sessionId).startsWith("pid:")) concreteByPid.set(`${session.host}:${pid}`, session);
+  }
+  for (const [key, session] of unique) {
+    const pid = session.metadata?.pid;
+    if (pid && String(session.sessionId).startsWith("pid:") && concreteByPid.has(`${session.host}:${pid}`)) unique.delete(key);
+  }
   const now = Date.now();
   // A discovered process is a live runtime even when its host hook has not
   // emitted a status yet. Keep an explicit Herdr state authoritative, but do
@@ -321,23 +378,25 @@ async function genericRuntimeSessions(env, home, cwd) {
     if (!match) return [];
     const argv = (match[3].match(/"[^"]*"|[^\s]+/g) || []).map(word => word.replace(/^"|"$/g, ""));
     let adapter = adapterForProcess(argv);
-    if (process.platform === "win32" && !adapter) {
-      const path = argv[0]?.replaceAll("\\", "/").toLowerCase() || "";
-      const entry = /\/(?:node|bun)\.exe$/.test(path) ? argv[1]?.replaceAll("\\", "/") || "" : path;
-      if (/\/(?:claude(?:\.exe)?|@anthropic-ai\/claude-code\/cli\.js)$/.test(entry)) adapter = { id: "claude-code", label: "Claude Code", protocol: "anthropic" };
-      if (/\/(?:codex(?:\.exe)?|@openai\/codex\/bin\/codex\.js)$/.test(entry)) adapter = { id: "codex", label: "Codex", protocol: "openai" };
+    if (!adapter) {
+      const path = argv[0]?.replaceAll("\\", "/") || "";
+      const entry = /(?:^|\/)(?:node|bun)(?:\.exe)?$/.test(path) ? argv[1]?.replaceAll("\\", "/") || "" : path;
+      if (/(?:^|\/)(?:claude(?:\.exe)?|@anthropic-ai\/claude-code\/cli\.js)$/.test(entry)) adapter = { id: "claude-code", label: "Claude Code", protocol: "anthropic" };
+      if (/(?:^|\/)(?:codex(?:\.exe)?|@openai\/codex\/bin\/codex\.js)$/.test(entry) && !argv.includes("app-server")) adapter = { id: "codex", label: "Codex", protocol: "openai" };
     }
     return adapter ? [{ pid: Number(match[1]), ppid: Number(match[2]), argv, adapter }] : [];
   });
-  for (const process of processes) {
-    if (processes.some(parent => parent.pid === process.ppid && parent.adapter.id === process.adapter.id)) continue;
-    const { adapter, pid, argv } = process;
+  for (const entry of processes) {
+    if (processes.some(parent => parent.pid === entry.ppid && parent.adapter.id === entry.adapter.id)) continue;
+    const { adapter, pid, argv } = entry;
     const hook = process.platform === "win32" ? listAgentSessions({ host: adapter.id }).find(session => session.metadata?.pid === pid) : null;
     const processCwd = hook?.cwd || await readProcessCwd(pid, process.platform === "win32" ? null : cwd);
     const base = ["codex", "claude-code"].includes(adapter.id)
       ? (await agentConnections(env, home, processCwd || home)).find(item => item.id === adapter.id) || {}
       : (await genericConnections(env, home, processCwd || home, [adapter], argv))[0] || {};
-    const sessionId = hook?.sessionId || `pid:${pid}`;
+    const resumed = adapter.id === "codex" && argv.findIndex(value => value === "resume") >= 0
+      ? argv[argv.findIndex(value => value === "resume") + 1] : null;
+    const sessionId = hook?.sessionId || resumed || `pid:${pid}`;
     sessionConnections.set(`${adapter.id}:${sessionId}`, base);
     found.push(enrichRuntimeSession({ ...hook, host: adapter.id, sessionId, status: hook?.status || "unknown", cwd: processCwd,
       model: hook?.model || base.model || null, baseUrl: base.baseUrl || null, keyGroup: base.keyGroup || null,
@@ -499,18 +558,11 @@ async function codexRuntimeSessions(directory, connection) {
         parentByChild.set(edge.child_thread_id, edge.parent_thread_id);
       }
     } catch {}
-    const found = new Set(rows.map((row) => row.id));
-    const now = Date.now();
-    const recentEnough = (timestamp) => Number.isFinite(timestamp) && now - timestamp < 15 * 60 * 1000;
     const sessions = await Promise.all(rows.map(async (row) => {
         const active = running.has(row.id);
         const updatedAt = Number(row.updated_at_ms);
-        // SQLite retains old thread rows and their lock files. They are
-        // historical sessions, not currently launched Agents, so they must
-        // not become monitoring targets or island nodes after the grace
-        // period. A running turn always remains visible regardless of its
-        // database timestamp.
-        if (!active && !recentEnough(updatedAt)) return null;
+        // lsof above proves that a live writer owns this thread. An idle
+        // database timestamp does not mean that its desktop tab was closed.
         const passiveMetrics = await readCodexPassiveMetrics(row.rollout_path);
         return enrichRuntimeSession({ host: "codex", sessionId: row.id,
           status: active ? "active" : "idle", parentSessionId: parentByChild.get(row.id) || null,

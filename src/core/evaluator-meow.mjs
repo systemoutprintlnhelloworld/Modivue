@@ -8,6 +8,8 @@ import oldGptBaseline from "../data/meow-gpt-predictive2.json" with { type: "jso
 import oldClaudeBaseline from "../data/meow-claude-predictive2.json" with { type: "json" };
 import casefold from "../data/meow-casefold.json" with { type: "json" };
 import openrouterBaseline from "../data/meow-openrouter-baseline.json" with { type: "json" };
+import { calibrationReference, calibrationWire } from "./calibration-reference.js";
+import { readCalibration } from "./calibration.mjs";
 
 export const meowVersion = verificationVersions["meow-fingerprint"];
 const source = "https://github.com/chen-006/meow-llm-detector/tree/bdb579f0496b70138f7c015344eb034a9f4c16e7";
@@ -28,10 +30,14 @@ function logIncrement(alpha, count) {
 export function scoreMeow(baseline, observations, tierName, claimedModel) {
   const fitted = baseline.fitted;
   const tier = tierName === "screen"
-    ? { counts: Object.fromEntries(baseline.probes.map((probe) => [probe.id, 1])), thresholds: {} }
+    // Screen mode still needs a visible decision line in the UI. Reuse the
+    // conservative low-tier calibration thresholds while clearly labelling
+    // the result as a low-sample preview in the report.
+    ? { counts: Object.fromEntries(baseline.probes.map((probe) => [probe.id, 1])), thresholds: baseline.tiers.low?.thresholds || {} }
     : baseline.tiers[tierName];
   const evidence = Object.fromEntries(fitted.sources.map((name) => [name, 0]));
   const reasons = new Set();
+  if (tierName === "screen") reasons.add("screen_preview");
   let total = 0;
   let planned = 0;
   const cells = {};
@@ -119,14 +125,78 @@ export function meowReportDetails(run) {
   };
 }
 
+export function meowReferenceCells(input) {
+  const chat = calibrationWire(input.wireApi) === "chat";
+  const claude = input.protocol === "anthropic" || /claude/i.test(input.observedModel || "");
+  const baseline = chat ? claude ? claudeChatBaseline : gptChatBaseline : claude ? claudeBaseline : gptBaseline;
+  return baseline.probes.flatMap(probe => probe.cells).map(cell => ({ ...cell, effort: input.reasoningEffort || null }));
+}
+
+export function meowRequestOptions(cell, input) {
+  const chat = calibrationWire(input.wireApi) === "chat";
+  return { maxOutputTokens: cell.parameters.max_output_tokens, chatTokenField: cell.parameters.chat_token_field, system: cell.system,
+    reasoningEffort: input.reasoningEffort || null, adaptiveThinking: input.protocol === "anthropic", strictResponse: true,
+    userAgent: chat ? undefined : input.protocol === "anthropic" ? "claude-cli/2.1.251 (external, cli)"
+      : "Codex Desktop/0.147.0-alpha.1.2 (Windows 10.0.26200; x86_64) unknown (codex_exec; 0.147.0-alpha.1.2)" };
+}
+
+function baselineSupportsEffort(baseline, effort) {
+  // Public Meow baselines are keyed by model and protocol; their source data
+  // does not provide independent thinking-strength calibrations.
+  return baseline?.probes?.some(probe => probe.cells?.length) === true;
+}
+
+async function runEmpirical(input, reference) {
+  const conditionsId = `meow:empirical:v1:${reference.revision}`;
+  const total = reference.probability.cells.length * reference.probability.repetitions;
+  const previous = input.previousRun?.status === "paused" && input.previousRun.metadata?.conditionsId === conditionsId ? input.previousRun.metadata : null;
+  const observations = reference.probability.cells.map(cell => ({ id: cell.id, prompt: cell.prompt,
+    counts: { ...previous?.observations?.find(row => row.id === cell.id)?.counts }, reference: cell.distribution,
+    referenceModel: reference.model, referenceKind: "trusted-empirical", sampleCount: previous?.observations?.find(row => row.id === cell.id)?.sampleCount || 0,
+    planned: reference.probability.repetitions }));
+  input.requireBudget?.(total - observations.reduce((sum, row) => sum + row.sampleCount, 0));
+  let stop = null;
+  for (const [index, row] of observations.entries()) {
+    while (row.sampleCount < row.planned) {
+      try {
+        const answer = normalizeMeowAnswer(await input.request(row.prompt, { ...meowRequestOptions(reference.probability.cells[index], input), conditionsId }));
+        if (!answer) throw new Error("空响应");
+        row.counts[answer] = (row.counts[answer] || 0) + 1; row.sampleCount++;
+        input.onProgress?.({ completed: observations.reduce((sum, item) => sum + item.sampleCount, 0), total });
+      } catch (error) { stop = error; break; }
+    }
+    if (stop) break;
+  }
+  for (const row of observations) {
+    row.jsd = null;
+    if (!row.sampleCount) continue;
+    row.jsd = [...new Set([...Object.keys(row.counts), ...Object.keys(row.reference)])].reduce((sum, answer) => {
+      const p = (row.counts[answer] || 0) / row.sampleCount, q = row.reference[answer] || 0, m = (p + q) / 2;
+      return sum + (p ? p * Math.log2(p / m) / 2 : 0) + (q ? q * Math.log2(q / m) / 2 : 0);
+    }, 0);
+  }
+  const jsd = observations.every(row => row.sampleCount >= row.planned) ? observations.reduce((sum, row) => sum + row.jsd, 0) / observations.length : null;
+  return { status: stop ? ["monitoring_paused", "target_inactive", "budget_exhausted"].includes(stop.code) ? "paused" : "error" : "ok",
+    rationale: stop?.message || (jsd === null ? "有效样本不足，无法计算 JSD" : `JSD ${jsd.toFixed(4)} · 可信分布对照，未训练身份阈值`), metadata: {
+      verdict: "inconclusive", observations, jsd, sampleCount: observations.reduce((sum, row) => sum + row.sampleCount, 0), plannedSamples: total,
+      conditionsId, reasoningEffort: input.reasoningEffort || null, continuedFrom: previous ? input.previousRun.id : null, stopReason: stop?.message || null,
+      source: reference.source, revision: reference.revision, scoringVersion: "meow-empirical-jsd-v1", claimedModel: reference.model,
+      conditionNotice: "使用 Meow 原始探针与同协议可信样本计算 JSD；未拟合上游预测模型和身份判定阈值。" } };
+}
+
 async function run(input) {
-  const chat = input.wireApi === "chat.completions";
+  const chat = calibrationWire(input.wireApi) === "chat";
   const candidates = chat ? [gptChatBaseline, claudeChatBaseline] : input.protocol === "anthropic" ? [claudeBaseline] : input.wireApi === "responses" ? [gptBaseline] : [];
   const baseline = candidates.find(item => item.models.some(model => !model.reference_only
     && [input.canonicalModelId, input.observedModel].some(name => modelKey(name) === modelKey(model.id))));
   const claimedModel = baseline?.models.find(model => !model.reference_only
     && [input.canonicalModelId, input.observedModel].some(name => modelKey(name) === modelKey(model.id)))?.id;
-  if (!claimedModel) return { status: "unsupported", rationale: "Meow 当前基准未覆盖该申报模型或协议", metadata: { verdict: "inconclusive", source, reasonCode: "baseline_missing" } };
+  const requestedEffort = input.reasoningEffort || null;
+  if (!claimedModel || !baselineSupportsEffort(baseline, requestedEffort)) {
+    const reference = calibrationReference(await readCalibration(), input, "meow:empirical:v1");
+    if (reference) return runEmpirical(input, reference);
+    return { status: "unsupported", rationale: `Meow 当前基准未覆盖该申报模型或协议`, metadata: { verdict: "inconclusive", source, reasonCode: "baseline_missing", reasoningEffort: requestedEffort, collectReference: true } };
+  }
   const tierName = input.meowTier || "screen";
   const tier = tierName === "screen"
     ? { counts: Object.fromEntries(baseline.probes.map((probe) => [probe.id, 1])), thresholds: {} }
@@ -171,10 +241,7 @@ async function run(input) {
       observation.attempts++;
       try {
         const answer = normalizeMeowAnswer(await input.request(cell.prompt, {
-          maxOutputTokens: cell.parameters.max_output_tokens, chatTokenField: cell.parameters.chat_token_field, system: cell.system,
-          reasoningEffort: cell.effort, adaptiveThinking: input.protocol === "anthropic", strictResponse: true,
-          userAgent: chat ? undefined : input.protocol === "anthropic" ? "claude-cli/2.1.251 (external, cli)"
-            : "Codex Desktop/0.147.0-alpha.1.2 (Windows 10.0.26200; x86_64) unknown (codex_exec; 0.147.0-alpha.1.2)",
+          ...meowRequestOptions(cell, input),
           conditionsId: resumeId }));
         if (!answer || [...answer].length > 4096) throw new Error("invalid_answer_length");
         observation.counts[answer] = (observation.counts[answer] || 0) + 1;
@@ -200,14 +267,17 @@ async function run(input) {
   return { status: stopCode === "authentication_failed" ? "error" : stopReason ? "paused" : scored.sampleCount ? "ok" : "error", rationale: scored.sampleCount ? (partial ? stopReason : label) : stopReason || failures.at(-1)?.error || label,
     metadata: { ...scored, attempts, maxAttempts, failures, stopReason, source, revision: baseline.version,
     scoringVersion: engine, implementationVersion: meowVersion, tier: tierName,
-    probeReasoningEffort: "low", conditionsId: resumeId, plannedSamples: total,
+    probeReasoningEffort: requestedEffort, reasoningEffort: requestedEffort, conditionsId: resumeId, plannedSamples: total,
     continuedFrom: canResume ? previousRun.id : null,
     observations: observations.map(({ cell, ...row }) => ({ ...row, planned: tier.counts[row.id], reference: scored.cells[row.id]?.reference, referenceKind: "fitted-predictive", referenceModel: claimedModel })), numericLabel: "申报模型匹配度", unit: "%",
-    conditionNotice: "Meow 基准探针使用 low 推理档位；候选分数为相对最强对手的证据优势，不是身份后验概率，合计不必为 100%。",
+    conditionNotice: `Meow 基准探针使用 ${requestedEffort} 推理档位；${tierName === "screen" ? "试采每个探针 1 次，沿用 low 档校准分界线，仅作快速预览。" : ""}候选分数为相对最强对手的证据优势，不是身份后验概率，合计不必为 100%。`,
     referenceDataset: { source: openrouterBaseline.source, revision: openrouterBaseline.revision, sourceKind: openrouterBaseline.sourceKind,
       validSamples: openrouterBaseline.validSamples, distinctModels: openrouterBaseline.distinctModels, distinctQuestions: openrouterBaseline.distinctQuestions,
       notice: openrouterBaseline.notice,
-      distributions: openrouterBaseline.distributions.filter(reference => observations.some(row => row.id === reference.cell && row.cell.system === reference.system && row.cell.profile === reference.profile && row.cell.effort === reference.reasoningEffort)) } } };
+      // The archive records collection-time effort, but effort is not a
+      // benchmark identity dimension. Keep all matching model/profile cells
+      // in the report regardless of the target's requested thinking strength.
+      distributions: openrouterBaseline.distributions.filter(reference => observations.some(row => row.id === reference.cell && row.cell.system === reference.system && row.cell.profile === reference.profile)) } } };
 }
 
 registerEvaluator({ id: "meow-fingerprint", label: "Meow 模型指向", version: meowVersion, conditionsId: "meow:v1", run,
@@ -215,6 +285,7 @@ registerEvaluator({ id: "meow-fingerprint", label: "Meow 模型指向", version:
     families: baselines.map(baseline => ({
       models: baseline.models.filter(model => !model.reference_only).map(model => model.id),
       revision: baseline.version,
+      reasoningEfforts: [...new Set(baseline.probes.flatMap(probe => probe.cells).map(cell => cell.effort || null))],
       samples: { screen: baseline.probes.length, ...Object.fromEntries(Object.entries(baseline.tiers)
         .map(([tier, plan]) => [tier, Object.values(plan.counts).reduce((sum, count) => sum + count, 0)])) }
     }))

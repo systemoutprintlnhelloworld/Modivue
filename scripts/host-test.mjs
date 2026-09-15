@@ -150,7 +150,12 @@ if (mode !== "--worker") {
         const geometry = JSON.parse(await readFile(join(jobDirectory, "native-geometry.json"), "utf8"));
         const panel = (await windows()).find(w=>w.kCGWindowBounds.Width < 800 && w.kCGWindowBounds.Height > 100).kCGWindowBounds;
         const rect = geometry.models[0].rect;
-        const modelPoint = [panel.X + rect.x + rect.width/2, panel.Y + rect.y + rect.height/2];
+        // AX positions are already in global display coordinates. Prefer the
+        // current accessible node over a stale WebView geometry snapshot;
+        // this avoids false UNTESTED results after native resize/reflow.
+        const modelPoint = model.position && model.size
+          ? [model.position.x + model.size.width / 2, model.position.y + model.size.height / 2]
+          : [panel.X + rect.x + rect.width/2, panel.Y + rect.y + rect.height/2];
         const moveToModel = async () => {
           if (revealIdleModels) { await driver("move", ...center(bufferControl)); await delay(250); }
           const actual = await driver("move", ...modelPoint);
@@ -315,14 +320,14 @@ if (mode !== "--worker") {
         const tourButton = ax.find(row => row.AXRole === "AXButton" && row.AXTitle === l("灵动岛引导", "Island tour"));
         check("native-island-tour-launch", Boolean(tourButton));
         await driver("press", pid, tourButton.path);
-        for (let step = 1; step <= 4; step++) {
+        for (let step = 1; step <= 7; step++) {
           await delay(1000);
           const tourGeometry = JSON.parse(await readFile(join(jobDirectory, "native-geometry.json"), "utf8"));
-          check(`native-island-tour-${step}`, tourGeometry.tour?.title === `${l("灵动岛", "Island")} ${step}/4`
+          check(`native-island-tour-${step}`, tourGeometry.tour?.title === `${l("灵动岛", "Island")} ${step}/7`
             && tourGeometry.tour.rect.x >= 0 && tourGeometry.tour.rect.bottom <= tourGeometry.viewport.height, tourGeometry);
           await driver("screenshot-window", join(jobDirectory, `native-tour-${step}.png`), (await windows()).find(isIslandWindow).kCGWindowNumber);
           ax = await driver("elements", pid);
-          const next = ax.find(row => row.AXRole === "AXButton" && row.AXTitle === (step === 4 ? l("完成", "Done") : l("下一步", "Next")));
+          const next = ax.find(row => row.AXRole === "AXButton" && row.AXTitle === (step === 7 ? l("完成", "Done") : l("下一步", "Next")));
           check(`native-island-tour-next-${step}`, Boolean(next));
           await driver("press", pid, next.path);
         }

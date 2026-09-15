@@ -19,11 +19,22 @@ internal static class Program
     }
 }
 
+internal sealed class IslandForm : Form
+{
+    public bool ClickThrough { get; set; }
+    protected override void WndProc(ref Message message)
+    {
+        const int WM_NCHITTEST = 0x84, HTTRANSPARENT = -1;
+        if (ClickThrough && message.Msg == WM_NCHITTEST) { message.Result = (IntPtr)HTTRANSPARENT; return; }
+        base.WndProc(ref message);
+    }
+}
+
 internal sealed class MonitorContext : ApplicationContext
 {
     private readonly Process service;
     private readonly Form main = new() { Text = "Modivue", Width = 1240, Height = 860, MinimumSize = new(820, 620) };
-    private readonly Form island = new() { Text = "Modivue Island", Width = 112, Height = 420, FormBorderStyle = FormBorderStyle.None,
+    private readonly IslandForm island = new() { Text = "Modivue Island", Width = 112, Height = 420, FormBorderStyle = FormBorderStyle.None,
         ShowInTaskbar = false, TopMost = true, BackColor = Color.Black, TransparencyKey = Color.Black };
     private readonly WebView2 mainWeb = new() { Dock = DockStyle.Fill };
     private readonly WebView2 islandWeb = new() { Dock = DockStyle.Fill, DefaultBackgroundColor = Color.Transparent };
@@ -33,13 +44,15 @@ internal sealed class MonitorContext : ApplicationContext
     private readonly System.Windows.Forms.Timer pointer = new() { Interval = 16 };
     private readonly Uri origin;
     private RectangleF rail = new(6, 18, 100, 220), buffer;
-    private bool pressed, dragging, expanded, right = true, exiting, ticking, bufferDrag;
+    private bool pressed, dragging, expanded, right = true, exiting, ticking, bufferDrag, clickThrough;
     private Point dragStart, windowStart;
     private Point? snapStart, snapEnd;
     private long snapAt;
     private bool interfaceEnglish = !System.Globalization.CultureInfo.CurrentUICulture.TwoLetterISOLanguageName.Equals("zh", StringComparison.OrdinalIgnoreCase);
     private string Localized(string chinese, string english) => interfaceEnglish ? english : chinese;
     [DllImport("user32.dll")] private static extern short GetAsyncKeyState(int key);
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")] private static extern nint GetWindowLongPtr(nint window, int index);
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")] private static extern nint SetWindowLongPtr(nint window, int index, nint value);
 
     public MonitorContext()
     {
@@ -124,8 +137,20 @@ internal sealed class MonitorContext : ApplicationContext
                     break;
                 case "island-layout":
                     rail = Rect(body);
+                    rail.Height = 20;
                     if (body.TryGetProperty("buffer", out var b)) buffer = Rect(b);
-                    island.Height = Math.Min(Screen.FromControl(island).WorkingArea.Height, Pixels(Math.Max(420, rail.Bottom + 20)));
+                    var area = Screen.FromControl(island).WorkingArea;
+                    var newHeight = Math.Min(area.Height, Pixels(Math.Max(420, body.GetProperty("height").GetSingle() + 32)));
+                    var centerY = island.Top + island.Height / 2;
+                    island.Height = newHeight;
+                    island.Top = Math.Clamp(centerY - newHeight / 2, area.Top, area.Bottom - newHeight);
+                    break;
+                case "island-interaction":
+                    clickThrough = body.GetProperty("clickThrough").GetBoolean();
+                    island.ClickThrough = clickThrough;
+                    var style = GetWindowLongPtr(island.Handle, -20).ToInt64();
+                    SetWindowLongPtr(island.Handle, -20, (nint)(clickThrough ? style | 0x80020 : style & ~0x20));
+                    if (clickThrough) await islandWeb.ExecuteScriptAsync("window.modivue?.nativeHover(null)");
                     break;
                 case "island-hover":
                     expanded = body.GetProperty("expanded").GetBoolean();
@@ -166,7 +191,7 @@ internal sealed class MonitorContext : ApplicationContext
 
     private async Task TickPointer()
     {
-        if (ticking || !island.Visible || islandWeb.CoreWebView2 is null) return;
+        if (ticking || clickThrough || !island.Visible || islandWeb.CoreWebView2 is null) return;
         ticking = true;
         try {
             var point = island.PointToClient(Cursor.Position); float scale = island.DeviceDpi / 96f;

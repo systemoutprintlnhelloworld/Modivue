@@ -1,6 +1,18 @@
 import { registerEvaluator } from "./quality.mjs";
 
 export const ztestVersion = "1.0.0";
+export const ztestLocalVersion = "1.0.0";
+// Publicly reproducible local compatibility probes.  Ztest's server-side
+// probe prompts and scoring thresholds are not published, so this adapter
+// deliberately records raw answers and latency evidence without pretending
+// to reproduce the official ranking.
+export const ztestLocalProbes = Object.freeze([
+  { id: "identity", label: "身份一致性", prompt: "只回答你的模型名称，不要解释。" },
+  { id: "instruction", label: "指令遵循", prompt: "只输出三个词：红、绿、蓝。不要添加标点或解释。" },
+  { id: "structure", label: "响应结构", prompt: "请严格输出 JSON：{\"ok\":true}，不要 Markdown。" },
+  { id: "knowledge", label: "知识能力", prompt: "回答：水的化学式是什么？只输出化学式。" },
+  { id: "stability", label: "稳定性", prompt: "只回答数字 4，不要解释。" }
+]);
 export function ztestReportId(value) {
   const input = String(value || "").trim();
   const id = input.startsWith("https://") ? (() => {
@@ -36,5 +48,30 @@ export function normalizeZtestReport(payload, target) {
       conditionNotice: "检测在 Ztest 执行；探针数不是 API 请求数，费用以原始报告为准。端点可能被脱敏，四元组关联由用户确认。" } };
 }
 
-registerEvaluator({ id: "ztest", label: "Ztest 多探针检测", version: ztestVersion, conditionsId: "ztest:external", external: true,
-  run: async () => { throw new TypeError("请在 Ztest 完成人机验证和检测，然后导入报告"); } });
+registerEvaluator({ id: "ztest", label: "Ztest 官方检测", version: ztestVersion, conditionsId: "ztest:official", external: true,
+  async run() {
+    return { status: "unsupported", rationale: "请从 Ztest 官方检测面板启动浏览器流程", metadata: { verdict: "inconclusive" } };
+  } });
+
+registerEvaluator({ id: "ztest-local", label: "Ztest 本地多探针检测", version: ztestLocalVersion, conditionsId: "ztest:local:v1", external: false,
+  async run(input) {
+    const observations = [], failures = [];
+    input.requireBudget?.(ztestLocalProbes.length);
+    input.onProgress?.({ completed: 0, total: ztestLocalProbes.length });
+    for (const probe of ztestLocalProbes) {
+      try {
+        const actual = String(await input.request(probe.prompt, { maxOutputTokens: 128, conditionsId: `ztest:local:v1:${probe.id}` })).trim();
+        observations.push({ id: probe.id, label: probe.label, status: actual ? "success" : "empty", response: actual });
+      } catch (error) {
+        failures.push({ id: probe.id, label: probe.label, error: error.message });
+        observations.push({ id: probe.id, label: probe.label, status: "error", response: "" });
+      }
+      input.onProgress?.({ completed: observations.length, total: ztestLocalProbes.length });
+    }
+    const valid = observations.filter(item => item.status === "success").length;
+    return { evaluatorId: "ztest-local", evaluatorVersion: ztestLocalVersion, status: valid ? "ok" : "error", score: null,
+      rationale: "本地 Ztest 兼容探针已完成；仅保存响应证据，不等同于 ztest.ai 官方排名或身份认证",
+      metadata: { verdict: "inconclusive", observations, failures, sampleCount: valid, plannedSamples: ztestLocalProbes.length,
+        conditionsId: "ztest:local:v1", external: false,
+        conditionNotice: "这是 Modivue 本地 Ztest 兼容探针，仅保存可重复的响应证据，不等同于 ztest.ai 官方排名或身份认证。" } };
+  } });

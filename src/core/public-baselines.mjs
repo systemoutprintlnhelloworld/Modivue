@@ -42,6 +42,26 @@ export function publicBaselineState() {
     models: registry.files.map((file) => { const item = validatePublicBaseline(file.data); return { model: item.model, publishedAt: item.timestamp }; }) };
 }
 
+export function publicBaselineExport() {
+  return structuredClone(registry);
+}
+
+export async function importPublicBaselines(payload) {
+  if (!payload || !Array.isArray(payload.files) || !payload.files.length) throw new TypeError("公共基准档案必须包含 files 数组");
+  payload.files.forEach((file) => {
+    if (!file || typeof file !== "object" || typeof file.source !== "string") throw new TypeError("公共基准来源无效");
+    validatePublicBaseline(file.data);
+  });
+  const next = { source: typeof payload.source === "string" && payload.source ? payload.source : "Modivue imported public baselines",
+    fetchedAt: typeof payload.fetchedAt === "string" ? payload.fetchedAt : new Date().toISOString(),
+    files: payload.files.map(file => ({ source: file.source, revision: file.revision || "imported", data: validatePublicBaseline(file.data) })) };
+  await mkdir(dirname(cachePath), { recursive: true });
+  await writeFile(cachePath + ".tmp", JSON.stringify(next));
+  await rename(cachePath + ".tmp", cachePath);
+  registry = next; lastError = null;
+  return publicBaselineState();
+}
+
 export async function syncPublicBaselines() {
   if (syncJob) return syncJob;
   syncJob = (async () => {

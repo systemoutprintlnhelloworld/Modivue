@@ -1,6 +1,7 @@
 import { registerEvaluator } from "./quality.mjs";
 import { getSettings } from "./storage.mjs";
 import { readCalibration } from "./calibration.mjs";
+import { calibrationReference } from "./calibration-reference.js";
 import { normalizeMeowAnswer } from "./evaluator-meow.mjs";
 
 // English battery derived from Table I and section IV of arXiv:2607.10252v1.
@@ -11,7 +12,8 @@ export const oneTokenPrompts = [
   "Name a random color.", "What is your favorite color?", "Name a random animal.",
   "Name a random city.", "Flip a coin: heads or tails?"
 ];
-const system = "Reply with exactly one word or number. Do not explain.";
+export const oneTokenSystem = "Reply with exactly one word or number. Do not explain.";
+const system = oneTokenSystem;
 export function normalizeOneToken(text, index) {
   const value = normalizeMeowAnswer(text.normalize("NFC").replace(/[٠-٩۰-۹]/g, c => String(c.charCodeAt(0) % 16)))
     .replace(/^[\p{P}\s]+|[\p{P}\s]+$/gu, "");
@@ -34,12 +36,13 @@ export function distributionJsd(p, q) {
 }
 registerEvaluator({ id: "one-token", label: "One Token 分布指纹", version: "1.0.0", conditionsId: "one-token:en:v1",
   async run(input) {
+    const requestedEffort = input.reasoningEffort || null;
     const repetitions = getSettings().oneTokenSamples;
     const archive = await readCalibration();
-    const candidate = archive?.models?.[input.canonicalModelId] || archive?.models?.[input.observedModel];
+    const candidate = calibrationReference(archive, { ...input, reasoningEffort: "none" }, "one-token:en:v1");
     const reference = candidate?.probability?.method === "one-token:en:v1" && candidate.probability.system === system
-      && candidate.probability.temperature === 1 && candidate.maxOutputTokens === 16 && candidate.reasoningEffort === "none"
-      && candidate.wireApi === input.wireApi ? candidate : null;
+      && candidate.probability.temperature === 1 && candidate.maxOutputTokens === 16
+      ? candidate : null;
     input.requireBudget?.(oneTokenPrompts.length * repetitions);
     const observations = oneTokenPrompts.map((prompt, index) => ({ id: `one-token-${index}`, prompt, counts: Object.create(null), responses: [], planned: repetitions, sampleCount: 0 }));
     const failures = [];
@@ -72,7 +75,7 @@ registerEvaluator({ id: "one-token", label: "One Token 分布指纹", version: "
     const complete = comparable.length === oneTokenPrompts.length && !failures.length;
     return { status: failures.length ? "error" : "ok", rationale: distance === null ? "分布已记录，缺少同条件参考或每题有效样本不足 10 次" : `JSD ${distance.toFixed(4)}`,
       metadata: { verdict: complete && Number.isFinite(reference?.probability.maxJsd) ? distance <= reference.probability.maxJsd ? "consistent" : "deviates" : "inconclusive",
-        source: "https://arxiv.org/html/2607.10252v1", revision: reference?.revision || "modivue-english-battery-v1", system, temperature: 1, maxOutputTokens: 16, reasoningEffort: "none",
+        source: "https://arxiv.org/html/2607.10252v1", revision: reference?.revision || "modivue-english-battery-v1", system, temperature: 1, maxOutputTokens: 16, reasoningEffort: requestedEffort,
         sampling: { system, temperature: 1, maxOutputTokens: 16, reasoningEffort: "none" },
         observations, failures, attempts, jsd: distance, comparableCells: comparable.length,
         sampleCount: observations.reduce((sum, row) => sum + row.sampleCount, 0), plannedSamples: oneTokenPrompts.length * repetitions,

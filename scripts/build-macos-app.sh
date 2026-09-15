@@ -4,6 +4,14 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 mkdir -p "$PROJECT_ROOT/dist"
 BUILD_DIRECTORY="$(mktemp -d "$PROJECT_ROOT/dist/.build.XXXXXX")"
+# Preserve the previous bundle only until its replacement is installed.
+cleanup() {
+  if [ ! -d "$PROJECT_ROOT/dist/Modivue.app" ] && [ -d "$BUILD_DIRECTORY/previous.app" ]; then
+    mv "$BUILD_DIRECTORY/previous.app" "$PROJECT_ROOT/dist/Modivue.app"
+  fi
+  rm -rf "$BUILD_DIRECTORY"
+}
+trap cleanup EXIT
 APP_BUNDLE="$BUILD_DIRECTORY/Modivue.app"
 CONTENTS="$APP_BUNDLE/Contents"
 RESOURCES="$CONTENTS/Resources"
@@ -93,6 +101,7 @@ cp -R "$PROJECT_ROOT/node_modules/eventsource-parser" "$APP_RESOURCES/node_modul
 cp -R "$PROJECT_ROOT/node_modules/smol-toml" "$APP_RESOURCES/node_modules/"
 cp -R "$PROJECT_ROOT/node_modules/yaml" "$APP_RESOURCES/node_modules/"
 cp -R "$PROJECT_ROOT/node_modules/json5" "$APP_RESOURCES/node_modules/"
+cp -R "$PROJECT_ROOT/node_modules/playwright-core" "$APP_RESOURCES/node_modules/"
 chmod +x "$CONTENTS/MacOS/Modivue" "$RESOURCES/runtime/node"
 if command -v codesign >/dev/null 2>&1; then
   for dylib in "$RESOURCES/lib/"*.dylib; do [ ! -f "$dylib" ] || codesign --force --sign - "$dylib"; done

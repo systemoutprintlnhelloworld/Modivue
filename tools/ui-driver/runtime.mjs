@@ -103,6 +103,7 @@ export async function runRuntimeTest(directory, { browser: withBrowser = false }
       const notify = runInNewContext(`${notificationSource}; notifyNewEvents`, {
         desktopMode: mode, hasDesktopBridge: () => true, translate: text => text,
         showToast: (...args) => toasts.push(args), desktopMessage: message => native.push(message),
+        desktopRequest: async message => { native.push(message); return { sent: true }; },
         state: { settings: { notifications: true }, notifiedEventIds: new Set(), events: [{ id: 1, type: 'cache', timestamp: new Date().toISOString(), model: 'fixture' }] }
       });
       notify(); notify();
@@ -115,6 +116,11 @@ export async function runRuntimeTest(directory, { browser: withBrowser = false }
       const browser = await chromium.launch({ executablePath:"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", headless:true });
       try {
         const page = await browser.newPage({ viewport:{width:1320,height:840} });
+        const chooseMethod = async method => {
+          const menu = page.locator('#quality-method-select');
+          if (!await menu.evaluate(node => node.open)) await menu.locator('summary').click();
+          await page.locator(`[data-quality-method="${method}"]`).click();
+        };
         const errors = []; page.on("pageerror", error=>errors.push(error.message));
         const checkAsset = response => {
           if (response.url().startsWith(base) && /\.(js|css|png)(\?|$)/.test(response.url()) && !response.ok())
@@ -195,16 +201,16 @@ export async function runRuntimeTest(directory, { browser: withBrowser = false }
         await page.locator('#quality-report-select').selectOption('90000');
         await page.waitForTimeout(2200);
         assert.equal(await page.locator('#quality-report-select').inputValue(), '90000', 'Historical report reverted');
-        await page.locator('#quality-method-select').selectOption('juice');
+        await chooseMethod('juice');
         assert.equal(await page.locator('#quality-report-select').inputValue(), '90000', 'Changing method changed historical selection');
         await page.route('**/api/settings', async route => {
           if (route.request().method() !== 'PATCH') return route.continue();
           await new Promise(resolve => setTimeout(resolve, 1400)); await route.continue();
         });
-        await page.locator('#quality-method-select').selectOption('custom-question');
-        await page.locator('#quality-method-select').selectOption('meow-fingerprint');
+        await chooseMethod('custom-question');
+        await chooseMethod('meow-fingerprint');
         await page.waitForTimeout(3200);
-        assert.equal(await page.locator('#quality-method-select').inputValue(), 'meow-fingerprint', 'Slow writes reverted latest selection');
+        assert.equal(await page.locator('[data-quality-method][aria-pressed="true"]').getAttribute('data-quality-method'), 'meow-fingerprint', 'Slow writes reverted latest selection');
         await page.unroute('**/api/settings');
 
         assert.equal(await page.locator('[data-detail-key="raw-history-90000"]').evaluate(el => el.open), false, "History must have independent disclosure state");
@@ -377,7 +383,7 @@ export async function runRuntimeTest(directory, { browser: withBrowser = false }
         await page.waitForTimeout(300);
         const qualityDebug = await page.evaluate(() => ({
           buttonDisabled: document.querySelector('[data-action="run-quality"]')?.disabled,
-          method: document.querySelector('#quality-method-select')?.value,
+          method: document.querySelector('[data-quality-method][aria-pressed="true"]')?.dataset.qualityMethod,
           question: document.querySelector('#quality-question-select')?.value,
           title: document.querySelector('#page-title')?.textContent
         }));
@@ -504,14 +510,14 @@ export async function runRuntimeTest(directory, { browser: withBrowser = false }
           await page.locator(`[data-view="${view}"]`).click();
           await captureLanguage(view);
         }
-        for (const method of ['bazaarlink-probe', 'ztest', 'custom-question', 'juice', 'meow-fingerprint', 'hlwy-fingerprint', 'probability-probe', 'knowledge-boundary', 'one-token', 'astra-community']) {
+        for (const method of ['bazaarlink-probe', 'ztest', 'ztest-local', 'custom-question', 'juice', 'meow-fingerprint', 'hlwy-fingerprint', 'probability-probe', 'knowledge-boundary', 'one-token', 'astra-community']) {
           await page.locator('[data-view="quality"]').click();
-          await page.locator('#quality-method-select').selectOption(method);
+          await chooseMethod(method);
           await page.waitForTimeout(150);
           await captureLanguage(`quality:${method}`);
         }
         await page.route("**/api/quality/runs?*", route => route.fulfill({ json: { runs: [report, parentReport], history: [report, parentReport], latest: [report] } }));
-        await page.locator('#quality-method-select').selectOption('meow-fingerprint');
+        await chooseMethod('meow-fingerprint');
         await page.evaluate(() => window.modivue.refresh());
         await page.locator('.historical-report details').evaluateAll(nodes => nodes.forEach(node => node.open = true));
         await captureLanguage('quality:expanded-report');
@@ -548,7 +554,7 @@ export async function runRuntimeTest(directory, { browser: withBrowser = false }
           await captureLanguage(`settings:${tab}`);
         }
         await page.locator('[data-settings-tab="verification"]').click();
-        for (const method of ['bazaarlink-probe', 'ztest', 'custom-question', 'juice', 'meow-fingerprint', 'hlwy-fingerprint', 'probability-probe', 'knowledge-boundary', 'one-token', 'astra-community']) {
+        for (const method of ['bazaarlink-probe', 'ztest', 'ztest-local', 'custom-question', 'juice', 'meow-fingerprint', 'hlwy-fingerprint', 'probability-probe', 'knowledge-boundary', 'one-token', 'astra-community']) {
           await page.locator('[name="evaluatorId"]').selectOption(method);
           await captureLanguage(`settings:verification:${method}`);
         }
@@ -587,7 +593,7 @@ export async function runRuntimeTest(directory, { browser: withBrowser = false }
         await page.waitForFunction(() => document.documentElement.lang === 'zh-CN');
         checks.push({ name: 'spotlight-keyboard-scroll-lock-and-persisted-language', status: 'PASS' });
         await page.locator('[data-view="quality"]').click();
-        await page.locator("#quality-method-select").selectOption("bazaarlink-probe");
+        await chooseMethod("bazaarlink-probe");
         await page.locator("#bazaarlink-form").waitFor();
         assert.equal(await page.locator('[data-action="bazaarlink-start"]').isDisabled(), true);
         const startsBefore = upstreamCalls;
@@ -596,7 +602,7 @@ export async function runRuntimeTest(directory, { browser: withBrowser = false }
         assert.equal(await page.locator('#bazaarlink-form [name="mode"]').inputValue(), "full", "Polling must not overwrite an edited remote plan");
         assert.equal(upstreamCalls, startsBefore, "Selecting a remote method must not send model requests");
         await page.screenshot({ path: join(directory, "web-bazaarlink.png") });
-        await page.locator("#quality-method-select").selectOption("juice");
+        await chooseMethod("juice");
         checks.push({ name: "bazaarlink-ui-consent-and-plan-editing", status: "PASS" });
         const ztestReport = { id: 'modivue-ztest-fixture', status: 'completed', model: { code: 'integration-fixture', display_name: 'Integration fixture' },
           profile: 'quick', endpoint_masked: 'local fixture', probe_results: [{ probe_code: 'fixture', probe_name: 'Fixture probe', status: 'success', score: 1, latency_ms: 123 }] };
@@ -819,7 +825,7 @@ export async function runRuntimeTest(directory, { browser: withBrowser = false }
     checks.push({ name: 'custom-question-persistence-metered-run-and-settings-validation', status: 'PASS' });
     const { runEvaluator: runNewEvaluator } = await import('../../src/core/quality.mjs');
     const proof = await runNewEvaluator('custom-question', { ...target, questionId: 'water-cups-8', request: async (prompt, options) => {
-      assert.ok(options.timeoutMs >= 300000); assert.ok(options.maxOutputTokens >= 16384); return '8';
+      assert.ok(prompt.includes('水杯配对游戏')); assert.ok(prompt.includes('严格的证明')); assert.equal(options.timeoutMs, null); assert.ok(options.maxOutputTokens >= 16384); return '模型回答：8';
     } });
     assert.equal(proof.status, 'ok'); assert.equal(proof.metadata.matched, null);
     const { binomialTail, referenceErrorBound, parseKbfNumbers } = await import('../../src/core/evaluator-kbf.mjs');
@@ -898,7 +904,7 @@ export async function runRuntimeTest(directory, { browser: withBrowser = false }
       assert.ok(Date.now() - started >= 45000);
       assert.equal(slowProof.status, 'ok'); assert.equal(slowProof.metadata.matched, null);
       assert.equal(slowProof.metadata.requests.length, 1);
-      assert.ok(listSamples({ hours: 0 }).some(row => row.measurement?.source === 'observation' && row.measurement.timeoutMs === 300000));
+      assert.ok(listSamples({ hours: 0 }).some(row => row.measurement?.source === 'observation' && row.measurement.timeoutMs === null));
       checks.push({ name: 'water-proof-real-http-survives-46-seconds-through-local-proxy', status: 'PASS' });
     }
 
@@ -1019,7 +1025,7 @@ export async function runRuntimeTest(directory, { browser: withBrowser = false }
     checks.push({name:"verification-raw-evidence-and-cost-accounting",status:"PASS",evidence:{requests:17,jsd:0,juice:32,compositeScore:null}},
       {name:"missing-baseline-no-request-and-failure-invalidates-verdict",status:"PASS"});
     failUpstream = false;
-    const { probeTargets, probeState, runProbeBatch, requestTargetVerification } = await import("../../src/core/probe.mjs");
+    const { probeTargets, probeState, runProbeBatch, requestTargetVerification, controlTargetVerification } = await import("../../src/core/probe.mjs");
     process.env.MODIVUE_PROBE_OPENAI_KEY = target.apiKey;
     process.env.MODIVUE_PROBE_OPENAI_MODEL = target.observedModel;
     process.env.MODIVUE_PROBE_OPENAI_API = "responses";
@@ -1038,6 +1044,29 @@ export async function runRuntimeTest(directory, { browser: withBrowser = false }
     assert.ok(["running", "queued"].includes((await acknowledged.json()).status));
     while ((await probeState()).verification.length) await new Promise(resolve => setTimeout(resolve, 30));
     checks.push({ name: "manual-verification-202-queue-dedup-and-auto-disabled", status: "PASS" });
+    assert.ok(probePauseReason({ ...sessionTarget, automatic: true, probeStrategy: "adaptive" }, [idleConnection]), "Idle agents must not be auto-billed");
+    assert.equal(probePauseReason({ ...sessionTarget, manualRequest: true }, [{ ...idleConnection, idleSince: new Date(0).toISOString() }]), null, "A manual run must allow a long-idle session");
+    upstreamDelay = 30000;
+    updateSettings({ juiceMode: "raw" });
+    const startedCalls = upstreamCalls;
+    await requestTargetVerification(liveTarget, "custom-question", { questionId: "candy-21" });
+    for (let attempt = 0; upstreamCalls === startedCalls && attempt < 100; attempt++) await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(upstreamCalls, startedCalls + 1);
+    process.env.MODIVUE_PROBE_OPENAI_MODEL = "priority-fixture";
+    const priorityTarget = (await probeTargets()).find(item => item.observedModel === "priority-fixture");
+    upstreamDelay = 25;
+    const preemptAt = Date.now();
+    await requestTargetVerification(priorityTarget, "juice", { priority: true });
+    for (let attempt = 0; (await probeState()).verification.some(job => ["sampling", "preparing", "spacing", "retrying"].includes(job.phase)) && attempt < 100; attempt++) await new Promise(resolve => setTimeout(resolve, 20));
+    await runProbeBatch();
+    assert.ok(Date.now() - preemptAt < 6000, "Priority must abort the old 30-second request, not wait for it");
+    assert.ok((await probeState()).verification.some(job => job.targetId === liveTarget.id && job.phase === "paused"));
+    assert.ok(listQualityRuns({ hours: 0, model: "priority-fixture" }).some(run => run.status === "ok"));
+    controlTargetVerification(liveTarget.id, "stop");
+    assert.ok((await probeState()).verification.some(job => job.targetId === liveTarget.id && job.phase === "stopped"));
+    process.env.MODIVUE_PROBE_OPENAI_MODEL = liveTarget.observedModel;
+    upstreamDelay = 25;
+    checks.push({ name: "idle-manual-only-and-priority-aborts-request", status: "PASS", evidence: { interruptionMs: Date.now() - preemptAt, paidRequests: 0 } });
     delete process.env.MODIVUE_PROBE_OPENAI_KEY;
     delete process.env.MODIVUE_PROBE_OPENAI_MODEL;
     delete process.env.MODIVUE_PROBE_OPENAI_API;
@@ -1118,7 +1147,7 @@ export async function runRuntimeTest(directory, { browser: withBrowser = false }
     assert.equal(resumed.metadata.jsd, 0);
     checks.push({ name: 'idle-window-and-mid-cell-resumption', status: 'PASS', evidence: { saved: 3, resumed: 13, attempts: 17 } });
     const { default: meowBaseline } = await import('../../src/data/meow-gpt.json', { with: { type: 'json' } });
-    const meowTarget = { ...target, observedModel: meowBaseline.models.find(model => !model.reference_only).id, meowTier: 'low' };
+    const meowTarget = { ...target, observedModel: meowBaseline.models.find(model => !model.reference_only).id, reasoningEffort: meowBaseline.probes[0].cells[0].effort, meowTier: 'low' };
     attempts = 0;
     const pausedMeow = await runEvaluator('meow-fingerprint', { ...meowTarget, request: async () => {
       if (++attempts === 4) throw Object.assign(new Error('Foreground turn started'), { code: 'target_inactive' });
@@ -1167,7 +1196,8 @@ export async function runRuntimeTest(directory, { browser: withBrowser = false }
     assert.equal(screeningCalls, 6);
     assert.equal(screening.metadata.plannedSamples, 6);
     assert.equal(screening.metadata.verdict, 'inconclusive');
-    assert.ok(screening.metadata.reasons.includes('uncalibrated'));
+    assert.ok(screening.metadata.reasons.includes('screen_preview'));
+    assert.ok(screening.metadata.candidateDistribution.every(row => Number.isFinite(row.threshold)));
     checks.push({ name: 'meow-screen-six-samples-without-strong-verdict', status: 'PASS' });
     const beforePassive = listSamples({ hours: 0 }).length;
     const passive = { host: 'codex', sessionId: 'passive-fixture', model: 'passive-fixture',

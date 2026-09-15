@@ -119,7 +119,7 @@ final class IslandWebView: WKWebView {
     }
 
     func updateHover() {
-        guard !dragging, let window else { return }
+        guard !dragging, let window, !window.ignoresMouseEvents else { return }
         guard window.frame.contains(NSEvent.mouseLocation) else {
             evaluateJavaScript("window.modivue?.nativeHover?.(null)")
             return
@@ -137,6 +137,7 @@ final class ModivueApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNav
     private var islandWindow: NSPanel?
     private var mainWindow: NSWindow?
     private var islandWebView: WKWebView?
+    private var islandMaterials: [NSVisualEffectView] = []
     private var mainWebView: WKWebView?
     private var statusItem: NSStatusItem?
     private var isQuitting = false
@@ -178,9 +179,14 @@ final class ModivueApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNav
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if flag {
-            islandWindow?.orderFrontRegardless()
-        } else {
+        // The always-visible island is the app's primary surface. Activation
+        // (including accessibility-driven test activation) may report
+        // `hasVisibleWindows == false` because the non-activating panel is not
+        // considered a regular app window. Do not open the dashboard in that
+        // case; only an explicit menu action should do so.
+        if let islandWindow {
+            islandWindow.orderFrontRegardless()
+        } else if !flag {
             openDashboard()
         }
         return true
@@ -201,6 +207,27 @@ final class ModivueApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNav
         menu.addItem(withTitle: localizedMenuTitle("退出 Modivue", "Quit Modivue"), action: #selector(quitApplication), keyEquivalent: "q").target = self
         item.menu = menu
         statusItem = item
+        // Keep the standard Edit responder chain available to WKWebView so
+        // Cmd/C, Cmd/V and Cmd/X work in report/detail text fields.
+        let mainMenu = NSMenu()
+        let appItem = NSMenuItem(title: "Modivue", action: nil, keyEquivalent: "")
+        let appMenu = NSMenu(title: "Modivue")
+        appMenu.addItem(withTitle: localizedMenuTitle("退出 Modivue", "Quit Modivue"), action: #selector(quitApplication), keyEquivalent: "q").target = self
+        appItem.submenu = appMenu
+        mainMenu.addItem(appItem)
+        let edit = NSMenu(title: localizedMenuTitle("编辑", "Edit"))
+        edit.addItem(withTitle: localizedMenuTitle("撤销", "Undo"), action: Selector(("undo:")), keyEquivalent: "z")
+        let redo = edit.addItem(withTitle: localizedMenuTitle("重做", "Redo"), action: Selector(("redo:")), keyEquivalent: "z")
+        redo.keyEquivalentModifierMask = [.command, .shift]
+        edit.addItem(.separator())
+        edit.addItem(withTitle: localizedMenuTitle("剪切", "Cut"), action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        edit.addItem(withTitle: localizedMenuTitle("复制", "Copy"), action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        edit.addItem(withTitle: localizedMenuTitle("粘贴", "Paste"), action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        edit.addItem(withTitle: localizedMenuTitle("全选", "Select All"), action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        let editItem = NSMenuItem(title: edit.title, action: nil, keyEquivalent: "")
+        editItem.submenu = edit
+        mainMenu.addItem(editItem)
+        NSApp.mainMenu = mainMenu
     }
 
     private var interfaceEnglish = Locale.preferredLanguages.first?.hasPrefix("zh") == false
@@ -329,6 +356,17 @@ final class ModivueApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNav
         surface.wantsLayer = true
         surface.layer?.masksToBounds = true
         panel.contentView = surface
+        islandMaterials = (0..<2).map { _ in
+            let material = NSVisualEffectView()
+            material.material = .hudWindow
+            material.blendingMode = .behindWindow
+            material.state = .active
+            material.wantsLayer = true
+            material.layer?.masksToBounds = true
+            material.isHidden = true
+            surface.addSubview(material)
+            return material
+        }
         surface.addSubview(view)
         islandWindow = panel
         islandWebView = view
@@ -339,11 +377,21 @@ final class ModivueApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNav
 
     func webView(_ webView: WKWebView, runOpenPanelWith parameters: WKOpenPanelParameters,
         initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping ([URL]?) -> Void) {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = false
-        panel.canChooseFiles = true
-        panel.allowsMultipleSelection = false
-        panel.begin { response in completionHandler(response == .OK ? panel.urls : nil) }
+        // Retain WebKit's completion while presenting a sheet on the owning
+        // window, after the delegate call has returned to its event loop.
+        DispatchQueue.main.async {
+            guard let window = webView.window, window.isVisible, window.attachedSheet == nil else {
+                completionHandler(nil)
+                return
+            }
+            let panel = NSOpenPanel()
+            panel.canChooseDirectories = parameters.allowsDirectories
+            panel.canChooseFiles = true
+            panel.allowsMultipleSelection = parameters.allowsMultipleSelection
+            panel.beginSheetModal(for: window) { response in
+                completionHandler(response == .OK ? panel.urls : nil)
+            }
+        }
     }
 
     private func islandSize(expanded: Bool) -> NSSize {
@@ -365,7 +413,9 @@ final class ModivueApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNav
         let oldFrame = panel.frame
         let size = islandSize(expanded: expanded)
         guard oldFrame.size != size else { return }
-        let next = NSRect(x: islandOnLeft ? oldFrame.minX : oldFrame.maxX - size.width, y: oldFrame.midY - size.height / 2,
+        let screen = (panel.screen ?? NSScreen.main)?.visibleFrame ?? oldFrame
+        let nextY = min(max(screen.minY, oldFrame.midY - size.height / 2), screen.maxY - size.height)
+        let next = NSRect(x: islandOnLeft ? oldFrame.minX : oldFrame.maxX - size.width, y: nextY,
             width: size.width, height: size.height)
         // The visible rail animates in CSS; resize its transparent host without
         // an additional native size animation.
@@ -434,7 +484,10 @@ final class ModivueApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNav
             window.isReleasedWhenClosed = false
             window.delegate = self
             let view = webView(mode: "main")
-            let surface = NSView()
+            let surface = NSVisualEffectView()
+            surface.material = .underWindowBackground
+            surface.blendingMode = .behindWindow
+            surface.state = .inactive
             window.contentView = surface
             surface.addSubview(view)
             view.translatesAutoresizingMaskIntoConstraints = false
@@ -561,8 +614,19 @@ final class ModivueApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNav
             content.title = body["title"] as? String ?? "Modivue"
             content.body = body["body"] as? String ?? ""
             content.sound = .default
-            UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: body["id"] as? String ?? UUID().uuidString, content: content, trigger: nil)) { error in
-                if let id = body["requestId"] as? String { self.reply(message.webView, requestID: id, result: error.map { ["error": $0.localizedDescription] } ?? ["sent": true]) }
+            let center = UNUserNotificationCenter.current()
+            center.getNotificationSettings { settings in
+                guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else {
+                    if let id = body["requestId"] as? String { self.reply(message.webView, requestID: id, result: ["error": "系统通知未获授权，请在系统设置中允许 Modivue 通知"]) }
+                    return
+                }
+                guard settings.alertSetting == .enabled else {
+                    if let id = body["requestId"] as? String { self.reply(message.webView, requestID: id, result: ["error": "Modivue 通知横幅已关闭，请在系统设置中开启提醒"]) }
+                    return
+                }
+                center.add(UNNotificationRequest(identifier: body["id"] as? String ?? UUID().uuidString, content: content, trigger: nil)) { error in
+                    if let id = body["requestId"] as? String { self.reply(message.webView, requestID: id, result: error.map { ["error": $0.localizedDescription] } ?? ["sent": true]) }
+                }
             }
         case "export":
             guard let id = body["requestId"] as? String, let text = body["text"] as? String,
@@ -585,13 +649,32 @@ final class ModivueApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNav
                 if item.action == #selector(showIsland) { item.title = localizedMenuTitle("显示灵动岛", "Show Island") }
                 if item.action == #selector(quitApplication) { item.title = localizedMenuTitle("退出 Modivue", "Quit Modivue") }
             }
+            NSApp.mainMenu?.items.first?.submenu?.items.first?.title = localizedMenuTitle("退出 Modivue", "Quit Modivue")
+            if let editItem = NSApp.mainMenu?.items.last, let edit = editItem.submenu {
+                editItem.title = localizedMenuTitle("编辑", "Edit")
+                edit.title = editItem.title
+                let titles = [("撤销", "Undo"), ("重做", "Redo"), ("", ""), ("剪切", "Cut"), ("复制", "Copy"), ("粘贴", "Paste"), ("全选", "Select All")]
+                for (item, title) in zip(edit.items, titles) where !item.isSeparatorItem {
+                    item.title = localizedMenuTitle(title.0, title.1)
+                }
+            }
         case "appearance":
             if message.webView === mainWebView {
+                let glass = body["glass"] as? Bool == true
+                (mainWindow?.contentView as? NSVisualEffectView)?.state = glass ? .active : .inactive
+                mainWindow?.isOpaque = !glass
                 mainWindow?.appearance = NSAppearance(named: body["dark"] as? Bool == true ? .darkAqua : .aqua)
                 mainWindow?.titlebarAppearsTransparent = true
-                if let hex = body["background"] as? String, hex.count == 7, hex.hasPrefix("#"), let rgb = UInt32(hex.dropFirst(), radix: 16) {
+                if glass {
+                    mainWindow?.backgroundColor = .clear
+                } else if let hex = body["background"] as? String, hex.count == 7, hex.hasPrefix("#"), let rgb = UInt32(hex.dropFirst(), radix: 16) {
                     mainWindow?.backgroundColor = NSColor(srgbRed: CGFloat((rgb >> 16) & 255) / 255, green: CGFloat((rgb >> 8) & 255) / 255, blue: CGFloat(rgb & 255) / 255, alpha: 1)
                 }
+            }
+        case "island-interaction":
+            if let clickThrough = body["clickThrough"] as? Bool {
+                islandWindow?.ignoresMouseEvents = clickThrough
+                if clickThrough { islandWebView?.evaluateJavaScript("window.modivue?.nativeHover?.(null)") }
             }
         case "start-island-tour":
             pendingCollapse?.cancel()
@@ -604,6 +687,19 @@ final class ModivueApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNav
             pendingCollapse?.cancel()
             resizeIsland(expanded: islandTourActive)
         case "island-layout":
+            if message.webView === islandWebView {
+                let surfaces = body["surfaces"] as? [[String: Any]] ?? []
+                for (index, material) in islandMaterials.enumerated() {
+                    material.isHidden = body["glass"] as? Bool != true || index >= surfaces.count
+                    if !material.isHidden, let surface = islandWindow?.contentView {
+                        let rect = surfaces[index]
+                        let width = rect["width"] as? Double ?? 0, height = rect["height"] as? Double ?? 0
+                        material.frame = NSRect(x: rect["x"] as? Double ?? 0,
+                            y: surface.bounds.height - (rect["y"] as? Double ?? 0) - height, width: width, height: height)
+                        material.layer?.cornerRadius = rect["radius"] as? Double ?? 22
+                    }
+                }
+            }
             if let view = islandWebView as? IslandWebView,
                let x = body["x"] as? Double, let y = body["y"] as? Double, let width = body["width"] as? Double {
                 view.dragRect = NSRect(x: x, y: view.isFlipped ? y : view.bounds.height - y - 20, width: width, height: 20)

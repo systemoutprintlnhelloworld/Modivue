@@ -2,6 +2,7 @@ import { registerEvaluator } from "./quality.mjs";
 import { getSettings, loadBazaarlinkJobs, saveBazaarlinkJobs, listQualityRuns, saveQualityRun } from "./storage.mjs";
 import { modelIdentity } from "./model-identity.js";
 import { resolveLocale } from "./i18n.js";
+import { summarizeBazaarlink } from "./bazaarlink-summary.js";
 
 const origin = "https://bazaarlink.ai";
 const method = "bazaarlink-probe";
@@ -76,10 +77,11 @@ export function normalizeBazaarlinkReport(report, target, mode) {
     .filter(key => report[key] !== undefined).map(key => [key, report[key]]));
   const completed = report.items.filter(item => item.status === "done" || item.status === "completed" || item.passed !== null && item.passed !== undefined);
   const assessment = report.identityAssessment;
+  const result = summarizeBazaarlink(report);
   const timestamp = new Date(report.completedAt || report.createdAt || Date.now()).toISOString();
   return { ...cleanTarget(target), evaluatorId: method, evaluatorVersion: version, score: null, timestamp,
-    status: report.status === "failed" ? "error" : ["stopped", "cancelled"].includes(report.status) ? "paused" : "ok", rationale: "BazaarLink 官方行为检测报告",
-    metadata: { verdict: "inconclusive", reportId: id, mode: mode || "imported", externalReport,
+    status: report.status === "failed" ? "error" : ["stopped", "cancelled"].includes(report.status) ? "paused" : "ok", rationale: `BazaarLink · ${result.label}${result.detectedModel ? ` → ${result.detectedModel}` : ""}`,
+    metadata: { verdict: result.verdict, declaredMatch: result.declaredMatch, directedModel: result.detectedModel, reportId: id, mode: mode || "imported", externalReport,
       sampleCount: completed.length, plannedSamples: report.items.length, reasoningEffort: target.reasoningEffort || null,
       source: `${origin}/probe?runId=${encodeURIComponent(report.id || id)}`, costUsd: null, costStatus: "unknown",
       identityStatus: assessment?.verdict?.status || assessment?.status || "insufficient_data",
@@ -181,7 +183,7 @@ export async function tickBazaarlink(targets, { fetchImpl = fetch } = {}) {
       }
       if (job.continuous && job.nextRunAt && Date.parse(job.nextRunAt) <= Date.now() && getSettings().probeEnabled && getSettings().probeStrategy !== "manual"
         && !jobs.some(item => running(item))) {
-        const target = targets.find(target => target.id === job.target.id && !target.pauseReason);
+        const target = targets.find(target => target.id === job.target.id && !target.pauseReason && target.automaticEligible);
         if (!target) continue;
         try { await startBazaarlink(target, { fetchImpl }); }
         catch (error) { job.error = error.message; job.nextRunAt = new Date(Date.now() + job.intervalMinutes * 60000).toISOString(); persist(); }

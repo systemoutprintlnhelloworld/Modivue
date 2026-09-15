@@ -1,9 +1,14 @@
 import { once } from "node:events";
+import http from "node:http";
+import https from "node:https";
 import { createHash } from "node:crypto";
 import { createParser } from "eventsource-parser";
-import { normalizeUsage, ttftMs, estimateTokenCost } from "./metrics.js";
+import { normalizeUsage, ttftMs } from "./metrics.js";
+import { reportedRequestCost, reportedHeaderCost, resolveRequestCost } from "./request-cost.js";
+import { getChannelPricing } from "./storage.mjs";
 import { keyGroup, normalizeBaseUrl } from "./identity.mjs";
 import { catalogState } from "./catalog.mjs";
+import { matchModelName } from "./model-match.js";
 export { keyGroup } from "./identity.mjs";
 
 const hopByHop = new Set(["connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailers", "transfer-encoding", "upgrade", "host", "content-length"]);
@@ -22,6 +27,35 @@ async function readBody(request, maxBytes = 8 * 1024 * 1024) {
   let size = 0;
   for await (const chunk of request) { size += chunk.length; if (size > maxBytes) throw new Error("请求体超过 8 MiB 限制"); chunks.push(Buffer.from(chunk)); }
   return Buffer.concat(chunks);
+}
+
+// Node fetch/undici applies a finite headers/body timeout even when no
+// AbortSignal timeout is supplied.  Proof questions explicitly allow an
+// unlimited request, so use the platform HTTP client for that branch.  It
+// preserves streaming and still honours user/client cancellation.
+function requestWithoutTimeout(url, options) {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(url), transport = parsed.protocol === "https:" ? https : http;
+    const req = transport.request(parsed, { method: options.method, headers: Object.fromEntries(options.headers || []) }, response => {
+      const headers = new Headers();
+      for (const [name, value] of Object.entries(response.headers)) {
+        if (value == null) continue;
+        headers.set(name, Array.isArray(value) ? value.join(", ") : value);
+      }
+      resolve({ status: response.statusCode || 502, statusText: response.statusMessage || "", ok: (response.statusCode || 500) >= 200 && (response.statusCode || 500) < 300,
+        headers, body: response });
+    });
+    req.once("error", reject);
+    const signal = options.signal;
+    const abort = () => req.destroy(Object.assign(new Error("The operation was aborted"), { name: "AbortError", code: "ABORT_ERR" }));
+    if (signal) {
+      if (signal.aborted) return abort();
+      signal.addEventListener("abort", abort, { once: true });
+      req.once("close", () => signal.removeEventListener("abort", abort));
+    }
+    if (options.body != null) req.write(options.body);
+    req.end();
+  });
 }
 
 export function contentEvent(protocol, event) {
@@ -55,7 +89,7 @@ function observationConditionsId(source, wireApi, parameters, supplied) {
   return `${source}:${wireApi}:${digest}`;
 }
 
-export async function proxyStream({ request, response, upstreamUrl, baseUrl = upstreamUrl, protocol, saveSample, observedModel, canonicalModelId, agent, conditionsId, timeoutMs = agent === "modivue-probe" ? 45000 : 120000, onText, onEvent }) {
+export async function proxyStream({ request, response, upstreamUrl, baseUrl = upstreamUrl, protocol, saveSample, observedModel, canonicalModelId, agent, conditionsId, timeoutMs = agent === "modivue-probe" ? 45000 : 120000, signal, onText, onEvent }) {
   if (request.method !== "POST") { response.writeHead(405, { Allow: "POST", "Content-Type": "application/json" }).end(JSON.stringify({ error: "代理只接受 POST 请求" })); return; }
   if (!upstreamUrl) { response.writeHead(503, { "Content-Type": "application/json" }).end(JSON.stringify({ error: `未配置 ${protocol} 上游地址` })); return; }
   const timestamp = new Date().toISOString();
@@ -74,6 +108,7 @@ export async function proxyStream({ request, response, upstreamUrl, baseUrl = up
   response.once?.("close", onClose);
   let firstContentAt = null;
   let usage = null;
+  let apiCost = null;
   let status = "ok";
   let error = null;
   let upstreamError = null;
@@ -105,6 +140,7 @@ export async function proxyStream({ request, response, upstreamUrl, baseUrl = up
     try { event = JSON.parse(data); } catch { onEvent?.(null); return; }
     if (eventName && !event.type) event.type = eventName;
     onEvent?.(event);
+    apiCost = reportedRequestCost(event) || apiCost;
     const output = protocol === "gemini" ? event.candidates?.[0]?.content?.parts?.filter(part => !part.thought).map(part => part.text || "").join("")
       : protocol === "anthropic" ? event.delta?.text
       : event.type === "response.output_text.delta" ? event.delta : event.choices?.[0]?.delta?.content;
@@ -137,11 +173,14 @@ export async function proxyStream({ request, response, upstreamUrl, baseUrl = up
     const outboundHeaders = forwardedHeaders(request);
     const destination = new URL(upstreamUrl);
     if (agent === "modivue-probe" && ["localhost", "127.0.0.1", "[::1]"].includes(destination.hostname) && destination.pathname.startsWith("/proxy/")) {
-      outboundHeaders.set("x-modivue-timeout-ms", String(timeoutMs));
+      outboundHeaders.set("x-modivue-timeout-ms", String(timeoutMs ?? 0));
     }
-    const upstream = await fetch(upstreamUrl, { method: "POST", headers: outboundHeaders, body,
-      redirect: "manual", signal: AbortSignal.any([controller.signal, AbortSignal.timeout(timeoutMs)]) });
+    const timeoutSignal = Number.isFinite(timeoutMs) && timeoutMs > 0 ? AbortSignal.timeout(timeoutMs) : null;
+    const combinedSignal = AbortSignal.any([controller.signal, ...(timeoutSignal ? [timeoutSignal] : []), ...(signal ? [signal] : [])]);
+    const fetchOptions = { method: "POST", headers: outboundHeaders, body, redirect: "manual", signal: combinedSignal };
+    const upstream = timeoutSignal ? await fetch(upstreamUrl, fetchOptions) : await requestWithoutTimeout(upstreamUrl, fetchOptions);
     measurement.httpStatus = upstream.status;
+    apiCost = reportedHeaderCost(upstream.headers) || apiCost;
     const retryAfter = upstream.headers.get("retry-after");
     if (retryAfter) {
       const wait = /^\d+(?:\.\d+)?$/.test(retryAfter) ? Number(retryAfter) * 1000 : Date.parse(retryAfter) - Date.now();
@@ -172,6 +211,7 @@ export async function proxyStream({ request, response, upstreamUrl, baseUrl = up
     } else if (responseBytes <= 8 * 1024 * 1024) {
       try {
         const payload = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        apiCost = reportedRequestCost(payload) || apiCost;
         mergeUsage(payload.usageMetadata || payload.usage); measurement.reportedModel = payload.modelVersion || payload.model || null;
         const output = payload.candidates?.[0]?.content?.parts?.filter(part => !part.thought).map(part => part.text || "").join("") || payload.output_text || payload.choices?.[0]?.message?.content
           || (payload.content || payload.output?.flatMap((item) => item.content || []) || []).map((part) => part.text || "").join("");
@@ -196,15 +236,19 @@ export async function proxyStream({ request, response, upstreamUrl, baseUrl = up
   if (upstreamError) measurement.upstreamError = upstreamError;
   measurement.durationMs = Math.round(performance.now() - startedAt);
   measurement.ttftStatus = !streaming ? "non_streaming" : firstContentAt === null ? "no_content" : "measured";
-  const catalogModel = catalogState().models.find((item) => item.id === canonicalModelId);
+  const catalog = catalogState().models;
+  const catalogMatch = model ? matchModelName(model, catalog) : { status: "unmatched" };
+  const catalogModel = catalog.find((item) => item.id === canonicalModelId)
+    || (catalogMatch.status === "matched" ? catalog.find((item) => item.id === catalogMatch.model.id) : null);
   const pricing = catalogModel?.cost;
   const normalized = normalizeUsage(protocol, usage);
-  const costUsd = estimateTokenCost(normalized, pricing);
+  const cost = resolveRequestCost({ apiCost, usage: normalized, catalogPricing: pricing,
+    channelPricing: getChannelPricing({ protocol, baseUrl: normalizeBaseUrl(baseUrl), keyGroup: keyGroup(request), observedModel: model }) });
+  measurement.cost = cost;
   const sample = { timestamp, protocol, baseUrl: normalizeBaseUrl(baseUrl), keyGroup: keyGroup(request), agent, observedModel: model, canonicalModelId,
     ttftMs: streaming ? ttftMs(startedAt, firstContentAt) : null, ...normalizeUsage(protocol, usage), status, error, rawUsage: usage, measurement };
   sample.durationMs = measurement.durationMs;
-  sample.costUsd = costUsd;
-  sample.costStatus = costUsd == null ? "unknown" : "estimated";
+  Object.assign(sample, cost);
   await saveSample(sample);
   return sample;
 }
