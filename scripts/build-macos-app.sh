@@ -104,9 +104,16 @@ cp -R "$PROJECT_ROOT/node_modules/json5" "$APP_RESOURCES/node_modules/"
 cp -R "$PROJECT_ROOT/node_modules/playwright-core" "$APP_RESOURCES/node_modules/"
 chmod +x "$CONTENTS/MacOS/Modivue" "$RESOURCES/runtime/node"
 if command -v codesign >/dev/null 2>&1; then
-  for dylib in "$RESOURCES/lib/"*.dylib; do [ ! -f "$dylib" ] || codesign --force --sign - "$dylib"; done
-  codesign --force --sign - "$RESOURCES/runtime/node"
-  codesign --force --deep --sign - "$APP_BUNDLE"
+  SIGN_IDENTITY="${MACOS_SIGN_IDENTITY:--}"
+  if [ "$SIGN_IDENTITY" = "-" ]; then
+    for dylib in "$RESOURCES/lib/"*.dylib; do [ ! -f "$dylib" ] || codesign --force --sign - "$dylib"; done
+    codesign --force --entitlements "$PROJECT_ROOT/desktop/Modivue.entitlements" --sign - "$RESOURCES/runtime/node"
+    codesign --force --deep --sign - "$APP_BUNDLE"
+  else
+    for dylib in "$RESOURCES/lib/"*.dylib; do [ ! -f "$dylib" ] || codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$dylib"; done
+    codesign --force --options runtime --timestamp --entitlements "$PROJECT_ROOT/desktop/Modivue.entitlements" --sign "$SIGN_IDENTITY" "$RESOURCES/runtime/node"
+    codesign --force --deep --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP_BUNDLE"
+  fi
 fi
 touch "$APP_BUNDLE"
 # Build new binaries separately from any copy currently mapped by a running app.

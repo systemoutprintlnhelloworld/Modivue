@@ -42,7 +42,7 @@ async function providers() {
   const [saved, agents] = await Promise.all([trustedProviderCredentials(), process.env.MODIVUE_UI_ARTIFACTS ? [] : agentConnections()]);
   const unique = new Map();
   for (const provider of [...agents.map(p => ({ ...p, source: "agent" })), ...saved.map(p => ({ ...p, source: "saved" })), ...ccSwitchProviders()]) {
-    if (!provider.baseUrl || !provider.apiKey) continue;
+    if (provider.error || !provider.baseUrl || !provider.apiKey) continue;
     const baseUrl = normalizeBaseUrl(provider.baseUrl), keyGroup = credentialGroup(provider.apiKey);
     const id = JSON.stringify([siteRoot(baseUrl), keyGroup]), previous = unique.get(id);
     unique.set(id, { ...previous, ...provider, id, baseUrl, keyGroup,
@@ -128,7 +128,7 @@ export function balanceRatio(remaining, initial) {
 export async function listBalances({ refresh = false } = {}) {
   if (inFlight) return inFlight;
   inFlight = (async () => {
-    const state = await readState(), changes = {};
+    const state = await readState(), changes = {}, histories = {};
     const rows = await Promise.all((await providers()).map(async provider => {
       const config = configFor(provider, state), previous = state.snapshots[provider.id];
       let snapshot = previous;
@@ -147,13 +147,24 @@ export async function listBalances({ refresh = false } = {}) {
           : { ...previous, ...result, stale: previous?.remaining != null, ratio: null };
         changes[provider.id] = snapshot;
       }
+      const history = (state.history?.[provider.id] || []).filter(point => Date.parse(point.timestamp) >= Date.now() - 7 * 86400000);
+      if (snapshot?.status === "ok" && Number.isFinite(snapshot.remaining) && snapshot.checkedAt !== history.at(-1)?.timestamp) {
+        const point = { timestamp: snapshot.checkedAt, value: snapshot.remaining, unit: snapshot.unit };
+        // Keep the latest real observation in each minute, for seven days.
+        if (history.length && Math.floor(Date.parse(history.at(-1).timestamp) / 60000) === Math.floor(Date.parse(point.timestamp) / 60000)) history[history.length - 1] = point;
+        else history.push(point);
+        histories[provider.id] = history;
+      }
       const { accessToken, queryKey, ...publicConfig } = config;
-      return { ...snapshot, providerId: provider.id, label: provider.label, baseUrl: provider.baseUrl,
+      return { ...snapshot, history, providerId: provider.id, label: provider.label, baseUrl: provider.baseUrl,
         keyGroup: provider.keyGroup, source: provider.source, wireApi: provider.wireApi,
         status: !config.enabled ? "disabled" : snapshot?.status || "unconfigured",
         config: { ...publicConfig, accessTokenConfigured: Boolean(accessToken), queryKeyConfigured: Boolean(queryKey) } };
     }));
-    if (Object.keys(changes).length) await writeState(state => Object.assign(state.snapshots, changes));
+    if (Object.keys(changes).length || Object.keys(histories).length) await writeState(state => {
+      Object.assign(state.snapshots, changes);
+      state.history = { ...state.history, ...histories };
+    });
     return rows;
   })();
   try { return await inFlight; } finally { inFlight = null; }

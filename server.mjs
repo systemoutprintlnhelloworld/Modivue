@@ -4,7 +4,7 @@ import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { listAgentSessions, listEvents, listObservedModels, listSamples, summary, saveSample, databasePath, getSettings, updateSettings, listQualityRuns, saveQualityRun } from "./src/core/storage.mjs";
 import { proxyStream } from "./src/core/proxy.mjs";
-import { detectAgents, supportedAgentStatus } from "./src/core/agents.mjs";
+import { detectAgents, supportedAgentStatus, configuredAgentRoute } from "./src/core/agents.mjs";
 import { agentAdapters } from "./src/core/agent-adapters.mjs";
 import { listEvaluators } from "./src/core/quality.mjs";
 import "./src/core/evaluator-coding.mjs";
@@ -28,6 +28,7 @@ import { ztestState, startZtest, closeZtest, tickZtest } from "./src/core/ztest-
 import { listChannelPricing, saveChannelPricing } from "./src/core/storage.mjs";
 
 const root = fileURLToPath(new URL(".", import.meta.url));
+const appVersion = JSON.parse(await readFile(join(root, "package.json"), "utf8")).version;
 const port = Number(process.env.MODIVUE_PORT || 4173);
 const types = { ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".json": "application/json; charset=utf-8", ".png": "image/png", ".svg": "image/svg+xml" };
 async function readJsonBody(request, maxBytes = 1024 * 1024) {
@@ -337,7 +338,7 @@ async function routeRequest(request, response) {
   }
   if (url.pathname === "/api/config" && request.method === "GET") {
     response.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" }).end(JSON.stringify({
-      host: "127.0.0.1", port, database: databasePath, upstreams: upstreamRoutes()
+      host: "127.0.0.1", port, version: appVersion, database: databasePath, upstreams: upstreamRoutes()
     }));
     return;
   }
@@ -347,9 +348,30 @@ async function routeRequest(request, response) {
     return;
   }
   if (url.pathname.startsWith("/proxy/openai/") || url.pathname.startsWith("/proxy/anthropic/")) {
-    const route = resolveProxyRoute(url.pathname, url.search);
+    let route = resolveProxyRoute(url.pathname, url.search);
+    let refreshedRoute = null;
+    const agentId = request.headers["x-modivue-agent"] || null;
+    const configuredAgentId = ["codex", "claude-code", ...agentAdapters.map(agent => agent.id)].includes(agentId) ? agentId : null;
+    // A local Agent config can change while Modivue stays open (for example
+    // through CC Switch). Refresh the default route on every request. If no
+    // Agent can be selected, retain an explicitly configured static upstream
+    // for ordinary callers; tagged or unconfigured dynamic calls fail.
+    if (route?.routeId === "default" && route.protocol && agentId !== "modivue-probe") {
+      const refreshed = await configuredAgentRoute({ protocol: route.protocol,
+        agentId: configuredAgentId, proxyOrigin: url.origin,
+        authorization: request.headers.authorization || request.headers["x-api-key"] || null });
+      if (refreshed?.baseUrl) {
+        refreshedRoute = refreshed;
+        route = { ...route, baseUrl: refreshed.baseUrl,
+          upstreamUrl: upstreamEndpoint(refreshed.baseUrl, route.suffix + url.search) };
+      } else if (refreshed?.error || configuredAgentId || !route.baseUrl) {
+        response.writeHead(503, { "Content-Type": "application/json" }).end(JSON.stringify({ error: "Agent 当前配置不可用、缺少凭据或无法唯一匹配 provider" }));
+        return;
+      }
+    }
     await proxyStream({ request, response, upstreamUrl: route?.upstreamUrl, baseUrl: route?.baseUrl,
-      protocol: route?.protocol, saveSample, agent: request.headers["x-modivue-agent"] || "unknown",
+      protocol: route?.protocol, saveSample, agent: refreshedRoute?.agent || request.headers["x-modivue-agent"] || "unknown",
+      apiKey: refreshedRoute?.apiKey, authHeader: refreshedRoute?.authHeader,
       timeoutMs: request.headers["x-modivue-timeout-ms"] === "0" ? null
         : /^\d+$/.test(request.headers["x-modivue-timeout-ms"] || "") ? Math.max(1000, Math.min(3600000, Number(request.headers["x-modivue-timeout-ms"]))) : undefined });
     return;
@@ -367,7 +389,7 @@ async function routeRequest(request, response) {
     return;
   }
   const requested = url.pathname === "/" ? "/index.html" : url.pathname;
-  if (!/^\/src\/data\/agent-icons\/[a-z-]+\.svg$/.test(requested) && !["/index.html", "/styles.css", "/app.js", "/src/core/calibration-reference.js", "/src/core/bazaarlink-summary.js", "/src/core/island-bridge.js", "/src/core/metrics.js", "/src/core/request-cost.js", "/src/core/model-match.js", "/src/core/quality-summary.js", "/src/core/answer-comparison.js", "/src/core/calibration-export.js", "/src/core/model-identity.js", "/src/core/agent-activity.js", "/src/core/island-state.js", "/src/core/island-display.js", "/src/core/preferences.js", "/src/core/i18n.js", "/src/core/hlwy-reference.js", "/src/data/question-tests.js", "/src/data/app-icon.png", "/src/data/meow-contract.json"].includes(requested)) {
+  if (!/^\/src\/data\/agent-icons\/[a-z-]+\.svg$/.test(requested) && !["/index.html", "/styles.css", "/app.js", "/src/core/dashboard-layout.js", "/src/core/calibration-reference.js", "/src/core/bazaarlink-summary.js", "/src/core/island-bridge.js", "/src/core/metrics.js", "/src/core/request-cost.js", "/src/core/model-match.js", "/src/core/quality-summary.js", "/src/core/answer-comparison.js", "/src/core/calibration-export.js", "/src/core/model-identity.js", "/src/core/agent-activity.js", "/src/core/island-state.js", "/src/core/island-display.js", "/src/core/preferences.js", "/src/core/i18n.js", "/src/core/hlwy-reference.js", "/src/data/question-tests.js", "/src/data/app-icon.png", "/src/data/meow-contract.json"].includes(requested)) {
     response.writeHead(404).end("Not found");
     return;
   }
@@ -386,6 +408,11 @@ async function routeRequest(request, response) {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  // The desktop host owns the pipe's write end, including on crash or force quit.
+  if (process.argv.includes("--desktop-parent")) {
+    process.stdin.on("end", () => process.exit(0));
+    process.stdin.resume();
+  }
   createServer(handleRequest).listen(port, "127.0.0.1", () => console.log(`Modivue 工作台: http://127.0.0.1:${port}`));
   void syncCatalog();
   void syncPublicBaselines();

@@ -1,3 +1,4 @@
+import { mountLayouts, layoutDragging, cancelLayout } from "./src/core/dashboard-layout.js";
 import { summarizeBazaarlink } from "./src/core/bazaarlink-summary.js";
 import { bridgePaths } from "./src/core/island-bridge.js";
 import { aggregate, ttftGauge } from "./src/core/metrics.js";
@@ -8,7 +9,7 @@ import { modelIdentity, modelIdentityParts, reasoningEffortOf, qualityIdentity }
 import { isAgentWorking, normalizeAgentStatus } from "./src/core/agent-activity.js";
 import { transitionIsland } from "./src/core/island-state.js";
 import { liveIslandModels, workingIslandModels, islandDisplayModels } from "./src/core/island-display.js";
-import { preferenceFields, preferenceDefaults } from "./src/core/preferences.js";
+import { preferenceFields, preferenceDefaults, optionalViews } from "./src/core/preferences.js";
 import { builtInQuestions, verificationReferences } from "./src/data/question-tests.js";
 import { comparableAnswer } from "./src/core/answer-comparison.js";
 import { hlwyPrompt, defaultShortPrompt, trustedHLWYReference } from "./src/core/hlwy-reference.js";
@@ -49,14 +50,13 @@ async function exportText(filename, text, mime) {
   showToast("已开始下载", "success");
 }
 
-const colors = { mint: "#20d6b5", blue: "#4ba3ff", violet: "#b884ff", yellow: "#f3c969", red: "#ff7185" };
+const colors = { balance: "#ff9e64", mint: "#20d6b5", blue: "#4ba3ff", violet: "#b884ff", yellow: "#f3c969", red: "#ff7185" };
 const defaultSettings = {
   ...preferenceDefaults,
   probeEnabled: true,
   probeIntervalMinutes: 1,
   verificationIntervalMinutes: 15,
   verificationRequestDelaySeconds: 2,
-  questionIntervalSeconds: 60,
   probeDailyLimit: 256,
   verificationSamples: 10,
   probeMaxOutputTokens: 16,
@@ -93,6 +93,7 @@ const state = {
   events: [],
   logs: [],
   catalog: [],
+  catalogStatus: "正在同步标准模型目录",
   settings: { ...defaultSettings },
   probe: null,
   config: null,
@@ -158,6 +159,17 @@ function sameModelRoute(record, model) {
 
 function selectedModel() {
   return filteredModels().find((model) => model.id === state.selectedModelId) || null;
+}
+
+function modelByIdentityId(id) {
+  const exact = state.models.find((model) => model.id === id);
+  if (exact) return exact;
+  let parts;
+  try { parts = JSON.parse(id); } catch { return null; }
+  if (!Array.isArray(parts) || parts.length !== 4) return null;
+  const candidates = state.models.filter((model) => JSON.stringify(identityParts(model).slice(1)) === JSON.stringify(parts.slice(1)));
+  return candidates.find((model) => [model.canonicalModelId, model.observedModel, model.match?.model?.id].includes(parts[0]))
+    || (candidates.length === 1 ? candidates[0] : null);
 }
 
 function matchesGlobalFilters(record) {
@@ -234,7 +246,7 @@ function applyGlobalSearch(query, page = 0) {
   const entries = [
     ...$$(".nav-item").map(item => ({ label: item.textContent.trim(), kind: "功能", view: item.dataset.view })),
     ...preferenceFields.map(field => ({ label: field.label, hint: `${field.hint || ""} ${field.key}`, kind: "设置", query: field.label })),
-    ...["默认核验方案", "Meow 核验强度", "HLWY 每轮样本数", "当前测试题目", "核验请求间隔", "模型核验间隔", "每日探测上限", "探测指令", "TTFT 告警阈值", "Cache 告警阈值", "可信 API 回答对照", "核验校准档案", "单问题测试"]
+    ...["默认核验方案", "Meow 核验强度", "HLWY 每轮样本数", "当前测试题目", "轮内请求间隔", "自动核验轮次间隔", "每日探测上限", "探测指令", "TTFT 告警阈值", "Cache 告警阈值", "可信 API 回答对照", "核验校准档案", "单问题测试"]
       .map(label => ({ label, kind: "设置", query: label })),
     ...state.models.map(model => ({ label: model.label, hint: endpointLabel(model.endpoint), kind: "模型", modelId: model.id }))
   ];
@@ -354,9 +366,10 @@ async function flushSettingsDraft() {
 }
 
 async function selectModelById(id) {
-  if (!state.models.some((model) => model.id === id)) return;
-  if (!filteredModels().some((model) => model.id === id)) Object.keys(state.filters).forEach((key) => { state.filters[key] = ""; });
-  state.selectedModelId = id;
+  const model = modelByIdentityId(id);
+  if (!model) return;
+  if (!filteredModels().some((item) => item.id === model.id)) Object.keys(state.filters).forEach((key) => { state.filters[key] = ""; });
+  state.selectedModelId = model.id;
   await loadSelectedSamples();
   renderAll();
 }
@@ -434,10 +447,32 @@ function ttftScore(milliseconds) {
   return gauge === null ? null : gauge * 100;
 }
 
+function passiveSampleForModel(model) {
+  const passive = model?.passiveMetrics;
+  if (!Number.isFinite(passive?.cacheHitRate) || !inSelectedRange(passive.observedAt)) return null;
+  return {
+    id: `passive:${passive.eventId || passive.observedAt}`,
+    timestamp: passive.observedAt,
+    status: "ok",
+    observed_model: model.observedModel,
+    canonical_model_id: model.canonicalModelId,
+    base_url: model.endpoint,
+    key_group: model.keyGroup,
+    reasoning_effort: model.reasoningEffort,
+    cache_hit_rate: passive.cacheHitRate,
+    ttft_ms: null,
+    measurement: { version: 2, source: "codex-rollout", eventId: passive.eventId || null }
+  };
+}
+
 function samplesForModel(model) {
   if (!model) return [];
-  if (model.id === state.selectedModelId && state.selectedSamples.length) return state.selectedSamples;
-  return state.logs.filter((sample) => sameIdentity(sample, model));
+  const rows = model.id === state.selectedModelId ? state.selectedSamples : state.logs.filter((sample) => sameIdentity(sample, model));
+  const passive = passiveSampleForModel(model);
+  if (!passive || rows.some((sample) => passive.measurement.eventId
+    ? sample.measurement?.eventId === passive.measurement.eventId
+    : sample.timestamp === passive.timestamp && sample.measurement?.source === "codex-rollout")) return rows;
+  return [...rows, passive];
 }
 
 function qualityRunsForModel(model) {
@@ -446,7 +481,8 @@ function qualityRunsForModel(model) {
 }
 
 function inSelectedRange(timestamp) {
-  return state.rangeHours === 0 || Date.parse(timestamp) >= Date.now() - state.rangeHours * 3600000;
+  const time = Date.parse(timestamp);
+  return Number.isFinite(time) && (state.rangeHours === 0 || time >= Date.now() - state.rangeHours * 3600000);
 }
 
 function metricPointsForModel(model, metric, count = 80) {
@@ -576,7 +612,7 @@ function chartSvg(lines, options = {}) {
   const height = options.height || 195;
   const compact = Boolean(options.compact);
   const pad = compact ? { top: 3, right: 3, bottom: 3, left: 3 } : options.axes
-    ? { top: 26, right: 62, bottom: 26, left: options.axes.filter((axis) => axis.side !== "right").length > 1 ? 112 : 54 }
+    ? { top: 26, right: 94 + Math.max(0, options.axes.filter((axis) => axis.side === "right").length - 1) * 80, bottom: 26, left: options.axes.filter((axis) => axis.side !== "right").length > 1 ? 112 : 54 }
     : { top: 10, right: 13, bottom: 24, left: 38 };
   const innerWidth = width - pad.left - pad.right;
   const innerHeight = height - pad.top - pad.bottom;
@@ -595,10 +631,10 @@ function chartSvg(lines, options = {}) {
   const y = (value, axis = axes[0]) => pad.top + (1 - (clamp(value, axis.minimum, axis.maximum) - axis.minimum) / Math.max(Number.EPSILON, axis.maximum - axis.minimum)) * innerHeight;
   let svg = `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="${escapeHtml(options.label || "指标趋势图")}">`;
   if (!compact) {
-    let leftAxis = 0;
+    let leftAxis = 0, rightAxis = 0;
     axes.forEach((axis, axisIndex) => {
       const right = axis.side === "right";
-      const labelX = options.axes ? right ? width - pad.right + 8 : pad.left - 8 - leftAxis++ * 58 : 2;
+      const labelX = options.axes ? right ? width - pad.right + 8 + rightAxis++ * 80 : pad.left - 8 - leftAxis++ * 58 : 2;
       const anchor = options.axes && !right ? "end" : "start";
       if (axis.label) svg += `<text class="chart-axis-title" text-anchor="${anchor}" x="${labelX}" y="11">${escapeHtml(axis.label)}</text>`;
       for (let index = 0; index <= 4; index += 1) {
@@ -624,6 +660,10 @@ function chartSvg(lines, options = {}) {
       svg += `<polygon class="chart-area" fill="${color}" points="${firstX},${height - pad.bottom} ${coordinates} ${lastX},${height - pad.bottom}"/>`;
     }
     if (points.length > 1) svg += `<polyline class="chart-line" data-series="${escapeHtml(name)}" data-axis="${axisIndex}" stroke="${color}" points="${coordinates}"/>`;
+    else if (points.length === 1) {
+      const py = y(points[0].value, axis);
+      svg += `<line class="chart-line" data-series="${escapeHtml(name)}" data-axis="${axisIndex}" stroke="${color}" x1="${pad.left}" x2="${width - pad.right}" y1="${py}" y2="${py}"/>`;
+    }
     svg += points.map((point, pointIndex) => {
       const px = x(point, pointIndex, points.length), py = y(point.value, axis);
       const value = `${name ? name + " · " : ""}${axis.tickLabel(point.value)}`, stamp = formatTimestamp(point.timestamp, true);
@@ -728,37 +768,43 @@ function updateModels(groups) {
       existing.agents = [...new Set([...existing.agents, agent.label || agent.id])];
       if (agent.sessionId && !existing.sessions.some(session => session.sessionId === agent.sessionId)) existing.sessions.push(agent);
       const passive = agent.passiveMetrics;
-      if (passive && Number.isFinite(passive.cacheHitRate)
-        && (!Number.isFinite(existing.passiveObservedAt)
-          || Date.parse(passive.observedAt || "") > existing.passiveObservedAt
-          || existing.cacheRate == null || existing.observationSource === "direct")) {
+      const passiveObservedAt = Date.parse(passive?.observedAt || "");
+      const passiveFallback = Number.isFinite(passive?.cacheHitRate) && inSelectedRange(passive.observedAt)
+        && (existing.cacheRate == null || existing.passiveMetrics);
+      if (passiveFallback && (!Number.isFinite(existing.passiveObservedAt) || passiveObservedAt > existing.passiveObservedAt)) {
+        if (!existing.passiveMetrics) {
+          existing.sampleCount += 1;
+          existing.totalCount += 1;
+        }
         existing.cacheRate = passive.cacheHitRate;
-        existing.cacheStatus = "available";
-        existing.cacheCoverage = 1;
-        if (!existing.cacheStats?.count) existing.cacheStats = { count: 1, min: passive.cacheHitRate, max: passive.cacheHitRate };
+        existing.cacheStatus = existing.sampleCount === 1 ? "available" : "partial";
+        existing.cacheCoverage = 1 / existing.sampleCount;
+        existing.cacheStats = { count: 1, min: passive.cacheHitRate, max: passive.cacheHitRate };
         existing.passiveMetrics = passive;
-        existing.passiveObservedAt = Date.parse(passive.observedAt || "") || Date.now();
+        existing.passiveObservedAt = passiveObservedAt;
         existing.cacheSource = "codex-rollout";
+        existing.status = existing.errorCount > 0 ? "attention" : "online";
         if (existing.observationSource === "direct") existing.observationSource = "passive";
       }
       return;
     }
     const passive = agent.passiveMetrics;
-    const passiveCache = Number.isFinite(passive?.cacheHitRate) ? passive.cacheHitRate : null;
+    const passiveObservedAt = Date.parse(passive?.observedAt || "");
+    const passiveCache = Number.isFinite(passive?.cacheHitRate) && inSelectedRange(passive.observedAt) ? passive.cacheHitRate : null;
     models.set(id, {
       id, observedModel: agent.model, canonicalModelId: matchedCanonicalId, source: null, conditionsId: null,
       reasoningEffort: reasoningEffortOf(agent),
       keyGroup: agent.keyGroup, label: agent.model, provider: agent.protocol,
-      endpoint: agent.baseUrl, sampleCount: 0, totalCount: 0, errorCount: 0, cacheRate: passiveCache,
+      endpoint: agent.baseUrl, sampleCount: passiveCache == null ? 0 : 1, totalCount: passiveCache == null ? 0 : 1, errorCount: 0, cacheRate: passiveCache,
       cacheStatus: passiveCache == null ? "unavailable" : "available", cacheCoverage: passiveCache == null ? 0 : 1,
       cacheStats: passiveCache == null ? {} : { count: 1, min: passiveCache, max: passiveCache }, ttftMs: null, ttftStats: {},
       durationMs: null, durationStats: {}, costUsd: null, costSampleCount: 0,
       matchCount: 0,
       observationSource: agent.proxyBaseUrl || isModivueProxyEndpoint(agent.baseUrl) ? "proxy" : passiveCache == null ? "direct" : "passive",
       rangeStart: null, rangeEnd: null, match, standardLabel: match.model?.label || match.candidate?.label || "未归一化",
-      status: "unsampled", color: agent.protocol === "anthropic" ? "mint" : "blue", quality: null,
-      qualityStats: {}, evaluator: null, configured: true, agents: [agent.label || agent.id], sessions: agent.sessionId ? [agent] : [], passiveMetrics: passive,
-      passiveObservedAt: Date.parse(passive?.observedAt || "") || null, cacheSource: passiveCache == null ? null : "codex-rollout"
+      status: passiveCache == null ? "unsampled" : "online", color: agent.protocol === "anthropic" ? "mint" : "blue", quality: null,
+      qualityStats: {}, evaluator: null, configured: true, agents: [agent.label || agent.id], sessions: agent.sessionId ? [agent] : [], passiveMetrics: passiveCache == null ? null : passive,
+      passiveObservedAt: passiveCache == null ? null : passiveObservedAt, cacheSource: passiveCache == null ? null : "codex-rollout"
     });
   });
   state.models = [...models.values()];
@@ -1074,7 +1120,7 @@ let islandHovered = false;
 let islandFocused = false;
 let islandState = { mode: "compact", modelId: null };
 let renderingIslandState = false;
-let focusAnchorPointer = null;
+let islandModeAnchor = null;
 function enterIslandState(event) {
   const next = transitionIsland(islandState, event);
   if (next.mode === islandState.mode && next.modelId === islandState.modelId) return;
@@ -1083,9 +1129,11 @@ function enterIslandState(event) {
     const source = $$("[data-island-model]").find((node) => node.dataset.identity === next.modelId)?.getBoundingClientRect();
     $("#island-focus").style.setProperty("--focus-origin", `${source ? source.y + source.height / 2 - stage.y - stage.height / 2 : 0}px`);
   }
+  islandModeAnchor = lastIslandPointer && (next.mode === "focus" || islandState.mode === "focus" && next.mode === "normal")
+    ? { screenX: lastIslandPointer.screenX, screenY: lastIslandPointer.screenY } : null;
+  clearTimeout(borderHoverTimer); borderHoverTimer = null;
+  clearTimeout(ringHoverTimer); ringHoverTimer = null; pendingRingId = null;
   islandState = next;
-  if (next.mode === "focus") focusAnchorPointer = lastIslandPointer ? { ...lastIslandPointer } : null;
-  if (next.mode === "compact") focusAnchorPointer = null;
   document.body.dataset.islandMode = next.mode;
   islandHovered = next.mode !== "compact";
   if (next.mode !== "focus") hidePopover();
@@ -1105,8 +1153,12 @@ function modelMetrics(model, includeBalance = false) {
     { kind: "cache", name: "Cache", value: formatPercent(model?.cacheRate), progress: Number.isFinite(model?.cacheRate) ? model.cacheRate * 100 : null, health: metricHealth("cache", Number.isFinite(model?.cacheRate) ? model.cacheRate * 100 : null), range: metricRange(model, "cache"), min: Number.isFinite(model?.cacheStats?.min) ? model.cacheStats.min * 100 : null, max: Number.isFinite(model?.cacheStats?.max) ? model.cacheStats.max * 100 : null },
     { kind: "ttft", name: "TTFT", value: formatDuration(model?.ttftMs), progress: ttftScore(model?.ttftMs), health: metricHealth("ttft", model?.ttftMs), range: metricRange(model, "ttft"), min: ttftScore(model?.ttftStats?.min), max: ttftScore(model?.ttftStats?.max) }
   ];
-  if (includeBalance) metrics.push({ kind: "balance", name: "余额", value: balanceText(balance), progress: balance?.status === "ok" && balance.ratio != null ? balance.ratio * 100 : null,
-    health: metricHealth("cache", balance?.status === "ok" && balance.ratio != null ? balance.ratio * 100 : null), range: balance?.status === "ok" ? balanceText({ ...balance, remaining: balance.initial }) : "未提供", min: 0, max: 100 });
+  if (includeBalance) {
+    const health = metricHealth("cache", balance?.status === "ok" && balance.ratio != null ? balance.ratio * 100 : null);
+    metrics.push({ kind: "balance", name: "余额", value: balanceText(balance), progress: balance?.status === "ok" && balance.ratio != null ? balance.ratio * 100 : null,
+      health: { ...health, label: `${translate("余额健康")}：${translate(health.label)}` },
+      range: balance?.status === "ok" ? `${translate("满环基准")}：${balanceText({ ...balance, remaining: balance.initial })}` : translate("未提供"), min: 0, max: 100 });
+  }
   return metrics;
 }
 
@@ -1329,9 +1381,11 @@ function renderMetricCard(cardSelector, value, stateText, stateTone, footLeft, f
   foot.lastElementChild.className = `delta ${stateTone === "online" ? "positive" : "neutral"}`;
 }
 
+function balanceRoot(value) {
+  return String(value || "").replace(/\/(?:api\/)?v1(?:beta)?\/?$/i, "").replace(/\/$/, "");
+}
 function balanceForModel(model) {
-  const root = value => String(value || "").replace(/\/(?:api\/)?v1(?:beta)?\/?$/i, "").replace(/\/$/, "");
-  return state.balances.find(item => item.keyGroup === model?.keyGroup && root(item.baseUrl) === root(model?.endpoint || model?.baseUrl));
+  return state.balances.find(item => item.keyGroup === model?.keyGroup && balanceRoot(item.baseUrl) === balanceRoot(model?.endpoint || model?.baseUrl));
 }
 function balanceText(item) {
   if (!item || item.status !== "ok") return "--";
@@ -1352,8 +1406,9 @@ function balanceBadge(model) {
 }
 function renderBalances() {
   const section = $("#balance-summary");
-  if (!section) return;
+  if (!section || layoutDragging()) return;
   section.innerHTML = `<div class="balance-heading"><span>${escapeHtml(translate("供应商余额"))}</span><span><button class="text-button" type="button" data-balance-open>${escapeHtml(translate("配置余额"))}</button><button class="text-button" type="button" data-action="refresh-balances" ${state.balanceRefreshing ? "disabled" : ""}>${escapeHtml(translate(state.balanceRefreshing ? "刷新中" : "刷新"))}</button></span></div>${state.balances.length ? `<div class="balance-grid">${state.balances.map(item => `<div class="balance-item"><span class="balance-ring" style="--balance:${item.status === "ok" ? (item.ratio ?? 0) * 100 : 0}%"><i></i></span><div><strong>${escapeHtml(item.label)} <small>${escapeHtml(item.keyGroup)}</small></strong><small>${escapeHtml(item.status === "ok" ? balanceText(item) : translate(item.status === "disabled" ? "未启用余额查询" : item.message || "余额不可用"))}</small></div></div>`).join("")}</div>` : `<p class="balance-empty">${escapeHtml(translate("尚未保存可查询余额的渠道"))}</p>`}`;
+  mountLayouts(document, "overview");
 }
 async function loadBalances(refresh = false) {
   if (state.balanceRefreshing) return;
@@ -1361,7 +1416,7 @@ async function loadBalances(refresh = false) {
   try {
     const result = await fetchJson(`/api/balances${refresh ? "?refresh=1" : ""}`);
     state.balances = result.balances || []; state.balanceAdapters = result.adapters || {};
-    renderModelSelectors(); renderMetrics();
+    renderModelSelectors(); renderMetrics(); renderCharts();
     const threshold = Number(state.settings.balanceAlertThreshold || 0) / 100;
     if (threshold <= 0) state.balanceAlerted.clear();
     if (threshold > 0) for (const item of state.balances) {
@@ -1370,11 +1425,9 @@ async function loadBalances(refresh = false) {
       if (state.balanceAlerted.has(item.providerId) || !state.settings.balanceAppAlerts && !state.settings.balanceSystemAlerts) continue;
       state.balanceAlerted.add(item.providerId);
       const message = `${item.label} · ${translate("余额低于告警阈值")}（${Math.round(item.ratio * 100)}%）`;
-      if (state.settings.balanceAppAlerts !== false) showToast(message, "warning");
-      if (state.settings.balanceSystemAlerts && hasDesktopBridge()) {
-        if (desktopMode === "island") void desktopRequest({ type: "notify", title: translate("Modivue · 余额告警"), body: message, id: `balance:${item.providerId}:${item.checkedAt}` }).catch(error => { state.balanceAlerted.delete(item.providerId); showToast(error.message, "warning"); });
-      }
-      else if (state.settings.balanceSystemAlerts && "Notification" in window && Notification.permission === "granted") new Notification("Modivue · 余额告警", { body: message });
+      void deliverAlert({ title: translate("Modivue · 余额告警"), body: message,
+        id: `balance:${item.providerId}:${item.checkedAt}`, type: "balance" })
+        .catch(error => { state.balanceAlerted.delete(item.providerId); showToast(error.message, "warning"); });
     }
   } finally { state.balanceRefreshing = false; renderBalances(); }
 }
@@ -1423,12 +1476,22 @@ function savePricingForm(form) {
   });
 }
 
+function mountCostSummary() {
+  const section = $("#cost-summary");
+  const parent = $(state.view === "overview" ? "#metric-grid" : "#cost-summary-slot");
+  if (section.parentElement !== parent) parent.prepend(section);
+  section.tabIndex = state.view === "overview" ? 0 : -1;
+  section.hidden = state.view === "settings";
+}
+
 function renderMetrics() {
   const model = selectedModel();
   const cost = verificationCost(qualityRunsForModel(model));
   const costNote = `${cost.known}/${cost.requests} 个请求有价格${cost.known < cost.requests ? " · 合计不含未知费用" : ""}`;
-  $("#cost-summary").hidden = state.view === "settings";
-  $("#cost-summary").innerHTML = `<div class="cost-heading"><span>核验费用</span><small>${escapeHtml(model?.label || "未选择对象")}</small></div><div class="cost-cell"><span>总花费</span><strong>${formatCost(cost.total)}</strong></div><div class="cost-cell"><span>平均单次</span><strong>${formatCost(cost.average)}</strong></div><div class="cost-cell"><span>最近单次</span><strong>${formatCost(cost.latest)}</strong></div><button type="button" class="cost-info" data-pricing-open title="${escapeHtml(costNote)} · ${escapeHtml(translate("配置渠道单价"))}" aria-label="${escapeHtml(translate("配置渠道单价"))}">ⓘ</button>`;
+  if (!layoutDragging()) {
+    mountCostSummary();
+    $("#cost-summary").innerHTML = `<div class="cost-heading"><span>核验费用</span><small>${escapeHtml(model?.label || "未选择对象")}</small></div><div class="cost-cell"><span>总花费</span><strong>${formatCost(cost.total)}</strong></div><div class="cost-cell"><span>平均单次</span><strong>${formatCost(cost.average)}</strong></div><div class="cost-cell"><span>最近单次</span><strong>${formatCost(cost.latest)}</strong></div><button type="button" class="cost-info" data-pricing-open title="${escapeHtml(costNote)} · ${escapeHtml(translate("配置渠道单价"))}" aria-label="${escapeHtml(translate("配置渠道单价"))}">ⓘ</button>`;
+  }
   $("#current-balance").hidden = state.view === "settings" || !model;
   $("#current-balance").innerHTML = `<span>${escapeHtml(translate("当前渠道余额"))}</span>${balanceBadge(model)}`;
   renderBalances();
@@ -1440,6 +1503,7 @@ function renderMetrics() {
     model?.verification?.measuredAt ? `${model.verification.stale ? "上次有效" : "采样于"} ${formatTimestamp(model.verification.measuredAt, true)}` : "暂无有效核验",
     activity.busy || !numeric ? activity.detail : model?.verification?.stale ? "最新检测未完成" : model?.verification?.directedModel ? `指向 ${model.verification.directedModel}` : model?.verification?.label);
   $(".quality-card .metric-source").textContent = numeric?.label || "候选模型分布 · Juice 证据";
+  $(".quality-card .metric-value").classList.toggle("metric-status-value", activity.busy || !numeric);
   $$(".metric-source").forEach(node => { node.parentElement.title = node.textContent; });
   const unsampled = model?.status === "unsampled";
   const failedOnly = Boolean(model && model.sampleCount === 0 && model.errorCount > 0);
@@ -1513,6 +1577,9 @@ function renderCharts() {
   const timeMaximum = timeValues.length ? Math.max(state.settings.ttftThresholdMs, ...timeValues) * 1.08 : state.settings.ttftThresholdMs;
   const formatMilliseconds = (value) => value >= 1000 ? `${(value / 1000).toFixed(1)}s` : `${Math.round(value)}ms`;
   const separateQualityAxis = selectedModel()?.verification?.numeric?.unit !== "%";
+  const balance = balanceForModel(selectedModel());
+  const since = Date.now() - Math.min(state.rangeHours || 168, 168) * 3600000;
+  const balancePoints = (balance?.history || []).filter(point => Date.parse(point.timestamp) >= since && Number.isFinite(point.value) && point.unit === balance.unit);
   const lines = [
     quality.length ? { points: quality, color: colors.mint, area: true, axisIndex: separateQualityAxis ? 2 : 0, name: "核验" } : null,
     cache.length ? { points: cache, color: colors.blue, axisIndex: 0, name: "Cache" } : null,
@@ -1524,6 +1591,13 @@ function renderCharts() {
     { minimum: 0, maximum: timeMaximum, tickLabel: formatMilliseconds, label: "时间", side: "right" }
   ];
   if (separateQualityAxis && quality.length) axes.push({ ...qualityChartOptions(selectedModel()), label: selectedModel().verification.numeric.label, side: "left" });
+  if (balancePoints.length && !state.hiddenTrendSeries.has("余额")) {
+    const values = balancePoints.map(point => point.value);
+    const minimum = Math.min(...values), maximum = Math.max(...values);
+    const pad = Math.max((maximum - minimum) * .15, Math.abs(maximum) * .01, .01);
+    lines.push({ points: balancePoints, color: colors.balance, axisIndex: axes.length, name: "余额" });
+    axes.push({ minimum: minimum - pad, maximum: maximum + pad, tickLabel: value => `${Number(value.toFixed(3))}`, label: `余额 (${balance.unit})`, side: "right" });
+  }
   $("#trend-chart").innerHTML = lines.length ? chartSvg(lines, { axes, label: `${formatRange()}指标趋势` }) : `<div class="empty-state chart-empty">当前模型暂无可绘制趋势。</div>`;
   $$(".legend [data-series]").forEach((button) => {
     const hidden = state.hiddenTrendSeries.has(button.dataset.series);
@@ -1533,7 +1607,7 @@ function renderCharts() {
   $$("#trend-chart .chart-sample").forEach((sample) => {
     sample.onclick = () => {
       const label = sample.getAttribute("aria-label") || "";
-      const view = label.includes("Cache") ? "cache" : label.includes("TTFT") || label.includes("总耗时") ? "ttft" : "quality";
+      const view = label.includes("余额") ? "cost" : label.includes("Cache") ? "cache" : label.includes("TTFT") || label.includes("总耗时") ? "ttft" : "quality";
       setView(view);
     };
   });
@@ -1545,6 +1619,7 @@ function renderCharts() {
       : { maximum: 100, tickLabel: (value) => `${Math.round(value)}%` };
     element.innerHTML = points.length ? chartSvg([{ points, color, area: true }], { width: 250, height: 38, minimum: 0, ...options, compact: true }) : `<div class="mini-empty">暂无趋势</div>`;
   });
+  if (state.view === "cost") renderActiveView();
 }
 
 function eventTitle(event) {
@@ -1556,34 +1631,88 @@ function eventTitle(event) {
 
 function isUnread(event) { return !state.settings.acknowledgedAt || event.timestamp > state.settings.acknowledgedAt; }
 
+function alertTypeEnabled(type) {
+  return state.settings[{ quality: "alertQuality", ttft: "alertTtft", cache: "alertCache", request: "alertRequest" }[type]] !== false;
+}
+
+function alertSoundPayload(type) {
+  const selected = state.settings[`alertSound${type[0].toUpperCase()}${type.slice(1)}`] || state.settings.alertSoundName;
+  return { sound: Boolean(state.settings.alertSound) && selected !== "off", soundName: selected, volume: state.settings.alertVolume / 100 };
+}
+
+function playBrowserAlertSound(alertType) {
+  const sound = alertSoundPayload(alertType);
+  if (!sound.sound || hasDesktopBridge()) return;
+  const AudioContext = globalThis.AudioContext || globalThis.webkitAudioContext;
+  if (!AudioContext) return;
+  try {
+    const context = new AudioContext();
+    const oscillator = context.createOscillator(), gain = context.createGain();
+    const profiles = { subtle: [440, "sine", 0.16], chime: [660, "sine", 0.24], urgent: [330, "square", 0.32] };
+    const [frequency, type, duration] = profiles[sound.soundName] || profiles.chime;
+    oscillator.frequency.value = frequency; oscillator.type = type;
+    gain.gain.setValueAtTime(Math.max(0, Math.min(1, sound.volume)) * 0.18, context.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + duration);
+    oscillator.connect(gain).connect(context.destination); oscillator.start(); oscillator.stop(context.currentTime + duration);
+    oscillator.addEventListener("ended", () => void context.close());
+  } catch {}
+}
+
+function deliverAlert({ title, body, id, type = "quality", tone = "warning", test = false }) {
+  const showApplicationAlert = (type === "balance" ? state.settings.balanceAppAlerts : state.settings.alertToasts) !== false;
+  if ((desktopMode !== "island" || test) && showApplicationAlert) showToast(`${title} · ${body}`, tone);
+  const system = Boolean(type === "balance" ? state.settings.balanceSystemAlerts : state.settings.notifications);
+  if (hasDesktopBridge()) {
+    if ((desktopMode === "island" || test) && (system || state.settings.alertSound)) {
+      return desktopRequest({ type: "notify", title, body, id, system, ...alertSoundPayload(type) });
+    }
+    return Promise.resolve();
+  }
+  if (system && "Notification" in window && Notification.permission === "granted") new Notification(title, { body, tag: `modivue-${id}`, silent: true });
+  playBrowserAlertSound(type);
+  return Promise.resolve();
+}
+
 function notifyNewEvents() {
-  if (!state.settings.notifications) return;
   for (const event of state.events.filter(isUnread)) {
+    if (!alertTypeEnabled(event.type)) continue;
     const id = String(event.id || `${event.type}:${event.timestamp}:${event.model}`);
     if (state.notifiedEventIds.has(id)) continue;
     state.notifiedEventIds.add(id);
     const title = `Modivue · ${translate(eventTitle(event))}`;
-    const body = `${event.model || translate("未知模型")} · ${translate(event.detail || "检测到异常")}`;
-    if (desktopMode !== "island") showToast(`${title} · ${body}`, event.level === "error" ? "error" : "warning");
-    if (hasDesktopBridge()) { if (desktopMode === "island") void desktopRequest({ type: "notify", title, body, id }).catch(error => showToast(error.message, "warning")); }
-    else if ("Notification" in window && Notification.permission === "granted") new Notification(title, { body, tag: `modivue-${id}` });
+    const body = [event.model || translate("未知模型"), endpointLabel(event.baseUrl), event.keyGroup || translate("无分组"),
+      event.reasoningEffort || translate("默认档位"), translate(event.detail || "检测到异常")].join(" · ");
+    void deliverAlert({ title, body, id, type: event.type, tone: event.level === "error" ? "error" : "warning" }).catch(error => showToast(error.message, "warning"));
   }
 }
 
 function eventRow(event, detailed = false) {
   const unread = isUnread(event);
   const icon = event.level === "error" ? "!" : event.type === "cache" ? "C" : event.type === "quality" ? "Q" : "T";
-  return `<div class="event-row ${unread ? "unread" : ""}"><span class="event-icon ${event.level === "error" ? "danger" : event.type === "cache" ? "info" : "warning"}">${icon}</span><div><strong>${eventTitle(event)}${unread ? "<i class=\"unread-dot\"></i>" : ""}</strong><small>${escapeHtml(event.model)} · ${escapeHtml(event.detail)}${detailed ? ` · ${escapeHtml(endpointLabel(event.baseUrl))} · ${escapeHtml(event.keyGroup || "无分组")}` : ""}</small></div><time datetime="${escapeHtml(event.timestamp)}">${formatTimestamp(event.timestamp, detailed)}</time></div>`;
+  const view = event.type === "cache" ? "cache" : event.type === "ttft" ? "ttft" : event.type === "quality" ? "quality" : "logs";
+  const route = detailed ? ` · ${escapeHtml(endpointLabel(event.baseUrl))} · ${escapeHtml(event.keyGroup || translate("无分组"))} · ${escapeHtml(event.reasoningEffort || translate("默认档位"))}` : "";
+  return `<button type="button" class="event-row event-action ${unread ? "unread" : ""}" data-event-model="${escapeHtml(identityId(event))}" data-event-view="${view}"><span class="event-icon ${event.level === "error" ? "danger" : event.type === "cache" ? "info" : "warning"}">${icon}</span><div><strong>${eventTitle(event)}${unread ? "<i class=\"unread-dot\"></i>" : ""}</strong><small>${escapeHtml(event.model)} · ${escapeHtml(event.detail)}${route}</small></div><time datetime="${escapeHtml(event.timestamp)}">${formatTimestamp(event.timestamp, detailed)}</time></button>`;
+}
+
+async function openEventTarget(button) {
+  const model = modelByIdentityId(button.dataset.eventModel);
+  if (!model) return;
+  state.selectedModelId = model.id;
+  await loadSelectedSamples();
+  setView(button.dataset.eventView || "overview");
 }
 
 function renderEvents() {
   const events = filteredEvents();
+  const model = selectedModel();
+  const selectedEvents = model ? events.filter((event) => sameIdentity(event, model)) : [];
   const unreadCount = events.filter(isUnread).length;
   const badge = $("#nav-alert-badge");
   badge.textContent = unreadCount > 99 ? "99+" : String(unreadCount);
   badge.hidden = unreadCount === 0;
   const list = $(".events-panel .event-list");
-  list.innerHTML = events.length ? events.slice(0, 5).map((event) => eventRow(event)).join("") : `<div class="empty-state">当前范围内没有告警。</div>`;
+  list.innerHTML = selectedEvents.length ? selectedEvents.slice(0, 5).map((event) => eventRow(event)).join("") : `<div class="empty-state">当前四元组范围内没有告警。</div>`;
+  $$('[data-event-model]', list).forEach((button) => button.addEventListener("click", () => void openEventTarget(button)));
 }
 
 function renderOverview() {
@@ -1592,7 +1721,10 @@ function renderOverview() {
   renderMetrics();
   renderCharts();
   renderEvents();
-  $(".trend-panel .muted").textContent = `${selectedModel()?.label || "当前模型"} · ${formatRange()} · ${state.selectedSamples.length} 个调用样本`;
+  const balanceSamples = balanceForModel(selectedModel())?.history?.filter(point => Date.parse(point.timestamp) >= Date.now() - Math.min(state.rangeHours || 168, 168) * 3600000).length || 0;
+  const callSampleText = translate("{n} 个调用样本").replace("{n}", String(samplesForModel(selectedModel()).length));
+  const balanceSampleText = translate("{n} 个余额快照").replace("{n}", String(balanceSamples));
+  $(".trend-panel .muted").textContent = `${selectedModel()?.label || translate("当前模型")} · ${formatRange()} · ${callSampleText} · ${balanceSampleText}`;
 }
 
 function modelsView() {
@@ -1603,8 +1735,8 @@ function modelsView() {
     if (existing) { existing.count += model.matchCount; existing.routes++; }
     else names.set(key, { ...model, count: model.matchCount, routes: 1 });
   }
-  const rows = [...names.values()].map(model => `<div class="data-line"><span><strong>${escapeHtml(model.observedModel)}</strong><small>${model.routes} 个监控对象</small></span><span>${escapeHtml(model.standardLabel)}</span><span>${Math.round((model.match.confidence || 0) * 100)}%</span><span>${formatInteger(model.count)} 次</span><span class="pill ${model.match.status === "matched" ? "green" : model.match.status === "ambiguous" ? "yellow" : "gray"}">${model.match.status === "matched" ? "已归一化" : model.match.status === "ambiguous" ? "待确认" : "未匹配"}</span></div>`).join("") || `<div class="empty-state">暂无观测模型。</div>`;
-  return `<div class="view-stack"><article class="panel model-names-panel">${viewHeader("模型名称对照", "将渠道返回的名称对应到 models.dev 标准目录。同名模型合并显示；名称相似度只用于整理名称。", `<button class="text-button" data-action="sync-catalog">重新同步</button><button class="text-button" data-action="question-verification">前往模型核验</button>`)}<div class="data-list"><div class="data-line header"><span>观测模型</span><span>标准模型</span><span>名称相似度</span><span>观测样本</span><span>状态</span></div>${rows}</div></article></div>`;
+  const rows = [...names.values()].map(model => `<div class="data-line"><span><strong>${escapeHtml(model.observedModel)}</strong><small>${model.routes} 个监控对象</small></span><span>${escapeHtml(model.standardLabel)}${model.match.status === "ambiguous" ? `<small>${model.match.alternatives.map(item => escapeHtml(item.id)).join(" · ")}</small>` : ""}</span><span>${Math.round((model.match.confidence || 0) * 100)}%</span><span>${formatInteger(model.count)} 次</span><span class="pill ${model.match.status === "matched" ? "green" : model.match.status === "ambiguous" ? "yellow" : "gray"}">${model.match.status === "matched" ? "已归一化" : model.match.status === "ambiguous" ? "多个目录候选" : "未匹配"}</span></div>`).join("") || `<div class="empty-state">暂无观测模型。</div>`;
+  return `<div class="view-stack"><article class="panel model-names-panel">${viewHeader("模型名称对照", "将渠道返回的名称对应到 models.dev 标准目录。同名模型合并显示；名称相似度只用于整理名称。多个候选并列时保留原名称；此页可在设置的显示内容中隐藏。", `<button class="text-button" data-action="sync-catalog">重新同步</button><button class="text-button" data-action="question-verification">前往模型核验</button>`)}<p class="catalog-status" id="catalog-status"><a href="https://models.dev" target="_blank" rel="noreferrer">models.dev</a> · ${escapeHtml(state.catalogStatus)}</p><div class="data-list"><div class="data-line header"><span>观测模型</span><span>标准模型</span><span>名称相似度</span><span>观测样本</span><span>状态</span></div>${rows}</div></article></div>`;
 }
 
 function qualityDegradationCount(model) {
@@ -1701,13 +1833,16 @@ function juiceDirectionReport(run) {
 }
 
 function modelDirectionReport(run) {
-  const rows = run?.metadata?.candidateDistribution;
-  if (!Array.isArray(rows) || !rows.length) return "";
+  const candidates = run?.metadata?.candidateDistribution;
+  if (!Array.isArray(candidates) || !candidates.length) return "";
   const meow = run.evaluator_id === "meow-fingerprint";
-  return `<section class="distribution-report model-direction-report"><header><h3>${meow ? "Meow 候选模型指向" : "候选模型分布指向"}</h3><span>${meow ? "候选特征命中数及相对证据；匹配度不是身份概率" : "HLWY 相对匹配比例，非身份后验概率"}</span></header>
-    <div class="distribution-row distribution-head"><span>候选模型</span><span>匹配度</span><span>${meow ? "特征命中" : "JSD"}</span><span>${meow ? "命中比例" : "余弦"}</span><span>${meow ? "强指向阈值" : "参与样本"}</span></div>
-    ${rows.map((row) => `<div class="distribution-row"><strong>${escapeHtml(row.model)}</strong><span><i style="--frequency:${clamp(row.relativeMatch, 0, 100)}%;--frequency-color:var(--mint)"></i><b>${row.relativeMatch.toFixed(3)}%</b></span><span>${meow ? Number.isFinite(row.featureHitCount) ? `${row.featureHitCount} / ${run.metadata.sampleCount} 次` : "旧记录未保存特征数" : Number(row.jsd).toFixed(4)}</span><span>${meow ? Number.isFinite(row.featureHitRatio) ? `${row.featureHitRatio.toFixed(1)}%` : "未记录" : (row.cosine * 100).toFixed(1) + "%"}</span><span>${meow ? Number.isFinite(row.threshold) ? row.threshold.toFixed(3) + "%" : "--" : Number.isFinite(row.sampleCount) ? row.sampleCount : Number.isFinite(run.metadata.sampleCount) ? run.metadata.sampleCount : "--"}</span></div>`).join("")}
-    <footer class="distribution-foot">${meow ? "特征命中统计落在候选每题最高参考类别的回答（并列类别均计入）；候选可共享特征，所以命中数可能相同。参与样本是本轮有效回答数。匹配度仍按上游完整分布公式计算。" : "参与样本为所有候选共用的有效回答数；指向按完整答案分布计算。"}</footer></section>`;
+  const rows = meow ? candidates : [...candidates].sort((a, b) => b.relativeMatch - a.relativeMatch);
+  const match = row => row.relativeMatch;
+  return `<section class="distribution-report model-direction-report"><header><h3>${meow ? "Meow 候选模型指向" : "HLWY 候选参考比较"}</h3><span>${meow ? "候选特征命中数及相对证据；匹配度不是身份概率" : "相对匹配按候选间比例显示；不是身份置信度"}</span></header>
+    ${meow ? "" : `<p>${escapeHtml(translate("申报模型参考"))}：<span translate="no">${escapeHtml(run.metadata.baselineModel)}</span> · ${escapeHtml(translate("最高相对匹配参考"))}：<span translate="no">${escapeHtml(rows[0].model)}</span></p>`}
+    <div class="distribution-row distribution-head"><span>候选模型</span><span>${meow ? "匹配度" : "相对匹配"}</span><span>${meow ? "特征命中" : "JSD"}</span><span>${meow ? "命中比例" : "余弦"}</span><span>${meow ? "强指向阈值" : "参与样本"}</span></div>
+    ${rows.map((row) => `<div class="distribution-row"><strong>${escapeHtml(row.model)}</strong><span><i style="--frequency:${clamp(match(row), 0, 100)}%;--frequency-color:var(--mint)"></i><b>${Number.isFinite(match(row)) ? match(row).toFixed(3) + "%" : "--"}</b></span><span>${meow ? Number.isFinite(row.featureHitCount) ? `${row.featureHitCount} / ${run.metadata.sampleCount} 次` : "旧记录未保存特征数" : Number(row.jsd).toFixed(4)}</span><span>${meow ? Number.isFinite(row.featureHitRatio) ? `${row.featureHitRatio.toFixed(1)}%` : "未记录" : (row.cosine * 100).toFixed(1) + "%"}</span><span>${meow ? Number.isFinite(row.threshold) ? row.threshold.toFixed(3) + "%" : "--" : row.sampleCount ?? run.metadata.sampleCount ?? "--"}</span></div>`).join("")}
+    <footer class="distribution-foot">${meow ? "特征命中统计落在候选每题最高参考类别的回答（并列类别均计入）；候选可共享特征，所以命中数可能相同。参与样本是本轮有效回答数。匹配度仍按上游完整分布公式计算。" : "顶部匹配度 = 50 ×（众数接近度 + 余弦相似度 × exp(-JSD)），对应申报模型参考。候选表把余弦相似度 × exp(-JSD) 经 softmax 转为相对比例；两者不是同一指标。50 个样本可完成分布比较，但不产生模型身份判定阈值。"}</footer></section>`;
 }
 
 function verificationCost(runs) {
@@ -1723,6 +1858,48 @@ function verificationCost(runs) {
     known: known.length, requests: requests.length };
 }
 
+function providerBalanceCards() {
+  const rangeHours = Math.min(state.rangeHours || 168, 168);
+  const now = Date.now(), since = now - rangeHours * 3600000;
+  const route = state.filters.baseUrl ? balanceRoot(JSON.parse(state.filters.baseUrl)) : null;
+  const keyGroup = state.filters.keyGroup ? JSON.parse(state.filters.keyGroup) : null;
+  const modelProviders = state.filters.model || state.filters.reasoningEffort
+    ? new Set(filteredModels().map(model => balanceForModel(model)?.providerId)) : null;
+  const providers = state.balances.filter(item => (!route || balanceRoot(item.baseUrl) === route)
+    && (!state.filters.keyGroup || item.keyGroup === keyGroup)
+    && (!modelProviders || modelProviders.has(item.providerId)));
+  if (!providers.length) return `<article class="panel provider-balance-card" id="provider-balance-empty">${viewHeader("渠道余额趋势", "")}
+    <div class="empty-state">${escapeHtml(translate("当前筛选下暂无余额渠道"))}</div></article>`;
+  return providers.map(item => {
+    const history = (item.history || []).filter(point => Number.isFinite(point.value) && point.unit
+      && Date.parse(point.timestamp) >= since && Date.parse(point.timestamp) <= now)
+      .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
+    const units = [...new Set([item.unit, ...history.map(point => point.unit)].filter(Boolean))];
+    const current = item.status === "ok" ? balanceText(item)
+      : translate(item.status === "disabled" ? "未启用余额查询" : item.message || "余额不可用");
+    const charts = units.map(unit => {
+      const points = history.filter(point => point.unit === unit);
+      const values = points.map(point => point.value);
+      const minimum = Math.min(...values), maximum = Math.max(...values);
+      const padding = Math.max((maximum - minimum) * .15, Math.abs(maximum) * .01, .01);
+      const samples = translate("{n} 个余额快照").replace("{n}", String(points.length));
+      const range = points.length ? `${formatTimestamp(points[0].timestamp, true)} – ${formatTimestamp(points.at(-1).timestamp, true)}` : "";
+      const chart = points.length ? chartSvg([{ points, color: colors.balance, name: `${translate("余额")} (${unit})` }], {
+        width: 640, height: 210, minimum: minimum - padding, maximum: maximum + padding,
+        tickLabel: value => new Intl.NumberFormat(currentLocale(), { maximumFractionDigits: 3, notation: "compact" }).format(value),
+        label: `${item.label} · ${translate("渠道余额趋势")} · ${unit} · ${samples}`
+      }) : `<div class="empty-state chart-empty">${escapeHtml(translate("当前时间范围内暂无余额快照"))}</div>`;
+      return `<section class="provider-balance-series"><div class="provider-balance-meta"><strong>${escapeHtml(unit)}</strong><span>${escapeHtml(samples)}</span></div>
+        <div class="trend-chart provider-balance-chart">${chart}</div>${range ? `<p class="provider-balance-time">${escapeHtml(range)}</p>` : ""}</section>`;
+    }).join("");
+    return `<article class="panel provider-balance-card" id="provider-balance-${escapeHtml(encodeURIComponent(item.providerId))}">
+      <div class="provider-balance-heading"><div><h3 translate="no">${escapeHtml(item.label)}</h3><p translate="no">${escapeHtml(endpointLabel(item.baseUrl))} · Key ${escapeHtml(item.keyGroup)}</p></div>
+        <div class="provider-balance-current"><small>${escapeHtml(translate("当前渠道余额"))}</small><strong>${escapeHtml(current)}</strong></div></div>
+      <p class="muted">${escapeHtml(translate("渠道余额趋势"))} · ${escapeHtml(translate(formatRange(rangeHours)))} · ${escapeHtml(translate("余额历史保留 7 天；按渠道和单位分别统计"))}</p>
+      ${charts || `<div class="empty-state chart-empty">${escapeHtml(translate("当前时间范围内暂无余额快照"))}</div>`}</article>`;
+  }).join("");
+}
+
 function costsView() {
   const model = selectedModel();
   const cost = verificationCost(qualityRunsForModel(model));
@@ -1730,7 +1907,7 @@ function costsView() {
     .filter(request => inSelectedRange(request.timestamp))
     .sort((a, b) => String(b.timestamp || "").localeCompare(String(a.timestamp || "")));
   const rows = requests.slice(0, 40);
-  return `<div class="view-stack"><article class="panel cost-view"><div class="view-header"><div><h2>花费统计</h2><p class="muted">${escapeHtml(model?.label || "当前未选择模型")} · 当前时间范围内的真实请求费用</p></div></div><div class="cost-view-summary"><div><span>总花费</span><strong>${formatCost(cost.total)}</strong></div><div><span>平均单次</span><strong>${formatCost(cost.average)}</strong></div><div><span>最近单次</span><strong>${formatCost(cost.latest)}</strong></div><div><span>已知 / 总请求</span><strong>${cost.known} / ${cost.requests}</strong></div></div>${rows.length ? `<div class="cost-request-list"><div class="cost-request-head"><span>时间</span><span>费用</span><span>来源</span><span>状态</span></div>${rows.map(request => `<div class="cost-request-row"><time>${escapeHtml(formatTimestamp(request.timestamp, true))}</time><strong>${formatCost(request.costUsd)}</strong><span>${escapeHtml(translate(requestCostLabel(request)))}</span><span>${escapeHtml(request.status === "ok" ? "完成" : request.error || "未记录")}</span></div>`).join("")}</div>` : `<div class="empty-state">当前模型暂无可统计的请求费用。</div>`}</article></div>`;
+  return `<div class="view-stack"><article class="panel cost-view" id="cost-requests"><div class="view-header"><div><h2>花费统计</h2><p class="muted">${escapeHtml(model?.label || "当前未选择模型")} · 当前时间范围内的真实请求费用</p></div></div><div class="cost-view-summary"><div><span>总花费</span><strong>${formatCost(cost.total)}</strong></div><div><span>平均单次</span><strong>${formatCost(cost.average)}</strong></div><div><span>最近单次</span><strong>${formatCost(cost.latest)}</strong></div><div><span>已知 / 总请求</span><strong>${cost.known} / ${cost.requests}</strong></div></div>${rows.length ? `<div class="cost-request-list"><div class="cost-request-head"><span>时间</span><span>费用</span><span>来源</span><span>状态</span></div>${rows.map(request => `<div class="cost-request-row"><time>${escapeHtml(formatTimestamp(request.timestamp, true))}</time><strong>${formatCost(request.costUsd)}</strong><span>${escapeHtml(translate(requestCostLabel(request)))}</span><span>${escapeHtml(request.status === "ok" ? "完成" : request.error || "未记录")}</span></div>`).join("")}</div>` : `<div class="empty-state">当前模型暂无可统计的请求费用。</div>`}</article>${providerBalanceCards()}</div>`;
 }
 
 const trustedPurposeFor = { "probability-probe": "probability", "hlwy-fingerprint": "hlwy", juice: "juice", "one-token": "one-token", "astra-community": "astra-community", "meow-fingerprint": "meow-fingerprint" };
@@ -1786,11 +1963,11 @@ function verificationPlan(model, method = state.settings.evaluatorId) {
   if (availability.blocked) return { blocked: true, external: ["ztest", "bazaarlink-probe"].includes(method), label: availability.guidance };
   if (method === "bazaarlink-probe") return { external: true, label: "官方远程综合检测；按当前四元组单独启用，可持续运行并保存逐题报告。" };
   const plan = (samples, maxAttempts = samples, note = "") => ({ samples, maxAttempts,
-    label: `计划 ${samples} 次有效回答 · 最多 ${maxAttempts} 次请求${note ? ` · ${note}` : ""}` });
+    label: `计划 ${samples} 次有效回答 · 最多 ${maxAttempts} 次请求${note ? ` · ${translate(note)}` : ""}` });
   if (method === "astra-community") return plan(5 * state.settings.astraSamples);
   if (method === "one-token") return plan(10 * state.settings.oneTokenSamples);
   if (method === "ztest") return { external: true, label: "Ztest 官方检测 · 浏览器验证后自动保存报告" };
-  if (method === "ztest-local") return plan(5, 5, "本地兼容探针，不上传 Key");
+  if (method === "ztest-local") return plan(5, 15, "每个失败探针最多尝试 3 次；成功项不重测");
   if (method === "custom-question") return plan(1, 3, state.questions.find(question => question.id === state.settings.defaultQuestionId)?.title || "请选择测试题目");
   if (method === "juice" && state.settings.juiceMode === "raw") return plan(1, 1, "原始观测，未校准");
   if (!target) return { label: "选择可用的会话后显示请求计划" };
@@ -1988,24 +2165,24 @@ function qualityRunReport(run, scope = "selected") {
     return `<section class="distribution-report"><header><h3 translate="no">${escapeHtml(cell.prompt || cell.id || "探针")}</h3><span>实际 ${total} / 计划 ${cell.planned ?? "--"} · ${cell.referenceKind === "fitted-predictive" ? "参考为申报模型拟合分布的预测比例" : cell.reference ? "参考为申报模型基线" : "旧记录未保存参考分布"}</span></header><div class="distribution-row distribution-head"><span>回答</span><span>实际次数 / 比例</span><span>参考基线比例</span></div>${Object.entries(cell.counts || {}).map(([answer, count]) => `<div class="distribution-row"><strong translate="no">${escapeHtml(answer)}</strong><span><i style="--frequency:${total ? count / total * 100 : 0}%;--frequency-color:var(--mint)"></i><b>${count} 次 · ${total ? (count / total * 100).toFixed(1) : "0.0"}%</b></span><span>${Number.isFinite((cell.reference?.[answer] ?? cell.reference?.__UNSEEN_IN_TRAINING__)) ? formatPercent((cell.reference[answer] ?? cell.reference.__UNSEEN_IN_TRAINING__), 1) : cell.reference ? "未覆盖该回答" : "未记录参考"}</span></div>`).join("")}</section>`;
   }).join("");
   const caseSummary = (metadata.observations || []).map((cell) => {
-    const valid = Number.isFinite(cell.sampleCount) ? cell.sampleCount : Object.values(cell.counts || {}).reduce((sum, count) => sum + Number(count || 0), 0);
+    const valid = Number.isFinite(cell.sampleCount) ? cell.sampleCount : run.evaluator_id === "ztest-local" ? Number(cell.status === "success") : Object.values(cell.counts || {}).reduce((sum, count) => sum + Number(count || 0), 0);
     const planned = Number.isFinite(cell.planned) ? cell.planned : Number.isFinite(cell.requested) ? cell.requested : null;
     const attempts = Number.isFinite(cell.attempts) ? cell.attempts : null;
-    const label = cell.prompt || cell.id || "探针案例";
+    const label = cell.prompt || cell.label || cell.id || "探针案例";
     return `<div class="verification-case"><span translate="no" title="${escapeHtml(label)}">${escapeHtml(label)}</span><strong>${valid}${planned === null ? "" : ` / ${planned}`}</strong><small>${attempts === null ? "" : `${attempts} 次尝试`}</small></div>`;
   }).join("");
   const external = run.evaluator_id === "ztest" ? metadata.externalReport : null;
   const externalSummary = external ? `<section class="distribution-report"><header><h3>Ztest 探针明细</h3><a href="${escapeHtml(metadata.source)}" target="_blank" rel="noreferrer">查看源报告</a></header><p>${escapeHtml(external.endpoint_masked || "")} · ${escapeHtml(external.model?.display_name || "")} · ${escapeHtml(external.profile || "")}</p>${external.probe_results.map(probe => `<div class="external-probe"><strong>${escapeHtml(probe.probe_name || probe.probe_code)}</strong><span>${escapeHtml(probe.status)}</span><span>${probe.score ?? "--"}</span><span>${formatDuration(probe.latency_ms)}</span></div>`).join("")}</section>` : "";
   const presentationRecheck = metadata.question?.match === "exact" && metadata.matched !== comparableAnswer(metadata.actual, metadata.question.answer);
-  const verdict = legacy ? "旧版判定无效" : escapeHtml(verificationRunLabel(run));
+  const verdict = legacy ? translate("旧版判定无效") : escapeHtml(translate(verificationRunLabel(run)));
   const requests = Array.isArray(metadata.requests) ? metadata.requests : [];
   const pricedRequests = requests.filter((request) => Number.isFinite(request.costUsd));
   const totalCost = pricedRequests.reduce((sum, request) => sum + request.costUsd, 0);
   const duration = requests.filter((request) => Number.isFinite(request.durationMs));
   const reasonLabels = { samples_incomplete: "有效样本未达 60% 要求", no_valid_samples: "没有完整有效答案", no_threshold: "候选未超过判定线", multiple_thresholds: "最高候选不唯一", unknown_claimed_model: "基准未覆盖申报模型", uncalibrated: "缺少判定线", screen_preview: "预览结果需完整采样确认",  baseline_cell_missing: "缺少题目基准", samples_exceed_plan: "样本超过计划", target_inactive: "Agent 已待命或切换渠道", monitoring_paused: "监测暂时暂停", budget_exhausted: "达到每日预算上限", authentication_failed: "提供方鉴权失败" };
-  return `<section class="historical-report" data-report-key="${detailKey}"><h3 class="report-method-name">${escapeHtml(qualityRunMethod(run))}</h3>${legacyNotice}<div class="verification-metrics"><div><span>检测结论</span><strong>${verdict}</strong><small>${escapeHtml(presentationRecheck ? verificationRunLabel(run) : run.rationale || "未提供")}</small></div><div><span>有效样本</span><strong>${metadata.sampleCount ?? "--"}</strong><small>${escapeHtml(metadata.reasoningEffort || "未记录档位")} · ${escapeHtml(metadata.revision || "未记录基准版本")}</small></div></div>
+  return `<section class="historical-report" data-report-key="${detailKey}"><h3 class="report-method-name">${escapeHtml(qualityRunMethod(run))}</h3>${legacyNotice}<div class="verification-metrics"><div><span>检测结论</span><strong>${verdict}</strong><small>${escapeHtml(presentationRecheck ? translate(verificationRunLabel(run)) : run.rationale || "未提供")}</small></div><div><span>有效样本</span><strong>${metadata.sampleCount ?? "--"}</strong><small>${escapeHtml(metadata.reasoningEffort || "未记录档位")} · ${escapeHtml(metadata.revision || "未记录基准版本")}</small></div></div>
     ${presentationRecheck ? `<p class="report-notice">已按答案格式归一化复核显示。历史原始判定和回答保留在原始 JSON 中。</p>` : ""}
-    ${requests.some(request => request.upstreamError?.message) ? `<p class="report-notice"><span>上游返回错误</span>：<span translate="no">${escapeHtml(requests.findLast(request => request.upstreamError?.message).upstreamError.message)}</span></p>` : ""}
+    ${run.status !== "ok" && requests.some(request => request.upstreamError?.message) ? `<p class="report-notice"><span>上游返回错误</span>：<span translate="no">${escapeHtml(requests.findLast(request => request.upstreamError?.message).upstreamError.message)}</span></p>` : ""}
     ${metadata.question ? `<section class="question-result"><h3>${escapeHtml(metadata.question.title)}</h3><dl><dt>参考答案</dt><dd>${escapeHtml(metadata.question.answer)}</dd>${metadata.parsedAnswer ? `<dt>解析答案</dt><dd><strong>${escapeHtml(metadata.parsedAnswer)}</strong> · ${metadata.answerMatched === true ? "匹配" : metadata.answerMatched === false ? "不匹配" : "待复核"}</dd>` : ""}</dl>${metadata.actual ? `<details data-detail-key="question-answer-${detailKey}"><summary>查看模型回答${metadata.partialAnswer ? "（未完成）" : ""}</summary><p class="question-prompt">${escapeHtml(metadata.actual)}</p></details>` : ""}${metadata.proof ? `<details data-detail-key="question-proof-${detailKey}" open><summary>理由 / 证明</summary><p class="question-prompt">${escapeHtml(metadata.proof)}</p></details>` : ""}</section>` : ""}
     ${Number.isFinite(metadata.jsd) ? `<p>JSD ${metadata.jsd.toFixed(4)}</p>` : ""}
     ${metadata.conditionNotice ? `<p class="report-notice">${escapeHtml(metadata.conditionNotice)}</p>` : ""}
@@ -2018,7 +2195,8 @@ function qualityRunReport(run, scope = "selected") {
     ${externalSummary}${run.evaluator_id === "bazaarlink-probe" ? bazaarlinkReport(metadata) : ""}${distributionReport(metadata)}${!legacy && ["hlwy-fingerprint", "meow-fingerprint"].includes(run.evaluator_id) ? modelDirectionReport({ ...run, metadata }) : run.evaluator_id === "juice" ? juiceDirectionReport(run) : ""}${observations}
     ${metadata.results?.length ? `<section class="distribution-report"><h3>KBF 知识边界核验</h3><p>p₀ ${metadata.p0.toFixed(6)} · p ${metadata.pValue.toFixed(6)} · ${metadata.discrepancies} / ${metadata.parsedAnswers}</p>${metadata.results.map(result => `<div class="distribution-row"><strong translate="no">${escapeHtml(result.name)}</strong><span>${result.answer}</span><span>${result.actual ?? "--"}</span><span>${result.matched ? "匹配" : "不匹配"}</span></div>`).join("")}</section>` : ""}
     ${metadata.referenceDataset?.distributions?.length ? `<details data-detail-key="reference-${detailKey}"><summary>OpenRouter 参考样本 · ${metadata.referenceDataset.validSamples} 条</summary><p translate="no">${escapeHtml(metadata.referenceDataset.notice)}</p>${metadata.referenceDataset.distributions.map(item => `<div class="distribution-row"><strong translate="no">${escapeHtml(item.model)} · ${escapeHtml(item.cell)}</strong><span>${item.sampleCount}</span><span translate="no">${escapeHtml(item.profile)}</span><span translate="no">${escapeHtml(Object.entries(item.counts).map(([answer, count]) => `${answer}: ${count}`).join(" · "))}</span></div>`).join("")}</details>` : ""}
-    ${metadata.failures?.length ? `<details class="report-failures" data-detail-key="failures-${detailKey}"><summary>失败尝试 ${metadata.failures.length} 次</summary>${metadata.failures.map((failure) => `<p>#${failure.attempt} · ${escapeHtml(failure.cellId)} · ${escapeHtml(failure.error)}</p>`).join("")}</details>` : ""}
+    ${run.status === "ok" && metadata.failures?.length ? `<p class="muted">${escapeHtml(translate("采样已完成；已恢复的失败尝试保留在下方明细，不影响已收集的有效样本。"))}</p>` : ""}
+    ${metadata.failures?.length ? `<details class="report-failures" data-detail-key="failures-${detailKey}"><summary>失败尝试 ${metadata.failures.length} 次</summary>${metadata.failures.map((failure, index) => `<p>#${failure.attempt ?? index + 1} · ${escapeHtml(failure.label || failure.cellId || failure.id || "")} · ${escapeHtml(failure.error)}</p>`).join("")}</details>` : ""}
     ${requests.length ? `<details class="report-requests" data-detail-key="requests-${detailKey}"><summary>请求明细 ${requests.length} 次</summary><div class="report-request-head"><span>时间</span><span>耗时</span><span>费用</span><span>状态</span></div>${requests.map((request) => `<div class="report-request-row"><time>${escapeHtml(formatTimestamp(request.timestamp))}</time><span>${formatDuration(request.durationMs)}</span><span>${formatCost(request.costUsd)} <small class="request-cost-source" title="${escapeHtml(request.costDetails?.field || requestCostLabel(request))}">${escapeHtml(translate(requestCostLabel(request)))}</small></span><span>${escapeHtml(request.upstreamError?.message || request.error || (request.status === "ok" ? "完成" : request.status || "未记录"))}</span></div>`).join("")}</details>` : ""}
     <details data-detail-key="raw-${detailKey}"><summary>原始 JSON 与采样条件</summary><pre>${escapeHtml(JSON.stringify(run, null, 2))}</pre></details></section>`;
 }
@@ -2061,7 +2239,11 @@ function settingsView() {
     const route = routeId === "default" ? "" : `/${routeId}`;
     return `<div><span>${escapeHtml(protocol)} · ${escapeHtml(routeId)}</span><code>http://${escapeHtml(config?.host || "127.0.0.1")}:${escapeHtml(config?.port || "4173")}/proxy/${escapeHtml(protocol)}${escapeHtml(route)}/v1</code></div>`;
   })).join("") || `<div><span>OpenAI 默认路径</span><code>http://${escapeHtml(config?.host || "127.0.0.1")}:${escapeHtml(config?.port || "4173")}/proxy/openai/v1</code></div><div><span>Anthropic 默认路径</span><code>http://${escapeHtml(config?.host || "127.0.0.1")}:${escapeHtml(config?.port || "4173")}/proxy/anthropic/v1</code></div>`;
-  return `<form class="settings-form" id="settings-form"><div class="view-columns"><article class="panel">${viewHeader("监测设置", "主动探测会调用提供方并产生 token 消耗。", `<button class="primary-button" type="submit"><span>✓</span>保存设置</button>`)}<div class="setting-row"><div><strong>主动探测</strong><small>关闭后仍会记录经过本地代理的真实调用</small></div>${switchControl("probeEnabled", settings.probeEnabled, settings.probeEnabled ? "已开启" : "已关闭")}</div><div class="setting-row"><div><strong>主动探测间隔</strong><small>每个去重目标的调度间隔</small></div><select class="setting-control" name="probeIntervalMinutes"><option value="1">1 分钟</option><option value="5">5 分钟</option><option value="15">15 分钟</option><option value="30">30 分钟</option><option value="60">1 小时</option><option value="180">3 小时</option><option value="360">6 小时</option></select></div><div class="setting-row"><div><strong>探测指令</strong><small>用于主动探测；修改后作为独立条件统计</small></div><input class="setting-control setting-text" name="probeInstruction" maxlength="2000" value="${escapeHtml(settings.probeInstruction)}"></div><div class="setting-row"><div><strong>默认时间范围</strong><small>下次加载工作台使用此范围</small></div><select class="setting-control" name="defaultHours"><option value="1">最近 1 小时</option><option value="6">最近 6 小时</option><option value="24">最近 24 小时</option><option value="168">最近 7 天</option></select></div><div class="setting-row"><div><strong>系统通知</strong><small>桌面端使用系统通知；网页端使用浏览器通知权限</small><button type="button" class="text-button" data-action="test-notification">发送测试通知</button></div>${switchControl("notifications", settings.notifications, settings.notifications ? "已开启" : "已关闭")}</div></article><article class="panel">${viewHeader("阈值与预算", probe?.running ? "主动探测正在运行" : probe?.enabled ? "主动探测已排期" : "主动探测已关闭")}<div class="setting-row"><div><strong>TTFT 告警阈值</strong><small>1–120000 ms</small></div><label class="number-control"><input type="number" name="ttftThresholdMs" min="1" max="120000" step="1" value="${settings.ttftThresholdMs}"><span>ms</span></label></div><div class="setting-row"><div><strong>Cache 告警阈值</strong><small>低于该命中率时告警</small></div><label class="number-control"><input type="number" name="cacheThresholdPercent" min="0" max="100" step="1" value="${Math.round(settings.cacheThreshold * 100)}"><span>%</span></label></div><div class="setting-row"><div><strong>每日探测上限</strong><small>今日已用 ${formatInteger(probe?.usage?.requests || 0)} 次</small></div><label class="number-control"><input type="number" name="probeDailyLimit" min="1" max="10000" step="1" value="${settings.probeDailyLimit}"><span>次</span></label></div><div class="setting-row"><div><strong>探测输出上限</strong><small>控制单次主动探测成本</small></div><label class="number-control"><input type="number" name="probeMaxOutputTokens" min="8" max="4096" step="1" value="${settings.probeMaxOutputTokens}"><span>token</span></label></div><div class="setting-row"><div><strong>连续偏离次数</strong><small>达到次数后生成核验告警</small></div><label class="number-control"><input type="number" name="qualityConsecutive" min="1" max="20" step="1" value="${settings.qualityConsecutive}"><span>次</span></label></div></article></div><article class="panel endpoint-panel">${viewHeader("本地代理", "Coding agent 通过同一个本地端口进入不同协议路径。")}<div class="endpoint-grid">${routeEndpoints}<div><span>已去重探测目标</span><strong>${formatInteger(probe?.targets?.length || 0)}</strong></div><div><span>下次主动探测</span><strong>${probe?.nextRunAt ? formatTimestamp(probe.nextRunAt, true) : "未排期"}</strong></div></div></article></form>`;
+  return `<form class="settings-form" id="settings-form"><div class="view-columns"><article class="panel">${viewHeader("监测设置", "主动探测会调用提供方并产生 token 消耗。", `<button class="primary-button" type="submit"><span>✓</span>保存设置</button>`)}<div class="setting-row"><div><strong>主动探测</strong><small>关闭后仍会记录经过本地代理的真实调用</small></div>${switchControl("probeEnabled", settings.probeEnabled, settings.probeEnabled ? "已开启" : "已关闭")}</div><div class="setting-row"><div><strong>主动探测间隔</strong><small>性能探测及检查核验是否到期的频率；单问题不另发性能探测，核验不会早于每轮间隔</small></div><select class="setting-control" name="probeIntervalMinutes"><option value="1">1 分钟</option><option value="5">5 分钟</option><option value="15">15 分钟</option><option value="30">30 分钟</option><option value="60">1 小时</option><option value="180">3 小时</option><option value="360">6 小时</option></select></div><div class="setting-row"><div><strong>探测指令</strong><small>用于主动探测；修改后作为独立条件统计</small></div><input class="setting-control setting-text" name="probeInstruction" maxlength="2000" value="${escapeHtml(settings.probeInstruction)}"></div><div class="setting-row"><div><strong>默认时间范围</strong><small>下次加载工作台使用此范围</small></div><select class="setting-control" name="defaultHours"><option value="1">最近 1 小时</option><option value="6">最近 6 小时</option><option value="24">最近 24 小时</option><option value="168">最近 7 天</option></select></div><div class="setting-row"><div><strong>系统通知</strong><small>桌面端使用系统通知；网页端使用浏览器通知权限</small><button type="button" class="text-button" data-action="test-notification">发送测试通知</button></div>${switchControl("notifications", settings.notifications, settings.notifications ? "已开启" : "已关闭")}</div></article><article class="panel">${viewHeader("阈值与预算", probe?.running ? "主动探测正在运行" : probe?.enabled ? "主动探测已排期" : "主动探测已关闭")}<div class="setting-row"><div><strong>TTFT 告警阈值</strong><small>1–120000 ms</small></div><label class="number-control"><input type="number" name="ttftThresholdMs" min="1" max="120000" step="1" value="${settings.ttftThresholdMs}"><span>ms</span></label></div><div class="setting-row"><div><strong>Cache 告警阈值</strong><small>低于该命中率时告警</small></div><label class="number-control"><input type="number" name="cacheThresholdPercent" min="0" max="100" step="1" value="${Math.round(settings.cacheThreshold * 100)}"><span>%</span></label></div><div class="setting-row"><div><strong>每日探测上限</strong><small>今日已用 ${formatInteger(probe?.usage?.requests || 0)} 次</small></div><label class="number-control"><input type="number" name="probeDailyLimit" min="1" max="10000" step="1" value="${settings.probeDailyLimit}"><span>次</span></label></div><div class="setting-row"><div><strong>探测输出上限</strong><small>控制单次主动探测成本</small></div><label class="number-control"><input type="number" name="probeMaxOutputTokens" min="8" max="4096" step="1" value="${settings.probeMaxOutputTokens}"><span>token</span></label></div><div class="setting-row"><div><strong>连续偏离次数</strong><small>达到次数后生成核验告警</small></div><label class="number-control"><input type="number" name="qualityConsecutive" min="1" max="20" step="1" value="${settings.qualityConsecutive}"><span>次</span></label></div></article></div><article class="panel endpoint-panel">${viewHeader("本地代理", "Coding agent 通过同一个本地端口进入不同协议路径。")}<div class="endpoint-grid">${routeEndpoints}<div><span>已去重探测目标</span><strong>${formatInteger(probe?.targets?.length || 0)}</strong></div><div><span>下次主动探测</span><strong>${probe?.nextRunAt ? formatTimestamp(probe.nextRunAt, true) : "未排期"}</strong></div></div></article></form>`;
+}
+
+function aboutView() {
+  return `<article class="panel" data-settings-group="about">${viewHeader("关于 Modivue", "版本与本地运行信息")}<div class="setting-row"><strong>版本</strong><span>Modivue ${escapeHtml(state.config?.version || "0.4.1")}</span></div><div class="setting-row"><strong>运行模式</strong><span>本地模式</span></div><div class="setting-row"><strong>待开发</strong><span>TODO · 四元组上下文情况检测环</span></div><div class="setting-row"><strong>待开发</strong><span>TODO · 指标定时播报</span></div></article>`;
 }
 
 function appearancePreview(key, value) {
@@ -2076,7 +2258,7 @@ function appearancePreview(key, value) {
 function customizationView() {
   const groups = new Map();
   preferenceFields.forEach(field => { if (!groups.has(field.group)) groups.set(field.group, []); groups.get(field.group).push(field); });
-  const labels = { appearance: "外观", interaction: "交互", verification: "检测策略", display: "显示内容", thresholds: "阈值配色" };
+  const labels = { appearance: "外观", interaction: "交互", verification: "检测策略", display: "显示内容", thresholds: "阈值配色", alerts: "模型告警与提示音" };
   const controls = (field) => ["ringStyle", "bridgeStyle", "islandShape"].includes(field.key)
     ? `<div class="ring-style-picker"><select name="${field.key}" class="setting-control">${Object.entries(field.options).map(([key, label]) => `<option value="${key}" ${state.settings[field.key] === key ? "selected" : ""}>${label}</option>`).join("")}</select><div class="ring-style-previews">${Object.entries(field.options).map(([key, label]) => `<button type="button" data-style-key="${field.key}" data-style-value="${key}" ${field.key === "ringStyle" ? `data-ring-style="${key}"` : ""} aria-label="预览并选择${label}" aria-pressed="${state.settings[field.key] === key}">${appearancePreview(field.key, key)}<small>${label}</small></button>`).join("")}</div></div>`
     : field.options
@@ -2091,13 +2273,13 @@ function customizationView() {
   const sections = [...groups].map(([group, fields]) => {
     if (group !== "display") return `<section class="customization-group" data-settings-group="${group}"><h4>${labels[group]}</h4>${fields.map(field => `<div class="setting-row"><div><strong>${field.label}</strong>${field.hint ? `<small>${escapeHtml(field.hint)}</small>` : ""}</div>${controls(field)}</div>`).join("")}</section>`;
     const hiddenMetricKeys = new Set([...Object.keys(metricNames).flatMap(metric => ["normalShow", "focusShow", "overviewShow"].map(prefix => `${prefix}${metric[0].toUpperCase()}${metric.slice(1)}`))]);
-    const rest = fields.filter(field => !hiddenMetricKeys.has(field.key));
-    return `<section class="customization-group" data-settings-group="display"><h4>${labels[group]}</h4>${metricBar("focusShow", "专注形态显示环")}${metricBar("overviewShow", "标准形态显示环")}${rest.map(field => `<div class="setting-row"><div><strong>${field.label}</strong>${field.hint ? `<small>${escapeHtml(field.hint)}</small>` : ""}</div>${controls(field)}</div>`).join("")}</section>`;
+    const rest = fields.filter(field => !hiddenMetricKeys.has(field.key) && !field.key.startsWith("tabShow_"));
+    return `<section class="customization-group" data-settings-group="display"><h4>${labels[group]}</h4>${metricBar("focusShow", "专注形态显示环")}${metricBar("overviewShow", "标准形态显示环")}<div class="setting-row metric-check-row"><div><strong>导航标签页</strong><small>概览、模型核验和设置始终保留；隐藏当前页会返回概览</small></div><div class="metric-check-bar" role="group" aria-label="导航标签页">${Object.entries(optionalViews).map(([view, label]) => `<label class="metric-check"><input type="checkbox" name="tabShow_${view}" ${state.settings[`tabShow_${view}`] !== false ? "checked" : ""}><span>${label}</span></label>`).join("")}</div></div>${rest.map(field => `<div class="setting-row"><div><strong>${field.label}</strong>${field.hint ? `<small>${escapeHtml(field.hint)}</small>` : ""}</div>${controls(field)}</div>`).join("")}</section>`;
   }).join("");
   return `<form class="customization-form" id="customization-form">${sections}<div class="customization-actions"><button class="primary-button" type="submit">保存自定义</button><span id="customization-message" role="status"></span></div></form>`;
 }
 
-const settingsCategories = { monitoring: "监测", appearance: "外观", interaction: "交互", display: "显示内容", thresholds: "阈值配色", verification: "核验", tests: "题库", connection: "连接" };
+const settingsCategories = { monitoring: "监测", appearance: "外观", interaction: "交互", display: "显示内容", thresholds: "阈值配色", verification: "核验", tests: "题库", connection: "连接", alerts: "告警", about: "关于" };
 
 function mountSettingsNavigation() {
   const content = $("#view-content");
@@ -2137,7 +2319,7 @@ function updateSettingsVisibility() {
   const query = state.customizationQuery.trim().toLocaleLowerCase();
   const method = $("#settings-form [name=evaluatorId]")?.value || state.settings.evaluatorId;
   const methods = { astraSamples: ["astra-community"], oneTokenSamples: ["one-token"], kbfTier: ["knowledge-boundary"], kbfReferenceModel: ["knowledge-boundary"], meowTier: ["meow-fingerprint"], verificationSamples: ["hlwy-fingerprint"],
-    hlwySource: ["hlwy-fingerprint"], juiceMode: ["juice"], defaultQuestionId: ["custom-question"], questionIntervalSeconds: ["custom-question"], questionTimeoutSeconds: ["custom-question"], questionMaxOutputTokens: ["custom-question"] };
+    hlwySource: ["hlwy-fingerprint"], juiceMode: ["juice"], defaultQuestionId: ["custom-question"], questionTimeoutSeconds: ["custom-question"], questionMaxOutputTokens: ["custom-question"] };
   const eligible = node => !node.dataset.methods || node.dataset.methods.split(" ").includes(method);
   Object.entries(methods).forEach(([name, values]) => {
     const input = $(`#view-content [name="${name}"]`);
@@ -2163,7 +2345,7 @@ function updateSettingsVisibility() {
   $("#settings-empty").hidden = count > 0;
 }
 
-function viewHeader(title, subtitle, action = "") { return `<div class="panel-header"><div><h3 title="${escapeHtml(subtitle)}">${escapeHtml(title)}</h3></div>${action}</div>`; }
+function viewHeader(title, subtitle, action = "") { return `<div class="panel-header" data-layout-title="${escapeHtml(title)}"><div><h3 title="${escapeHtml(subtitle)}">${escapeHtml(title)}</h3></div>${action}</div>`; }
 
 function calibrationView() {
   const calibration = state.calibration;
@@ -2358,6 +2540,7 @@ function reconcileContent(container, markup) {
 }
 
 function renderActiveView() {
+  if (layoutDragging()) return;
   const viewContent = $("#view-content");
   const remoteForm = $("#bazaarlink-form");
   const openDetails = new Map($$("details[data-detail-key]", viewContent)
@@ -2370,13 +2553,14 @@ function renderActiveView() {
     reconcileContent(viewContent, markup);
   } else viewContent.innerHTML = markup;
   viewContent.dataset.renderedView = state.view;
+  mountLayouts(viewContent, state.view);
   const nextRemoteForm = $("#bazaarlink-form");
   if (remoteForm && nextRemoteForm !== remoteForm && nextRemoteForm?.dataset.targetId === remoteForm.dataset.targetId) {
     $("button[type=submit]", remoteForm).disabled = $("button[type=submit]", nextRemoteForm).disabled;
     nextRemoteForm.replaceWith(remoteForm);
   }
   if (state.view === "settings") {
-    viewContent.insertAdjacentHTML("beforeend", publicBaselinesView() + customizationView() + customTestsView() + trustedCalibrationView() + calibrationView() + balanceSettingsView() + channelPricingView());
+    viewContent.insertAdjacentHTML("beforeend", publicBaselinesView() + customizationView() + customTestsView() + trustedCalibrationView() + calibrationView() + balanceSettingsView() + channelPricingView() + aboutView());
     $$(".balance-config-form").forEach(updateBalanceFields);
     void refreshTrustedCalibration().catch(() => {});
   }
@@ -2406,7 +2590,7 @@ function renderActiveView() {
     evaluatorRow.insertAdjacentHTML("afterend", `<div class="setting-row"><div><strong>Meow 核验强度</strong><small>筛查档 6 次（每个探针 1 次，仅作快速证据）；完整 benchmark：GPT 32 / 48 / 96 次、Claude 48 / 72 / 120 次。使用上游 4.5.4 的公开基准与兼容协议；筛查档显示完整快速档参考线，结论需要完整采样确认。</small></div><select class="setting-control" name="meowTier"><option value="screen">筛查 · 6 次</option><option value="low">完整快速 · GPT 32 / Claude 48 次</option><option value="medium">标准 · GPT 48 / Claude 72 次</option><option value="high">深入 · GPT 96 / Claude 120 次</option></select></div>`);
     form.elements.meowTier.value = state.settings.meowTier;
     evaluatorRow.insertAdjacentHTML("afterend", `<div class="setting-row"><div><strong>当前测试题目</strong><small>在题库中填入并选用，也可从这里切换。</small></div><select class="setting-control" name="defaultQuestionId">${state.questions.map(question => `<option ${question.builtIn ? "" : 'translate="no"'} value="${escapeHtml(question.id)}" ${question.id === state.settings.defaultQuestionId ? "selected" : ""}>${escapeHtml(question.title)}</option>`).join("")}</select></div>`);
-    evaluatorRow.insertAdjacentHTML("afterend", `<div class="setting-row"><div><strong>模型核验间隔</strong><small>从上轮核验结束计时，在本轮工作结束后的空闲窗口执行</small></div><label class="number-control"><input type="number" name="verificationIntervalMinutes" min="15" max="1440" step="1" value="${state.settings.verificationIntervalMinutes}"><span>分钟</span></label></div><div class="setting-row"><div><strong>核验请求间隔</strong><small>串行请求；失败时额外退避重试</small></div><label class="number-control"><input type="number" name="verificationRequestDelaySeconds" min="1" max="60" step="1" value="${state.settings.verificationRequestDelaySeconds}"><span>秒</span></label></div>`);
+    evaluatorRow.insertAdjacentHTML("afterend", `<div class="setting-row"><div><strong>自动核验轮次间隔</strong><small>所有本地方式共用，含单问题；上轮结束后至少等待此时长。设为 5 即至少每 5 分钟一轮。手动核验、多题未完成续测除外</small></div><label class="number-control"><input type="number" name="verificationIntervalMinutes" min="1" max="1440" step="1" value="${state.settings.verificationIntervalMinutes}"><span>分钟</span></label></div><div class="setting-row"><div><strong>轮内请求间隔</strong><small>同一轮内两次请求之间的等待；工作中还受工作中请求间隔限制，失败时另加冷却</small></div><label class="number-control"><input type="number" name="verificationRequestDelaySeconds" min="1" max="60" step="1" value="${state.settings.verificationRequestDelaySeconds}"><span>秒</span></label></div>`);
     if (!form.elements.probeIntervalMinutes.value) form.elements.probeIntervalMinutes.add(new Option(`${state.settings.probeIntervalMinutes} 分钟`, String(state.settings.probeIntervalMinutes), true, true));
     if (!form.elements.defaultHours.value) form.elements.defaultHours.add(new Option(formatRange(state.settings.defaultHours), String(state.settings.defaultHours), true, true));
     mountSettingsNavigation();
@@ -2415,15 +2599,19 @@ function renderActiveView() {
 }
 
 function renderAll({ preserveSettings = false } = {}) {
+  if (layoutDragging()) return;
+  for (const [view] of Object.entries(optionalViews)) $(`.nav-item[data-view="${view}"]`).hidden = state.settings[`tabShow_${view}`] === false;
+  if (state.settings[`tabShow_${state.view}`] === false) setView("overview");
   renderGlobalFilters();
   renderOverview();
+  mountLayouts(document, "overview");
   if (!(preserveSettings && state.view === "settings")) renderActiveView();
   updateRangeControl();
 }
 
 async function loadSelectedSamples() {
   const model = selectedModel();
-  if (!model || model.status === "unsampled") { state.selectedSamples = []; return; }
+  if (!model) { state.selectedSamples = []; return; }
   const query = queryString({ hours: state.rangeHours, canonicalModelId: model.canonicalModelId || undefined,
     model: model.canonicalModelId ? undefined : model.observedModel, baseUrl: model.endpoint, keyGroup: model.keyGroup,
     reasoningEffort: model.reasoningEffort || "", limit: 5000 });
@@ -2521,24 +2709,23 @@ async function loadAgents() {
 }
 
 async function syncCatalog(force = false) {
-  const status = $("#catalog-status");
-  status.className = "catalog-status";
-  status.innerHTML = `<span class="status-dot pending-dot"></span>正在同步标准模型目录`;
+  state.catalogStatus = "正在同步标准模型目录";
+  if (state.view === "models") renderActiveView();
   try {
     const synced = await fetchModelCatalog(globalThis.fetch, force ? "/api/model-catalog?refresh=1" : "/api/model-catalog");
     state.catalog = synced.models;
     updateModels(state.summaryGroups);
-    status.className = synced.status === "stale" ? "catalog-status warning" : "catalog-status ready";
-    status.innerHTML = `<span class="status-dot"></span>${synced.status === "stale" ? "使用缓存目录" : "标准目录已同步"} · ${state.catalog.length.toLocaleString(currentLocale())} 个模型`;
-    $("#catalog-footer").textContent = `${synced.status === "stale" ? "缓存" : "已同步"} ${state.catalog.length.toLocaleString(currentLocale())} 个模型`;
-    renderAll();
-  } catch { status.className = "catalog-status error"; status.innerHTML = `<span class="status-dot pending-dot"></span>标准目录不可用 · 保留观测模型名`; $("#catalog-footer").textContent = "不可用"; }
+    state.catalogStatus = `${synced.status === "stale" ? "使用缓存目录" : "标准目录已同步"} · ${state.catalog.length.toLocaleString(currentLocale())} 个模型`;
+  } catch { state.catalogStatus = "标准目录不可用 · 保留观测模型名"; }
+  renderAll();
 }
 
 function setView(view) {
+  cancelLayout();
+  if (state.settings[`tabShow_${view}`] === false) view = "overview";
   if (state.view === "settings" && view !== "settings") void flushSettingsDraft();
   state.view = view;
-  $("#cost-summary").hidden = view === "settings";
+  mountCostSummary();
   $("#current-balance").hidden = view === "settings" || !selectedModel();
   renderGlobalFilters();
   const titles = { overview: "概览", models: "模型", routes: "路由", cache: "Cache", ttft: "TTFT", quality: "模型核验", cost: "花费统计", alerts: "告警", logs: "日志", settings: "设置" };
@@ -2547,6 +2734,7 @@ function setView(view) {
   $$(".overview-only").forEach((element) => { element.hidden = view !== "overview"; });
   $("#model-carousel").hidden = view !== "overview";
   renderActiveView();
+  mountLayouts(document, "overview");
   animateContent(view === "overview" ? $("#metric-grid") : $("#view-content"));
   window.scrollTo({ top: 0, behavior: reducedMotion() ? "auto" : "smooth" });
 }
@@ -2588,6 +2776,7 @@ async function runProbe() {
 }
 
 function bindEvents() {
+  document.addEventListener("modivue-layout-end", () => renderAll({ preserveSettings: true }));
   const applyFilters = async () => {
     state.selectedSamples = [];
     updateModels(state.summaryGroups);
@@ -2651,6 +2840,8 @@ function bindEvents() {
   });
   $("#quick-island").addEventListener("pointermove", (event) => { const island = event.currentTarget; const bounds = island.getBoundingClientRect(); island.style.setProperty("--pointer-y", `${clamp(event.clientY - bounds.top, 24, bounds.height - 24)}px`); island.style.setProperty("--tail-stretch", String(0.75 + clamp((bounds.left - event.clientX + 70) / 180, 0, 0.55))); if (desktopMode !== "island") updateIslandEdgeScroll(event); });
   $("#view-content").addEventListener("click", async (event) => {
+    const eventButton = event.target.closest("[data-event-model]");
+    if (eventButton) { await openEventTarget(eventButton); return; }
     const styleButton = event.target.closest("[data-style-key]");
     if (styleButton && styleButton.tagName === "BUTTON") {
       const key = styleButton.dataset.styleKey;
@@ -2770,13 +2961,12 @@ function bindEvents() {
     }
     if (action === "test-notification") {
       try {
-        await persistSettingsPatch({ notifications: true });
-        if (state.settings.notifications) {
-          const title = "Modivue", body = translate("通知功能已开启");
-          if (hasDesktopBridge()) await desktopRequest({ type: "notify", title, body, id: `test-${Date.now()}` });
-          else new Notification(title, { body });
-          showToast("测试通知已交给系统", "success");
+        const title = "Modivue", body = translate("这是一条测试模型告警");
+        if (!state.settings.notifications && state.settings.alertToasts === false && !state.settings.alertSound) {
+          showToast(translate("请先开启一种告警方式"), "warning"); return;
         }
+        await deliverAlert({ title, body, id: `test-${Date.now()}`, tone: "success", test: true });
+        showToast(translate("测试通知已发送"), "success");
       } catch (error) { showToast(error.message, "error"); }
       return;
     }
@@ -2999,7 +3189,11 @@ function bindEvents() {
     if (section) { state.customizationTab = section.dataset.settingsGroup; state.customizationQuery = ""; $("#customization-search").value = ""; updateSettingsVisibility(); }
   }, true);
   // 概览卡片保留轻微悬停反馈，趋势详情由点击进入，避免悬停弹窗闪烁。
-  $$(".metric-card").forEach((card) => card.addEventListener("click", () => setView(card.dataset.metric === "quality" ? "quality" : card.dataset.metric)));
+  $$(".metric-card").forEach((card) => card.addEventListener("click", () => {
+    const selection = window.getSelection();
+    if (selection && !selection.isCollapsed && card.contains(selection.anchorNode)) return;
+    setView(card.dataset.metric === "quality" ? "quality" : card.dataset.metric);
+  }));
 }
 
 async function saveCustomization(form) {
@@ -3072,7 +3266,7 @@ const tourSteps = [
   [".metric-grid", "主窗口的三张指标卡支持点击跳转：模型核验、Cache 和 TTFT 会打开详细窗口的对应 Tab，并保留当前模型四元组。"],
   ["#model-strip", "顶部四元组条支持分页和触控板横向滑动；左右箭头可浏览全部渠道、模型、推理档位与 Key 组合。"],
   ["[data-view=routes]", "私人渠道排行榜按最近活跃、核验、Cache、TTFT 或样本量排序；点击任一行可查看该四元组的三项指标曲线和全部历史核验记录。"],
-  ["#refresh-button", "拓展窗口是实时灵动岛：极简、普通、专注和扩展详情会平滑切换。侧边拖条可点击或拖动，释放后吸附左右边缘；悬停模型可查看扩展信息。"],
+  ["#refresh-button", "拓展窗口（实时灵动岛）会在极简、普通、专注和扩展详情之间平滑切换；侧边拖条可点击或拖动，释放后吸附左右边缘，悬停模型可查看扩展信息。"],
   ['[data-view="settings"]', "设置按外观、交互、检测策略和题库分类，并支持 Spotlight 搜索、透明度、显示指标、主题色、连接线风格与自定义问题；修改会自动保存并提示。"],
   ['[data-view="quality"]', "模型核验页支持普通核验、插队核验、单题题库和历史报告；失败请求会保留上游错误、部分回答、尝试次数和重试信息。"]
 ];
@@ -3257,7 +3451,13 @@ function nativeHover(event) {
   if (desktopMode !== "island") return;
   if (document.body.classList.contains("island-dragging") || tourCleanup) return;
   const target = event ? document.elementFromPoint(event.clientX, event.clientY) : null;
-  if (event?.clientX === lastIslandPointer?.clientX && event?.clientY === lastIslandPointer?.clientY) {
+  const pointer = event ? { clientX: event.clientX, clientY: event.clientY,
+    screenX: event.screenX ?? event.clientX + window.screenX, screenY: event.screenY ?? event.clientY + window.screenY } : null;
+  const stationary = pointer?.screenX === lastIslandPointer?.screenX && pointer?.screenY === lastIslandPointer?.screenY;
+  // Opening the popover resizes and moves its native host. Client coordinates
+  // change with that window; only screen coordinates describe pointer movement.
+  lastIslandPointer = pointer;
+  if (stationary) {
     // Animated layers can arrive beneath a stationary pointer. Update the
     // metric highlight without treating that animation as a border crossing.
     const ring = islandState.mode === "focus" && target?.closest("[data-focus-metric]")?.querySelector(".ring-metric");
@@ -3267,7 +3467,6 @@ function nativeHover(event) {
     }
     return;
   }
-  lastIslandPointer = event;
   clearTimeout(hoverExitTimer);
   const rail = $("#quick-island").getBoundingClientRect();
   const popup = $("#hover-popover");
@@ -3287,10 +3486,16 @@ function nativeHover(event) {
   $$(".focus-model").forEach(button => button.classList.toggle("is-hovered", button === focusTarget));
   const onBorder = Boolean(inRail && (!ringTarget && !focusTarget || target?.closest("#island-buffer")));
   const explicitBufferTarget = Boolean(target?.closest("#island-buffer"));
-  const nearRailEdge = event && (event.clientX <= rail.left + 10 || event.clientX >= rail.right - 10);
-  if (islandState.mode === "focus" && onBorder && !explicitBufferTarget && !nearRailEdge && focusAnchorPointer) {
-    const movedFromFocus = Math.hypot(event.clientX - focusAnchorPointer.clientX, event.clientY - focusAnchorPointer.clientY) > 12;
-    if (!movedFromFocus) return;
+  // Moving layers must not turn a ring-edge dwell into another mode change.
+  // Re-arm only after deliberate pointer movement; leaving and the buffer
+  // keep their own hit targets and remain available immediately.
+  if (event && islandModeAnchor) {
+    if (Math.hypot(pointer.screenX - islandModeAnchor.screenX, pointer.screenY - islandModeAnchor.screenY) > 12) islandModeAnchor = null;
+    else if (!explicitBufferTarget && (onBorder || ringTarget || islandState.mode === "focus" && !inRail)) {
+      clearTimeout(borderHoverTimer); borderHoverTimer = null;
+      clearTimeout(ringHoverTimer); ringHoverTimer = null; pendingRingId = null;
+      return;
+    }
   }
   const inBridge = event && popup.classList.contains("visible")
     && event.clientX >= Math.min(rail.right, popupRect.right) && event.clientX <= Math.max(rail.left, popupRect.left)
@@ -3301,7 +3506,6 @@ function nativeHover(event) {
     hoverExitTimer = setTimeout(() => { hidePopover(); setIslandHover(false); }, Number(state.settings.collapseDelayMs) || 360);
     return;
   }
-  lastIslandPointer = event;
   if (onBorder) {
     clearTimeout(ringHoverTimer); ringHoverTimer = null; pendingRingId = null;
     // A short dwell distinguishes deliberate border focus from crossing the

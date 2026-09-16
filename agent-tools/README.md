@@ -69,7 +69,7 @@ node "scripts/agent-tool.mjs" smart-search fetch "https://example.com/source" --
 
 Smart Search 是 CLI，不注册成 MCP。`doctor` 已确认配置完整；在线提供方因当前环境 DNS 失败，尚未获得有效响应。
 
-Fast Context 通过 `fast_context_search` 使用。传入项目绝对路径 `/Users/popbomb/Modivue`，排除 `.local`、`.git`、`node_modules` 和 `agent-tools/skills`。用它定位代码后，阅读实际文件。开始工作前运行 `node "scripts/sync-fast-context-key.mjs"`，确保密钥来自当前 Devin 会话。
+Fast Context 通过 `fast_context_search` 使用。传入项目绝对路径 `/path/to/Modivue`，排除 `.local`、`.git`、`node_modules` 和 `agent-tools/skills`。用它定位代码后，阅读实际文件。开始工作前运行 `node "scripts/sync-fast-context-key.mjs"`，确保密钥来自当前 Devin 会话。
 
 寸止通过 `zhi` 请求必要的用户反馈。`寸止` 是 stdio MCP 服务，`等一下` 是独立弹窗程序。先在单独终端运行 `/opt/homebrew/bin/等一下` 并保持运行，再由宿主调用 `zhi`。不要手动把 `/opt/homebrew/bin/寸止` 当作 GUI 启动。
 

@@ -10,6 +10,7 @@ import { unpackLocalProxyBaseUrl } from "./upstreams.mjs";
 import { listAgentSessions, savePassiveObservation } from "./storage.mjs";
 import { isAgentWorking, canProbeSession, normalizeAgentStatus, claudeTranscriptStatus } from "./agent-activity.js";
 import { agentAdapters, adapterEnvironment, adapterForProcess, readAdapterConnection } from "./agent-adapters.mjs";
+import { ccSwitchProviders } from "./cc-switch-providers.mjs";
 
 const runFile = promisify(execFile);
 
@@ -80,34 +81,76 @@ export async function agentConnections(env = process.env, home = homedir(), cwd 
     if (profileName && !/^[a-zA-Z0-9_-]+$/.test(profileName)) throw new TypeError("MODIVUE_CODEX_PROFILE 格式无效");
     const profileFile = profileName ? await configFile(join(codexDirectory, `${profileName}.config.toml`), "toml") : { value: {}, found: false };
     const profileError = profileName && !profileFile.found ? "Codex profile 文件不存在" : profileFile.error;
+    // Keep the provider selection and table at the same precedence as model.
     const base = { ...config.value, ...profileFile.value,
       ...(projectConfig.value.model ? { model: projectConfig.value.model } : {}),
-      model_providers: { ...config.value.model_providers, ...profileFile.value.model_providers },
+      ...(projectConfig.value.model_provider ? { model_provider: projectConfig.value.model_provider } : {}),
       tui: { ...config.value.tui, ...profileFile.value.tui, ...projectConfig.value.tui } };
     const providerId = base.model_provider || "openai";
-    const provider = base.model_providers?.[providerId] || {};
+    const provider = Object.assign({}, ...[config, profileFile, projectConfig]
+      .map(file => file.value.model_providers?.[providerId] || {}));
     const auth = await configFile(join(codexDirectory, "auth.json"));
     // Subscription OAuth credentials require the host's own authenticated transport.
     const apiKey = provider.experimental_bearer_token || (provider.env_key ? env[provider.env_key]
-      : providerId === "openai" ? env.CODEX_API_KEY || env.OPENAI_API_KEY || auth.value.OPENAI_API_KEY : null) || null;
+      : provider.requires_openai_auth === true || providerId === "openai"
+        ? env.CODEX_API_KEY || env.OPENAI_API_KEY || auth.value.OPENAI_API_KEY : null) || null;
     const configurationError = config.error || profileError || projectConfig.error || (!apiKey && auth.error) || null;
     const projectPath = join(cwd, ".codex", "config.toml");
-    const connection = agentEndpoint(provider.base_url || env.OPENAI_BASE_URL
-      || (providerId === "openai" ? "https://api.openai.com/v1" : null), "openai", env);
-    agents.push({ id: "codex", label: "Codex", configPath: projectConfig.found && projectConfig.value.model
+    const projectConnection = projectConfig.found && Boolean(projectConfig.value.model
+      || projectConfig.value.model_provider || projectConfig.value.model_providers?.[providerId]);
+    const configuredBaseUrl = provider.base_url || env.OPENAI_BASE_URL
+      || (providerId === "openai" ? "https://api.openai.com/v1" : null);
+    const connection = agentEndpoint(configuredBaseUrl, "openai", env);
+    agents.push({ id: "codex", label: "Codex", configPath: projectConnection
       ? projectPath : profileFile.found ? join(codexDirectory, `${profileName}.config.toml`) : codexPath, model: base.model || null,
       ...connection,
       protocol: "openai", wireApi: "responses", provider: providerId, profile: profileName,
       runtimeDirectory: codexDirectory, sqliteDirectory: base.sqlite_home || codexDirectory,
       apiKey, authHeader: "authorization", keyGroup: apiKey ? credentialGroup(apiKey) : null,
-      source: projectConfig.found && projectConfig.value.model ? "project" : profileFile.found ? "profile" : "config.toml",
+      source: projectConnection ? "project" : profileFile.found ? "profile" : "config.toml",
       statusline: false, statuslineItems: base.tui?.status_line || [],
       statuslineCapability: "built-in-items-only", credentialSource: provider.experimental_bearer_token ? "config"
-        : provider.env_key && env[provider.env_key] ? "environment" : providerId === "openai" && apiKey ? "openai-auth" : provider.auth?.command ? "command-unavailable" : null,
-      error: configurationError });
+        : provider.env_key && env[provider.env_key] ? "environment" : (provider.requires_openai_auth === true || providerId === "openai") && apiKey ? "openai-auth" : provider.auth?.command ? "command-unavailable" : null,
+      configuredBaseUrl, error: configurationError });
   }
   agents.push(...await genericConnections(env, home, cwd));
   return agents;
+}
+
+// Resolve the destination for a request using the agent's current config.
+// Matching the request credential (or an explicit agent id) keeps one agent's
+// switched provider from becoming the default route for every local client.
+export async function configuredAgentRoute({ protocol = "openai", agentId = null, authorization = null,
+  proxyOrigin = null, env = process.env, home = homedir(), cwd = process.cwd() } = {}) {
+  const expectedProtocol = protocol === "anthropic" ? "anthropic" : "openai";
+  const bearer = typeof authorization === "string" ? authorization.replace(/^Bearer\s+/i, "").trim() : "";
+  const group = bearer ? credentialGroup(bearer) : null;
+  const candidates = (await agentConnections(env, home, cwd)).filter(agent => agent.protocol === expectedProtocol);
+  const matched = agentId
+    ? candidates.filter(agent => agent.id === agentId || agent.host === agentId)
+    : candidates.filter(agent => group && agent.keyGroup === group);
+  // CCS keeps the actual provider while an Agent may still hold an old Key
+  // or proxy URL. Preserve app identity before selecting its current row.
+  const identity = agentId || (matched.length === 1 ? matched[0].id : null);
+  const switched = ccSwitchProviders({ home, env }).filter(item => item.protocol === expectedProtocol
+    && (!identity || item.agentId === identity));
+  const switchedByKey = group ? switched.filter(item => credentialGroup(item.apiKey) === group) : [];
+  const selectedSwitch = switchedByKey.length === 1 ? switchedByKey[0] : switched.length === 1 ? switched[0] : null;
+  if (switched.length && !selectedSwitch) return { error: "CC Switch 当前渠道无法唯一确定" };
+  if (!selectedSwitch && matched.length > 1) return { error: "Agent 当前配置无法唯一确定" };
+  const selected = selectedSwitch ? { ...selectedSwitch, id: selectedSwitch.agentId }
+    : matched.length === 1 ? matched[0] : null;
+  if (!selected) return null;
+  if (selected.error || selected.proxyBaseUrl || !selected.baseUrl || typeof selected.apiKey !== "string" || !selected.apiKey.trim()) {
+    return { error: "Agent 当前配置缺少有效地址或凭据" };
+  }
+  let destination;
+  try { destination = new URL(normalizeBaseUrl(selected.baseUrl)); }
+  catch { return { error: "Agent 当前 Base URL 无效" }; }
+  // A local relay is a valid upstream, but another Modivue proxy route is not.
+  if (destination.pathname.startsWith("/proxy/") || destination.origin === proxyOrigin) return { error: "Agent 上游不能指向 Modivue 代理" };
+  return { baseUrl: selected.baseUrl, agent: selected.id,
+    apiKey: selected.apiKey, authHeader: selected.authHeader };
 }
 
 // Return capability metadata only. Credentials and configuration contents are
@@ -207,14 +250,8 @@ async function detectAgentsFresh(actualEnv, actualHome, actualCwd, cacheKey) {
         metadata: { ...existing.metadata, ...session.metadata } });
     }
   });
-  let herdrAuthoritative = false;
   try {
     const snapshots = await herdrPaneSnapshots(actualEnv, actualHome);
-    // When Herdr responds, its pane list is the authoritative set of visible
-    // terminal sessions. The Codex app-server keeps writer locks for tabs
-    // that are no longer visible, so those rows must not become phantom
-    // models in the normal rail.
-    herdrAuthoritative = snapshots.length > 0;
     const hostForPane = (pane) => {
       const value = String(pane.agent || pane.agent_name || pane.command || "").toLowerCase();
       if (value === "codex" || value.includes("codex")) return "codex";
@@ -275,18 +312,9 @@ async function detectAgentsFresh(actualEnv, actualHome, actualCwd, cacheKey) {
       }
     }
   } catch {}
-  if (herdrAuthoritative) {
-    for (const [key, session] of unique) {
-      // Herdr is the source of truth for visible terminal panes.  A process
-      // row without a pane is commonly a stale child/app-server process and
-      // must not inflate the UI's Agent count (or become a probe target).
-      // Keep transcript-backed rows only when they were joined to a visible
-      // pane above; they otherwise describe historical work, not a live tab.
-      if (session.host === "codex" && !session.metadata?.paneId) unique.delete(key);
-    }
-  }
-  // A process fallback is redundant once a concrete thread is known. One
-  // Codex app-server can own multiple threads, so PID alone is not identity.
+  // Herdr enriches independently discovered sessions with pane activity. It
+  // is not the session authority: live processes and unfinished Codex turns
+  // remain discoverable when Herdr is absent.
   const merged = new Map();
   for (const session of unique.values()) {
     const siblings = [...unique.values()].filter(item => item.host === session.host && item.metadata?.pid
@@ -558,14 +586,14 @@ async function codexRuntimeSessions(directory, connection) {
         parentByChild.set(edge.child_thread_id, edge.parent_thread_id);
       }
     } catch {}
-    const sessions = await Promise.all(rows.map(async (row) => {
-        const active = running.has(row.id);
+    const sessions = await Promise.all(rows.filter((row) => running.has(row.id)).map(async (row) => {
         const updatedAt = Number(row.updated_at_ms);
-        // lsof above proves that a live writer owns this thread. An idle
-        // database timestamp does not mean that its desktop tab was closed.
+        // The shared app-server keeps writer locks after a visible CLI has
+        // closed. Only an unfinished turn makes the lock a live-session
+        // signal; idle CLIs are discovered independently by their process.
         const passiveMetrics = await readCodexPassiveMetrics(row.rollout_path);
         return enrichRuntimeSession({ host: "codex", sessionId: row.id,
-          status: active ? "active" : "idle", parentSessionId: parentByChild.get(row.id) || null,
+          status: "active", parentSessionId: parentByChild.get(row.id) || null,
           model: row.model || null, displayName: row.agent_nickname || null, cwd: row.cwd,
           source: `codex-${row.source || "runtime"}`, startedAt: row.created_at_ms ? new Date(row.created_at_ms).toISOString() : null,
           lastSeenAt: updatedAt ? new Date(updatedAt).toISOString() : new Date().toISOString(),

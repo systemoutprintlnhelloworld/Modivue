@@ -51,6 +51,10 @@ export function verificationRunLabel(run) {
   }
   if (run.evaluator_id === "custom-question") return run.metadata?.question?.match === "review" || run.metadata?.matched === null ? "待人工复核" : (run.metadata?.question ? comparableAnswer(run.metadata.actual, run.metadata.question.answer) : run.metadata?.matched) ? "答案匹配" : "答案不匹配";
   const metadata = run.metadata || {};
+  if (run.evaluator_id === "hlwy-fingerprint") {
+    if (metadata.sampleCount < 50) return "少量样本预览 · 仅比较分布";
+    return "分布比较完成 · 未校准身份判定线";
+  }
   if (run.evaluator_id === "juice" && metadata.mode === "raw") return Number.isFinite(metadata.reportedJuice) ? "原始观测 · 未校准" : "未返回有效数值";
   if (metadata.verdict === "consistent") return run.evaluator_id === "meow-fingerprint" ? "强烈指向申报模型" : "与基线一致";
   if (metadata.verdict === "deviates") return metadata.directedModel ? `强烈指向 ${metadata.directedModel}` : "偏离申报模型基线";
@@ -100,7 +104,7 @@ export function summarizeVerification(runs = [], preferredMethod = "meow-fingerp
   const jsd = valid(["one-token", "astra-community", "meow-fingerprint"].includes(selectedMethod) ? selectedMethod : "probability-probe", "jsd");
   const declaredMatch = valid("meow-fingerprint", "declaredMatch");
   const directionScore = selectedMethod === "meow-fingerprint" ? declaredMatch : valid(selectedMethod, "directionScore");
-  const directedModel = usable ? selected.metadata?.directedModel || null : null;
+  const directedModel = usable && selectedMethod !== "hlwy-fingerprint" ? selected.metadata?.directedModel || null : null;
   let numeric = null;
   if (measurement) {
     if (selectedMethod === "meow-fingerprint" && declaredMatch !== null)

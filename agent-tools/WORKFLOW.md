@@ -64,7 +64,7 @@ enabled = false
 也可以从普通终端为一次 Codex CLI 会话指定这些开关：
 
 ```bash
-codex -C "/Users/popbomb/Modivue" \
+codex -C "/path/to/Modivue" \
   -c 'mcp_servers.contextweaver.enabled=false' \
   -c 'mcp_servers.open-websearch.enabled=false' \
   -c 'mcp_servers.mcp-deepwiki.enabled=false'
@@ -103,7 +103,7 @@ node "scripts/agent-tool.mjs" smart-search research "比较模型质量评测方
 
 ### 代码定位与修改
 
-有名称或路径时直接用 `rg`。有业务源码且不知道位置时，调用 `fast_context_search`，明确 `project_path` 为 `/Users/popbomb/Modivue`，并通过 `exclude_paths` 排除 `.local`、`.git`、`node_modules`、`agent-tools/skills` 和凭据文件。参数以实际 `tools/list` 为准。
+有名称或路径时直接用 `rg`。有业务源码且不知道位置时，调用 `fast_context_search`，明确 `project_path` 为 `/path/to/Modivue`，并通过 `exclude_paths` 排除 `.local`、`.git`、`node_modules`、`agent-tools/skills` 和凭据文件。参数以实际 `tools/list` 为准。
 
 符号关系使用 Serena。先读取 `initial_instructions`，再定位符号、查询引用、读取实现。Fast Context 返回的是定位线索，不代替这些代码证据。小文件用本地编辑工具直接修改。
 

@@ -1,0 +1,38 @@
+[
+  {
+    "path": "skills/ponytail/SKILL.md",
+    "url": "https://raw.githubusercontent.com/DietrichGebert/ponytail/master/skills/ponytail/SKILL.md"
+  },
+  {
+    "path": "skills/caveman/SKILL.md",
+    "url": "https://raw.githubusercontent.com/JuliusBrussee/caveman/main/skills/caveman/SKILL.md"
+  },
+  {
+    "path": "skills/unslop/SKILL.md",
+    "url": "https://raw.githubusercontent.com/cursor/plugins/main/pstack/skills/unslop/SKILL.md"
+  },
+  {
+    "path": "skills/grill-with-docs/SKILL.md",
+    "url": "https://raw.githubusercontent.com/mattpocock/skills/main/skills/engineering/grill-with-docs/SKILL.md"
+  },
+  {
+    "path": "skills/grilling/SKILL.md",
+    "url": "https://raw.githubusercontent.com/mattpocock/skills/main/skills/productivity/grilling/SKILL.md"
+  },
+  {
+    "path": "skills/domain-modeling/SKILL.md",
+    "url": "https://raw.githubusercontent.com/mattpocock/skills/main/skills/engineering/domain-modeling/SKILL.md"
+  },
+  {
+    "path": "skills/domain-modeling/CONTEXT-FORMAT.md",
+    "url": "https://raw.githubusercontent.com/mattpocock/skills/main/skills/engineering/domain-modeling/CONTEXT-FORMAT.md"
+  },
+  {
+    "path": "skills/domain-modeling/ADR-FORMAT.md",
+    "url": "https://raw.githubusercontent.com/mattpocock/skills/main/skills/engineering/domain-modeling/ADR-FORMAT.md"
+  },
+  {
+    "path": "skills/stop-that-shit/SKILL.md",
+    "url": "https://raw.githubusercontent.com/lennney/stop-that-shit/0.2.0/skills/stop-that-shit/SKILL.md"
+  }
+]

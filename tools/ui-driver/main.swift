@@ -42,6 +42,7 @@ func snapshot(_ root: AXUIElement) -> [[String: Any]] {
         for key in [kAXRoleAttribute, kAXSubroleAttribute, kAXTitleAttribute, kAXDescriptionAttribute, kAXIdentifierAttribute, kAXValueAttribute] {
             if let value = attribute(element, key) as? String { row[key] = String(value.prefix(600)) }
         }
+        if let enabled = attribute(element, kAXEnabledAttribute) as? Bool { row[kAXEnabledAttribute] = enabled }
         row["position"] = pointValue(attribute(element, kAXPositionAttribute))
         row["size"] = pointValue(attribute(element, kAXSizeAttribute))
         rows.append(row)

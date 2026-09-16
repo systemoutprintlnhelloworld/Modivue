@@ -102,6 +102,7 @@ export async function runRuntimeTest(directory, { browser: withBrowser = false }
       const native = [], toasts = [];
       const notify = runInNewContext(`${notificationSource}; notifyNewEvents`, {
         desktopMode: mode, hasDesktopBridge: () => true, translate: text => text,
+        endpointLabel: value => value || "未配置",
         showToast: (...args) => toasts.push(args), desktopMessage: message => native.push(message),
         desktopRequest: async message => { native.push(message); return { sent: true }; },
         state: { settings: { notifications: true }, notifiedEventIds: new Set(), events: [{ id: 1, type: 'cache', timestamp: new Date().toISOString(), model: 'fixture' }] }
@@ -806,7 +807,7 @@ export async function runRuntimeTest(directory, { browser: withBrowser = false }
     const questionRows = listQualityRuns({ hours: 0 }).filter(run => run.evaluator_id === "custom-question");
     const questionNow = Date.now();
     assert.equal(verificationDue(target, "custom-question", questionRows, 15, questionNow + 59900, question.id), false);
-    assert.equal(verificationDue(target, "custom-question", questionRows, 15, questionNow + 60100, question.id), true);
+    assert.equal(verificationDue(target, "custom-question", questionRows, 15, questionNow + 900100, question.id), true);
     const qrows = [questionRows[0], { ...questionRows[0], id: 1002, metadata: { ...questionRows[0].metadata, actual: "wrong" } },
       { ...questionRows[0], id: 1003, status: "error" }, { ...questionRows[0], id: 1004, key_group: "another-key" },
       { ...questionRows[0], id: 1005, metadata: { ...questionRows[0].metadata, conditionsId: questionConditionsId({ ...question, answer: "other" }) } }];

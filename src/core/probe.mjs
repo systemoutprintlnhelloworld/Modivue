@@ -25,6 +25,7 @@ const active = new Map();
 let requestQueue = Promise.resolve();
 let batch = null;
 let lastRunAt = null;
+let lastPerformanceRunAt = Date.now();
 let nextRunAt = null;
 let timer = null;
 const probeCooldowns = new Map();
@@ -109,8 +110,16 @@ export async function runProbe(target, options = {}) {
       && normalizeBaseUrl(session.baseUrl) === normalizeBaseUrl(target.baseUrl) && session.keyGroup === target.keyGroup);
     const routeKey = probeRouteKey(target);
     if (working && target.probeStrategy && target.probeStrategy !== "idle") {
-      const remaining = (lastProbeRequests.get(routeKey) || 0) + (conditionsId?.startsWith('["question:v1"') ? getSettings().questionIntervalSeconds : getSettings().workingProbeDelaySeconds) * 1000 - Date.now();
+      const remaining = (lastProbeRequests.get(routeKey) || 0) + getSettings().workingProbeDelaySeconds * 1000 - Date.now();
       if (remaining > 0) { await delay(remaining, undefined, { signal: options.signal }); options.checkContinue?.(); connections = await probeAgentConnections(undefined, undefined, { fresh: true }); }
+    }
+    const cooldown = (probeCooldowns.get(routeKey) || 0) - Date.now();
+    if (cooldown > 0) {
+      options.onWait?.(cooldown);
+      await delay(cooldown, undefined, { signal: options.signal });
+      options.checkContinue?.();
+      probeCooldowns.delete(routeKey);
+      connections = await probeAgentConnections(undefined, undefined, { fresh: true });
     }
     const paused = probePauseReason(target, connections);
     if (paused) throw Object.assign(new Error(paused), { code: "target_inactive" });
@@ -237,11 +246,11 @@ export function verificationDue(target, evaluatorId, runs, intervalMinutes, now 
     && (evaluatorId !== "custom-question" || question && run.evaluator_version === verificationVersions[evaluatorId] && run.metadata?.conditionsId === questionConditionsId(question)))
     .sort((a, b) => (Date.parse(b.timestamp) || 0) - (Date.parse(a.timestamp) || 0));
   const latest = matching[0];
-  // A target can go idle during a run. Keep its partial observations, then
-  // resume on the next scheduler tick instead of waiting a full interval.
-  if (latest?.status === "paused") return true;
+  // Multi-request methods reuse partial observations. A single question has
+  // no reusable completed sample, so its next attempt still waits a round.
+  if (latest?.status === "paused" && latest.metadata?.controlAction !== "stop" && evaluatorId !== "custom-question") return true;
   const previous = Date.parse(latest?.timestamp) || 0;
-  const interval = evaluatorId === "custom-question" ? (getSettings().questionIntervalSeconds || 60) * 1000 : Math.max(15, intervalMinutes) * 60000;
+  const interval = Math.max(1, intervalMinutes) * 60000;
   return !previous || now - previous >= interval;
 }
 
@@ -299,7 +308,8 @@ export async function runTargetVerification(target, evaluatorId, shouldContinue 
         const stream = options.strictResponse ? verificationStream(target.wireApi) : null;
         let sample, reasoningDetected = false;
         try {
-          sample = await runProbe(target, { ...options, signal: control.controller.signal, checkContinue, instruction, onEvent: event => {
+          sample = await runProbe(target, { ...options, signal: control.controller.signal, checkContinue, instruction,
+            onWait: milliseconds => qualityProgress.set(id, { ...qualityProgress.get(id), phase: "retrying", retryAt: new Date(Date.now() + milliseconds).toISOString() }), onEvent: event => {
             stream?.feed(event);
             if (options.rejectReasoning && (/reasoning|thinking/.test(event?.type || "") || event?.choices?.some(choice => choice.delta?.reasoning_content || choice.delta?.reasoning)
               || event?.content_block?.type === "thinking" || Number(event?.usage?.completion_tokens_details?.reasoning_tokens || event?.response?.usage?.output_tokens_details?.reasoning_tokens) > 0)) reasoningDetected = true;
@@ -313,6 +323,8 @@ export async function runTargetVerification(target, evaluatorId, shouldContinue 
           samples.push({ timestamp: new Date().toISOString(), durationMs: null,
             costUsd: null, costStatus: "unknown", status: "error", error: error.message || "请求失败", upstreamError: error.upstreamError || { message: error.message || "请求失败", code: error.code || "upstream_error" } });
           error.partialText = text;
+          error.retryAfterMs = Math.max(error.retryAfterMs || 0, (probeCooldowns.get(probeRouteKey(target)) || 0) - Date.now());
+          error.retryable ??= true;
           throw error;
         }
         const record = { timestamp: sample.timestamp, durationMs: sample.durationMs, costUsd: sample.costUsd,
@@ -379,6 +391,8 @@ export async function runProbeBatch({ force = false } = {}) {
   if (!force && !getSettings().probeEnabled && !pendingVerifications.size) throw new TypeError("主动探测未启用");
   batch = (async () => {
     const results = [];
+    const performanceDue = force || Date.now() - lastPerformanceRunAt >= getSettings().probeIntervalMinutes * 60000;
+    let sampledPerformance = false;
     const targets = await probeTargets();
     for (const [id, pending] of pendingVerifications) if (!targets.some(target => target.id === pending.targetId)) pendingVerifications.delete(id);
     const handled = new Set();
@@ -417,32 +431,35 @@ export async function runProbeBatch({ force = false } = {}) {
         if (settings.evaluatorId === "custom-question") {
           const runs = listQualityRuns({ hours: 0, baseUrl: target.baseUrl, keyGroup: target.keyGroup,
             model: target.canonicalModelId || target.observedModel, reasoningEffort: target.reasoningEffort || "" });
-          if (verificationDue(target, "custom-question", runs, settings.verificationIntervalMinutes))
+          if (force || verificationDue(target, "custom-question", runs, getSettings().verificationIntervalMinutes))
             results.push(await runTargetVerification(target, "custom-question", () => force || getSettings().probeEnabled, { manual: force, automatic: !force }));
           continue;
         }
-        let sample;
-        let lastError;
-        for (let attempt = 0; attempt < 3; attempt++) {
-          try {
-            sample = await runProbe(target);
-            if (sample.status === "ok") break;
-            lastError = new Error(sample.error || "探测请求失败");
-            if ([401, 403].includes(sample.measurement?.httpStatus)) break;
-          } catch (error) {
-            lastError = error;
-            if (["target_inactive", "monitoring_paused", "budget_exhausted"].includes(error.code)) break;
+        if (performanceDue) {
+          let sample;
+          let lastError;
+          sampledPerformance = true;
+          for (let attempt = 0; attempt < 3; attempt++) {
+            try {
+              sample = await runProbe(target);
+              if (sample.status === "ok") break;
+              lastError = new Error(sample.error || "探测请求失败");
+              if ([401, 403].includes(sample.measurement?.httpStatus)) break;
+            } catch (error) {
+              lastError = error;
+              if (["target_inactive", "monitoring_paused", "budget_exhausted"].includes(error.code)) break;
+            }
+            if (attempt < 2) await delay(Math.min(10000, 500 * 2 ** attempt));
           }
-          if (attempt < 2) await delay(Math.min(10000, 500 * 2 ** attempt));
+          if (["target_inactive", "monitoring_paused", "budget_exhausted"].includes(lastError?.code)) throw lastError;
+          results.push({ id: target.id, status: sample?.status || "error", error: sample?.error || lastError?.message });
+          if ([401, 403].includes(sample?.measurement?.httpStatus)) continue;
         }
-        if (["target_inactive", "monitoring_paused", "budget_exhausted"].includes(lastError?.code)) throw lastError;
-        results.push({ id: target.id, status: sample?.status || "error", error: sample?.error || lastError?.message });
-        if ([401, 403].includes(sample?.measurement?.httpStatus)) continue;
         for (const evaluator of listEvaluators().filter((item) => !item.external && item.id === getSettings().evaluatorId)) {
           if (!force && !getSettings().probeEnabled) break;
           const runs = listQualityRuns({ hours: 0, baseUrl: target.baseUrl, keyGroup: target.keyGroup,
             model: target.canonicalModelId || target.observedModel, reasoningEffort: target.reasoningEffort || "" });
-          if (!verificationDue(target, evaluator.id, runs, getSettings().verificationIntervalMinutes, Date.now(), evaluator.id === "custom-question" ? getSettings().defaultQuestionId : null)) continue;
+          if (!force && !verificationDue(target, evaluator.id, runs, getSettings().verificationIntervalMinutes, Date.now(), evaluator.id === "custom-question" ? getSettings().defaultQuestionId : null)) continue;
           results.push(await runTargetVerification(target, evaluator.id, () => force || getSettings().probeEnabled, { manual: force, automatic: !force }));
         }
       } catch (error) {
@@ -452,6 +469,7 @@ export async function runProbeBatch({ force = false } = {}) {
       }
     }
     await drainQueue();
+    if (sampledPerformance) lastPerformanceRunAt = Date.now();
     lastRunAt = new Date().toISOString();
     return results;
   })();
@@ -463,7 +481,8 @@ export function scheduleProbes({ immediate = false } = {}) {
   // Native UI tests inspect real sessions without sending provider requests.
   if (process.env.MODIVUE_UI_ARTIFACTS) { nextRunAt = null; return; }
   const settings = getSettings();
-  const delay = immediate ? 0 : pendingVerifications.size ? 5000 : settings.evaluatorId === "custom-question" ? settings.questionIntervalSeconds * 1000 : settings.probeIntervalMinutes * 60000;
+  const delay = immediate ? 0 : pendingVerifications.size ? 5000
+    : Math.min(settings.probeIntervalMinutes, settings.verificationIntervalMinutes) * 60000;
   nextRunAt = settings.probeEnabled && settings.probeStrategy !== "manual" || pendingVerifications.size ? new Date(Date.now() + delay).toISOString() : null;
   if (nextRunAt) timer = setTimeout(async () => {
     try { await runProbeBatch(); } catch (error) { console.error(error.message); }

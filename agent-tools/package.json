@@ -1,0 +1,14 @@
+{
+  "name": "modivue-agent-tools",
+  "private": true,
+  "description": "Modivue 的项目级 agent 开发工具",
+  "engines": {
+    "node": ">=20",
+    "npm": ">=10"
+  },
+  "dependencies": {
+    "@konbakuyomu/smart-search": "latest",
+    "@mindfoldhq/trellis": "latest",
+    "fast-context-mcp": "latest"
+  }
+}

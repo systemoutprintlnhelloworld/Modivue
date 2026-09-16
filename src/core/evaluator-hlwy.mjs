@@ -109,8 +109,8 @@ async function run(input) {
   const preview = numbers.length < 50;
   return { status: "ok", rationale: `${preview ? "少量样本预览 · " : ""}HLWY 匹配度 ${result.value.toFixed(2)}% · ${numbers.length} 个有效样本`,
     metadata: { ...metadata, ...result, plannedSamples: attempts, reasons: preview ? ["screen_preview"] : [],
-      directedModel: preview ? null : closest?.model || null,
-      directionScore: preview ? null : closest?.relativeMatch ?? null, candidateDistribution } };
+      closestModel: closest?.model || null, directedModel: null,
+      directionScore: null, candidateDistribution } };
 }
 
 registerEvaluator({ id: "hlwy-fingerprint", label: "HLWY 分布匹配", version: hlwyVersion, conditionsId: "hlwy:v1", run });

@@ -124,9 +124,11 @@ final class IslandWebView: WKWebView {
             evaluateJavaScript("window.modivue?.nativeHover?.(null)")
             return
         }
-        let point = convert(window.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil)
+        let pointer = NSEvent.mouseLocation
+        let point = convert(window.convertPoint(fromScreen: pointer), from: nil)
         let y = isFlipped ? point.y : bounds.height - point.y
-        evaluateJavaScript("window.modivue?.nativeHover?.({clientX:\(point.x),clientY:\(y)})")
+        let screenY = (NSScreen.screens.first(where: { $0.frame.contains(pointer) })?.frame.maxY ?? 0) - pointer.y
+        evaluateJavaScript("window.modivue?.nativeHover?.({clientX:\(point.x),clientY:\(y),screenX:\(pointer.x),screenY:\(screenY)})")
     }
 }
 
@@ -250,7 +252,7 @@ final class ModivueApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNav
 
         let process = Process()
         process.executableURL = node
-        process.arguments = [server.path]
+        process.arguments = [server.path, "--desktop-parent"]
         process.currentDirectoryURL = application
         var environment = ProcessInfo.processInfo.environment
         // Finder launches do not inherit a terminal's Homebrew search path.
@@ -261,6 +263,7 @@ final class ModivueApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNav
         environment["MODIVUE_DATA_DIR"] = support.path
         environment["MODIVUE_LANGUAGES"] = Locale.preferredLanguages.joined(separator: ",")
         process.environment = environment
+        process.standardInput = Pipe()
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         try process.run()
@@ -610,10 +613,25 @@ final class ModivueApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNav
                 self.reply(message.webView, requestID: id, result: error.map { ["error": $0.localizedDescription] } ?? ["granted": granted])
             }
         case "notify":
+            let wantsSystem = body["system"] as? Bool ?? true
+            let wantsSound = body["sound"] as? Bool ?? true
+            if wantsSound {
+                let names = ["subtle": "Submarine", "chime": "Glass", "urgent": "Basso"]
+                let name = names[body["soundName"] as? String ?? "chime"] ?? "Glass"
+                let volume = min(1, max(0, body["volume"] as? Double ?? 0.65))
+                DispatchQueue.main.async {
+                    if let sound = NSSound(named: NSSound.Name(name)) { sound.volume = Float(volume); sound.play() }
+                    else { NSSound.beep() }
+                }
+            }
+            guard wantsSystem else {
+                if let id = body["requestId"] as? String { reply(message.webView, requestID: id, result: ["sent": true]) }
+                return
+            }
             let content = UNMutableNotificationContent()
             content.title = body["title"] as? String ?? "Modivue"
             content.body = body["body"] as? String ?? ""
-            content.sound = .default
+            content.sound = nil
             let center = UNUserNotificationCenter.current()
             center.getNotificationSettings { settings in
                 guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else {

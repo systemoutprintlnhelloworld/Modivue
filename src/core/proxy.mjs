@@ -89,7 +89,7 @@ function observationConditionsId(source, wireApi, parameters, supplied) {
   return `${source}:${wireApi}:${digest}`;
 }
 
-export async function proxyStream({ request, response, upstreamUrl, baseUrl = upstreamUrl, protocol, saveSample, observedModel, canonicalModelId, agent, conditionsId, timeoutMs = agent === "modivue-probe" ? 45000 : 120000, signal, onText, onEvent }) {
+export async function proxyStream({ request, response, upstreamUrl, baseUrl = upstreamUrl, protocol, saveSample, observedModel, canonicalModelId, agent, conditionsId, timeoutMs = agent === "modivue-probe" ? 45000 : 120000, signal, onText, onEvent, apiKey, authHeader }) {
   if (request.method !== "POST") { response.writeHead(405, { Allow: "POST", "Content-Type": "application/json" }).end(JSON.stringify({ error: "代理只接受 POST 请求" })); return; }
   if (!upstreamUrl) { response.writeHead(503, { "Content-Type": "application/json" }).end(JSON.stringify({ error: `未配置 ${protocol} 上游地址` })); return; }
   const timestamp = new Date().toISOString();
@@ -118,11 +118,17 @@ export async function proxyStream({ request, response, upstreamUrl, baseUrl = up
   let sentHeaders = false;
   const wireApi = wireApiFor(upstreamUrl);
   const source = agent === "modivue-probe" ? "probe" : "observation";
+  const outboundHeaders = forwardedHeaders(request);
+  if (apiKey) {
+    outboundHeaders.delete("authorization"); outboundHeaders.delete("x-api-key"); outboundHeaders.delete("x-goog-api-key");
+    outboundHeaders.set(authHeader === "x-api-key" ? "x-api-key" : "authorization", authHeader === "x-api-key" ? apiKey : `Bearer ${apiKey}`);
+  }
+  const outgoingKeyGroup = keyGroup({ headers: outboundHeaders });
   const requestConditionsId = new Headers(request.headers).get("x-modivue-conditions-id");
   const requestSecrets = ["authorization", "x-api-key", "x-goog-api-key"].flatMap((name) => {
-    const value = new Headers(request.headers).get(name);
-    return value ? [value, value.replace(/^Bearer\s+/i, "")] : [];
-  }).filter((value) => value.length > 8);
+    return [new Headers(request.headers).get(name), outboundHeaders.get(name)]
+      .filter(Boolean).flatMap(value => [value, value.replace(/^Bearer\s+/i, "")]);
+  }).filter(Boolean);
   const redactError = (value) => requestSecrets.reduce((text, secret) => text.replaceAll(secret, "[redacted]"), String(value));
   const requestParameters = Object.fromEntries(["temperature", "top_p", "max_tokens", "max_completion_tokens", "max_output_tokens", "reasoning", "reasoning_effort", "thinking", "output_config", "service_tier", "generationConfig"].filter((key) => key in parsedBody).map((key) => [key, parsedBody[key]]));
   const measurement = { version: 2, wireApi, source,
@@ -170,7 +176,6 @@ export async function proxyStream({ request, response, upstreamUrl, baseUrl = up
   const chunks = [];
   let responseBytes = 0;
   try {
-    const outboundHeaders = forwardedHeaders(request);
     const destination = new URL(upstreamUrl);
     if (agent === "modivue-probe" && ["localhost", "127.0.0.1", "[::1]"].includes(destination.hostname) && destination.pathname.startsWith("/proxy/")) {
       outboundHeaders.set("x-modivue-timeout-ms", String(timeoutMs ?? 0));
@@ -243,9 +248,9 @@ export async function proxyStream({ request, response, upstreamUrl, baseUrl = up
   const pricing = catalogModel?.cost;
   const normalized = normalizeUsage(protocol, usage);
   const cost = resolveRequestCost({ apiCost, usage: normalized, catalogPricing: pricing,
-    channelPricing: getChannelPricing({ protocol, baseUrl: normalizeBaseUrl(baseUrl), keyGroup: keyGroup(request), observedModel: model }) });
+    channelPricing: getChannelPricing({ protocol, baseUrl: normalizeBaseUrl(baseUrl), keyGroup: outgoingKeyGroup, observedModel: model }) });
   measurement.cost = cost;
-  const sample = { timestamp, protocol, baseUrl: normalizeBaseUrl(baseUrl), keyGroup: keyGroup(request), agent, observedModel: model, canonicalModelId,
+  const sample = { timestamp, protocol, baseUrl: normalizeBaseUrl(baseUrl), keyGroup: outgoingKeyGroup, agent, observedModel: model, canonicalModelId,
     ttftMs: streaming ? ttftMs(startedAt, firstContentAt) : null, ...normalizeUsage(protocol, usage), status, error, rawUsage: usage, measurement };
   sample.durationMs = measurement.durationMs;
   Object.assign(sample, cost);

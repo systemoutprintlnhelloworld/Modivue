@@ -61,8 +61,9 @@ internal sealed class MonitorContext : ApplicationContext
         var port = ((IPEndPoint)listener.LocalEndpoint).Port; listener.Stop();
         origin = new($"http://127.0.0.1:{port}");
         var root = AppContext.BaseDirectory;
-        var start = new ProcessStartInfo(Path.Combine(root, "runtime", "node.exe")) { WorkingDirectory = Path.Combine(root, "app"), UseShellExecute = false, CreateNoWindow = true };
+        var start = new ProcessStartInfo(Path.Combine(root, "runtime", "node.exe")) { WorkingDirectory = Path.Combine(root, "app"), UseShellExecute = false, CreateNoWindow = true, RedirectStandardInput = true };
         start.ArgumentList.Add(Path.Combine(root, "app", "server.mjs"));
+        start.ArgumentList.Add("--desktop-parent");
         start.Environment["MODIVUE_PORT"] = port.ToString();
         start.Environment["MODIVUE_DATA_DIR"] = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Modivue");
         start.Environment["MODIVUE_LANGUAGES"] = System.Globalization.CultureInfo.CurrentUICulture.Name;
@@ -119,7 +120,15 @@ internal sealed class MonitorContext : ApplicationContext
                     await Reply(web, body.GetProperty("requestId").GetString()!, new { granted = true });
                     break;
                 case "notify":
-                    tray.ShowBalloonTip(5000, body.GetProperty("title").GetString()!, body.GetProperty("body").GetString()!, ToolTipIcon.Info);
+                    var wantsSystem = !body.TryGetProperty("system", out var system) || system.GetBoolean();
+                    var wantsSound = body.TryGetProperty("sound", out var sound) && sound.GetBoolean();
+                    if (wantsSound) {
+                        var soundName = body.TryGetProperty("soundName", out var selectedSound) ? selectedSound.GetString() : "chime";
+                        if (soundName == "urgent") System.Media.SystemSounds.Exclamation.Play();
+                        else if (soundName == "subtle") System.Media.SystemSounds.Beep.Play();
+                        else System.Media.SystemSounds.Asterisk.Play();
+                    }
+                    if (wantsSystem) tray.ShowBalloonTip(5000, body.GetProperty("title").GetString()!, body.GetProperty("body").GetString()!, ToolTipIcon.Info);
                     if (body.TryGetProperty("requestId", out var notificationId)) await Reply(web, notificationId.GetString()!, new { sent = true });
                     break;
                 case "export":

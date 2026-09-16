@@ -55,23 +55,55 @@ registerEvaluator({ id: "ztest", label: "Ztest 官方检测", version: ztestVers
 
 registerEvaluator({ id: "ztest-local", label: "Ztest 本地多探针检测", version: ztestLocalVersion, conditionsId: "ztest:local:v1", external: false,
   async run(input) {
-    const observations = [], failures = [];
-    input.requireBudget?.(ztestLocalProbes.length);
-    input.onProgress?.({ completed: 0, total: ztestLocalProbes.length });
-    for (const probe of ztestLocalProbes) {
-      try {
-        const actual = String(await input.request(probe.prompt, { maxOutputTokens: 128, conditionsId: `ztest:local:v1:${probe.id}` })).trim();
-        observations.push({ id: probe.id, label: probe.label, status: actual ? "success" : "empty", response: actual });
-      } catch (error) {
-        failures.push({ id: probe.id, label: probe.label, error: error.message });
-        observations.push({ id: probe.id, label: probe.label, status: "error", response: "" });
+    const previous = input.previousRun;
+    const canResume = previous?.status === "paused" && previous.evaluator_version === ztestLocalVersion
+      && previous.metadata?.conditionsId === "ztest:local:v1" && previous.metadata?.wireApi === input.wireApi;
+    const observations = ztestLocalProbes.map(probe => ({ id: probe.id, label: probe.label, status: "pending", response: "", attempts: 0,
+      ...(canResume ? previous.metadata.observations?.find(row => row.id === probe.id) : {}) }));
+    const failures = canResume ? [...(previous.metadata.failures || [])] : [];
+    let attempts = canResume ? previous.metadata.evaluatorAttempts || previous.metadata.requestAttempts || 0 : 0;
+    let stopReason = null, stopCode = null;
+    const completed = () => observations.filter(row => row.status === "success").length;
+    const progress = () => input.onProgress?.({ completed: completed(), total: ztestLocalProbes.length, requestAttempts: attempts });
+    progress();
+    try {
+      input.requireBudget?.(ztestLocalProbes.length - completed());
+      sampling: for (const observation of observations) {
+        if (observation.status === "success") continue;
+        const probe = ztestLocalProbes.find(row => row.id === observation.id);
+        for (let retry = 0; retry < 3; retry++) {
+          input.requireBudget?.(1);
+          attempts++; observation.attempts++;
+          try {
+            const actual = String(await input.request(probe.prompt, { maxOutputTokens: 128, conditionsId: `ztest:local:v1:${probe.id}` })).trim();
+            if (!actual) throw new Error("空响应");
+            Object.assign(observation, { status: "success", response: actual });
+            break;
+          } catch (error) {
+            if (["monitoring_paused", "target_inactive", "budget_exhausted"].includes(error.code)) throw error;
+            failures.push({ attempt: attempts, cellId: probe.id, label: probe.label, error: error.message });
+            observation.status = "error";
+            if (error.code === "authentication_failed" || error.retryable === false) throw error;
+            if (retry === 2) {
+              stopReason = "本轮重试次数已用完；已保留成功探针，下次核验继续未完成项";
+              break sampling;
+            }
+            await input.wait?.(Math.max(error.retryAfterMs || 0, 1000 * 2 ** retry));
+          }
+        }
+        progress();
       }
-      input.onProgress?.({ completed: observations.length, total: ztestLocalProbes.length });
+    } catch (error) {
+      stopReason = error.message;
+      stopCode = error.code || "request_failed";
     }
-    const valid = observations.filter(item => item.status === "success").length;
-    return { evaluatorId: "ztest-local", evaluatorVersion: ztestLocalVersion, status: valid ? "ok" : "error", score: null,
-      rationale: "本地 Ztest 兼容探针已完成；仅保存响应证据，不等同于 ztest.ai 官方排名或身份认证",
+    const valid = completed();
+    progress();
+    return { evaluatorId: "ztest-local", evaluatorVersion: ztestLocalVersion,
+      status: stopCode === "authentication_failed" || stopCode === "request_failed" ? "error" : stopReason ? "paused" : "ok", score: null,
+      rationale: stopReason || "本地 Ztest 兼容探针已完成；仅保存响应证据，不等同于 ztest.ai 官方排名或身份认证",
       metadata: { verdict: "inconclusive", observations, failures, sampleCount: valid, plannedSamples: ztestLocalProbes.length,
-        conditionsId: "ztest:local:v1", external: false,
+        conditionsId: "ztest:local:v1", external: false, evaluatorAttempts: attempts, wireApi: input.wireApi,
+        continuedFrom: canResume ? previous.id : null, stopReason,
         conditionNotice: "这是 Modivue 本地 Ztest 兼容探针，仅保存可重复的响应证据，不等同于 ztest.ai 官方排名或身份认证。" } };
   } });

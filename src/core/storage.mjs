@@ -318,6 +318,7 @@ const defaults = Object.freeze({ ...preferenceDefaults, probeEnabled: true, prob
 export function getSettings() {
   const row = db.prepare("SELECT value FROM preferences WHERE name = 'settings'").get();
   const saved = row ? JSON.parse(row.value) : {};
+  delete saved.questionIntervalSeconds;
   if (Object.hasOwn(saved, "normalMetric")) {
     for (const kind of ["quality", "cache", "ttft", "balance"]) {
       saved[`normalShow${kind[0].toUpperCase()}${kind.slice(1)}`] ??= saved.normalMetric === kind;
@@ -448,7 +449,7 @@ export function updateSettings(patch) {
     } else if (key === "tourSeen") {
       if (typeof value !== "boolean") throw new TypeError(`${key} 必须为布尔值`);
     } else {
-      const bounds = { probeIntervalMinutes: [1, 1440], verificationIntervalMinutes: [15, 1440], verificationRequestDelaySeconds: [1, 60], probeDailyLimit: [1, 10000], verificationSamples: [1, 500], probeMaxOutputTokens: [8, 4096], islandMaxAgents: [1, 12],
+      const bounds = { probeIntervalMinutes: [1, 1440], verificationIntervalMinutes: [1, 1440], verificationRequestDelaySeconds: [1, 60], probeDailyLimit: [1, 10000], verificationSamples: [1, 500], probeMaxOutputTokens: [8, 4096], islandMaxAgents: [1, 12],
         ttftThresholdMs: [1, 120000], cacheThreshold: [0, 1], qualityConsecutive: [1, 20], defaultHours: [0, 720] };
       if (!Number.isFinite(value) || value < bounds[key][0] || value > bounds[key][1]
         || key !== "cacheThreshold" && !Number.isInteger(value)) throw new TypeError(`${key} 超出有效范围`);

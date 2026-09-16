@@ -20,7 +20,7 @@ const originalFetch = globalThis.fetch;
 try {
   assert.equal(getSettings().verificationIntervalMinutes, 15);
   assert.equal(getSettings().verificationRequestDelaySeconds, 2);
-  assert.throws(() => updateSettings({ verificationIntervalMinutes: 14 }));
+  assert.throws(() => updateSettings({ verificationIntervalMinutes: 0 }));
   assert.throws(() => updateSettings({ verificationRequestDelaySeconds: 0 }));
   pass("verification-defaults-and-validation");
 

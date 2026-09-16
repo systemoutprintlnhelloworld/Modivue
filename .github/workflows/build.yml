@@ -30,25 +30,94 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash
         run: node scripts/release-version.mjs "$GITHUB_REF_NAME"
+      - name: Require macOS release credentials
+        if: startsWith(github.ref, 'refs/tags/') && runner.os == 'macOS'
+        shell: bash
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          for name in MACOS_CERTIFICATE_P12_BASE64 MACOS_CERTIFICATE_PASSWORD MACOS_SIGN_IDENTITY APPLE_ID APPLE_TEAM_ID APPLE_APP_SPECIFIC_PASSWORD; do
+            test -n "${!name:-}" || { echo "Missing required release secret: $name" >&2; exit 1; }
+          done
+      - name: Import Developer ID certificate
+        if: startsWith(github.ref, 'refs/tags/') && runner.os == 'macOS'
+        shell: bash
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/modivue-signing.keychain-db"
+          CERTIFICATE_PATH="$RUNNER_TEMP/modivue-signing.p12"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
+          printf '%s' "$MACOS_CERTIFICATE_P12_BASE64" | openssl base64 -d -A -out "$CERTIFICATE_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" -P "$MACOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+          rm -f "$CERTIFICATE_PATH"
       - name: Build macOS
         if: runner.os == 'macOS'
+        env:
+          MACOS_SIGN_IDENTITY: ${{ startsWith(github.ref, 'refs/tags/') && secrets.MACOS_SIGN_IDENTITY || '' }}
         run: |
           npm run check:desktop
           npm run desktop:build
           codesign --verify --deep --strict dist/Modivue.app
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            codesign --verify --deep --strict --verbose=2 dist/Modivue.app
+          fi
           ditto -c -k --sequesterRsrc --keepParent dist/Modivue.app "dist/Modivue-macos-$(uname -m).zip"
+      - name: Notarize macOS release DMG
+        if: startsWith(github.ref, 'refs/tags/') && runner.os == 'macOS'
+        env:
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: bash scripts/package-macos-release.sh
       - uses: actions/setup-dotnet@v4
         if: runner.os == 'Windows'
         with:
           dotnet-version: '8.0.x'
+      - name: Require Windows release credentials
+        if: startsWith(github.ref, 'refs/tags/') && runner.os == 'Windows'
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE_BASE64: ${{ startsWith(github.ref, 'refs/tags/') && secrets.WINDOWS_CERTIFICATE_BASE64 || '' }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ startsWith(github.ref, 'refs/tags/') && secrets.WINDOWS_CERTIFICATE_PASSWORD || '' }}
+        run: |
+          if (-not $env:WINDOWS_CERTIFICATE_BASE64) { throw 'Missing required release secret: WINDOWS_CERTIFICATE_BASE64' }
+          if (-not $env:WINDOWS_CERTIFICATE_PASSWORD) { throw 'Missing required release secret: WINDOWS_CERTIFICATE_PASSWORD' }
       - name: Build Windows
         if: runner.os == 'Windows'
         shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE_BASE64: ${{ startsWith(github.ref, 'refs/tags/') && secrets.WINDOWS_CERTIFICATE_BASE64 || '' }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ startsWith(github.ref, 'refs/tags/') && secrets.WINDOWS_CERTIFICATE_PASSWORD || '' }}
         run: ./scripts/build-windows.ps1
-      - uses: actions/upload-artifact@v4
+      - name: Upload unsigned CI archive
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
         with:
-          name: Modivue-${{ runner.os }}
+          name: Modivue-${{ runner.os }}-unsigned
           path: dist/*.zip
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload signed release package
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@v4
+        with:
+          name: Modivue-${{ runner.os }}-signed
+          path: |
+            dist/*.dmg
+            dist/*-setup.exe
           if-no-files-found: error
           retention-days: 14
 
@@ -68,4 +137,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.ref_name }}
-        run: gh release create "$RELEASE_TAG" artifacts/*.zip --verify-tag --generate-notes --title "Modivue $RELEASE_TAG" --prerelease
+        run: gh release create "$RELEASE_TAG" artifacts/* --verify-tag --generate-notes --title "Modivue $RELEASE_TAG" --prerelease

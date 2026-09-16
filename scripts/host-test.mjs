@@ -178,7 +178,10 @@ if (mode !== "--worker") {
         check("native-history-not-clipped", popup.x >= 0 && popup.y >= 0
           && popup.right <= expandedGeometry.viewport.width && popup.bottom <= expandedGeometry.viewport.height, expandedGeometry);
         check("native-single-ring-per-model", expandedGeometry.ringCount === expandedGeometry.models.length, expandedGeometry.ringCount);
-        check("native-focused-three-metrics", expandedGeometry.islandMode === "focus" && expandedGeometry.focusCount === 3, expandedGeometry);
+        const runtime = JSON.parse(await readFile(join(jobDirectory, "runtime.json"), "utf8"));
+        const { settings } = await (await fetch(`${runtime.base}/api/settings`)).json();
+        const expectedFocusCount = ["Quality", "Cache", "Ttft", "Balance"].filter(metric => settings[`focusShow${metric}`]).length;
+        check("native-focused-configured-metrics", expandedGeometry.islandMode === "focus" && expandedGeometry.focusCount === expectedFocusCount, { expectedFocusCount, ...expandedGeometry });
         check("native-focus-not-clipped", expandedGeometry.focusRects.every(rect => rect.y >= 0 && rect.bottom <= expandedGeometry.viewport.height), expandedGeometry.focusRects);
         const expandedPanel = hovered.find(isIslandWindow).kCGWindowBounds;
         const expandedModel = expandedGeometry.models[0].rect;
@@ -245,7 +248,7 @@ if (mode !== "--worker") {
         check("native-overview-tab-present", Boolean(overviewTab), overviewTab);
         await driver("press", pid, overviewTab.path); await delay(400);
         ax = await driver("elements", pid);
-        check("details-overview-triple-ring", ax.some(row => row.AXDescription === l("模型核验、Cache 与 TTFT 三环", "Verification, cache and TTFT rings")));
+        check("details-overview-configured-rings", ax.some(row => row.AXDescription === l("标准界面显示环", "Dashboard: visible rings")));
         await driver("screenshot", join(jobDirectory, "overview.png"));
         for (const [surface, metric] of [["focus", "cache"], ["focus", "ttft"], ["focus", "quality"], ["popover", "cache"]]) {
           await driver("move", 100, 100); await delay(900);
@@ -301,13 +304,25 @@ if (mode !== "--worker") {
           const exportButton = ax.find(row => row.AXRole === "AXButton" && /导出 JSONL|Export JSONL/.test(row.AXTitle || ""));
           check("native-export-action", Boolean(exportButton));
           if (exportButton) {
-            await driver("press", pid, exportButton.path); await delay(650);
-            ax = await driver("elements", pid); await save("export-panel-ax.json", ax);
-            const saveButton = ax.find(row => row.AXRole === "AXButton" && /^(存储|保存|Save)$/.test(row.AXTitle || ""));
+            await driver("press", pid, exportButton.path);
+            let saveButton;
+            for (let attempt = 0; attempt < 30; attempt++) {
+              await delay(250);
+              ax = await driver("elements", pid);
+              saveButton = ax.find(row => row.AXRole === "AXButton" && row.AXEnabled === true && /^(存储|保存|Save)$/.test(row.AXTitle || ""));
+              if (saveButton) break;
+            }
+            await save("export-panel-ax.json", ax);
             check("native-save-panel", Boolean(saveButton));
             if (saveButton) {
-              await driver("press", pid, saveButton.path); await delay(500);
-              const exported = await readFile(join(jobDirectory, "modivue-samples.jsonl"), "utf8");
+              await driver("press", pid, saveButton.path);
+              let exported;
+              for (let attempt = 0; attempt < 20; attempt++) {
+                await delay(250);
+                try { exported = await readFile(join(jobDirectory, "modivue-samples.jsonl"), "utf8"); break; }
+                catch (error) { if (error.code !== "ENOENT") throw error; }
+              }
+              check("native-jsonl-export-created", typeof exported === "string");
               check("native-jsonl-export-saved", exported.trim() === "" || exported.trim().split("\n").every(line => Boolean(JSON.parse(line))));
             }
           }

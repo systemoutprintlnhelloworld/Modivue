@@ -38,7 +38,9 @@ function scoreCandidate(observedName, model) {
   let best = -1;
   for (const rawCandidate of candidateValues(model)) {
     const candidate = normalizeModelName(rawCandidate);
-    if (!candidate || !compatibleNumbers(observedName, rawCandidate)) continue;
+    if (!candidate) continue;
+    // Exact normalized names also cover dotted and hyphenated versions.
+    if (observed !== candidate && !compatibleNumbers(observedName, rawCandidate)) continue;
     let score;
     if (observed === candidate) score = 1;
     else if (candidate.length >= 4 && observed.includes(candidate)) {
@@ -59,8 +61,8 @@ export function matchModelName(observedName, models = [], { provider } = {}) {
     + (provider && model.provider === provider ? 0.005 : 0)) }))
     .filter(({ score }) => score >= 0).sort((a, b) => b.score - a.score || a.model.id.localeCompare(b.model.id));
   const best = ranked[0];
-  const ambiguous = best?.score >= 0.8 && ranked[1] && best.score - ranked[1].score < 0.025
-    && ranked[1].model.id.split("/").at(-1) !== best.model.id.split("/").at(-1);
+  const ambiguous = best?.score >= 0.8 && ranked[1] && !(best.score === 1 && ranked[1].score < 1) && best.score - ranked[1].score < 0.025
+    && normalizeModelName(ranked[1].model.id.split("/").at(-1)) !== normalizeModelName(best.model.id.split("/").at(-1));
   const status = ambiguous ? "ambiguous" : best?.score >= 0.8 ? "matched" : "unmatched";
   return { model: status === "matched" ? best.model : null, candidate: best?.model ?? null,
     confidence: Number((best?.score ?? 0).toFixed(3)), status,

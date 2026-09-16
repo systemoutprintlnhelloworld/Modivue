@@ -12,3 +12,17 @@ dist/
 desktop/windows/bin/
 desktop/windows/obj/
 *.log
+
+# Local runtime, credentials, and private sampling material.
+/data/
+/.codex/config.toml
+/.serena/
+/.debug-*.mjs
+/agent-tools/benchmark/
+/agent-tools/config.json
+
+# Machine-bound tooling and private development/session records.
+/agent-tools/codex-mcp.toml
+/.trellis/workspace/
+/.trellis/tasks/09-08-iq-liquid-island/implement.md
+/.trellis/tasks/09-08-iq-liquid-island/task.json
