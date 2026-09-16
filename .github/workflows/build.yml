@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -43,13 +43,19 @@ jobs:
           fi
           ditto -c -k --sequesterRsrc --keepParent dist/Modivue.app "dist/Modivue-macos-$(uname -m).zip"
       - name: Notarize macOS release DMG
-        if: startsWith(github.ref, 'refs/tags/') && runner.os == 'macOS' && secrets.MACOS_SIGN_IDENTITY != '' && secrets.APPLE_ID != '' && secrets.APPLE_TEAM_ID != '' && secrets.APPLE_APP_SPECIFIC_PASSWORD != ''
+        if: startsWith(github.ref, 'refs/tags/') && runner.os == 'macOS'
+        continue-on-error: true
         env:
           MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-        run: bash scripts/package-macos-release.sh
+        run: |
+          if [[ -z "$MACOS_SIGN_IDENTITY" || -z "$APPLE_ID" || -z "$APPLE_TEAM_ID" || -z "$APPLE_APP_SPECIFIC_PASSWORD" ]]; then
+            echo 'Signing secrets are not configured; keeping unsigned ZIP.'
+            exit 0
+          fi
+          bash scripts/package-macos-release.sh
       - uses: actions/setup-dotnet@v4
         if: runner.os == 'Windows'
         with:
@@ -69,11 +75,11 @@ jobs:
           path: dist/*.zip
           if-no-files-found: error
           retention-days: 14
-      - name: Upload signed release package
+      - name: Upload release package
         if: startsWith(github.ref, 'refs/tags/')
         uses: actions/upload-artifact@v4
         with:
-          name: Modivue-${{ runner.os }}-signed
+          name: Modivue-${{ runner.os }}-release
           path: |
             dist/*.zip
             dist/*.dmg
