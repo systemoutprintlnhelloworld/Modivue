@@ -17,7 +17,7 @@
 [![Downloads](https://img.shields.io/github/downloads/systemoutprintlnhelloworld/Modivue/total?style=flat-square&color=4FD1B0&label=downloads)](https://github.com/systemoutprintlnhelloworld/Modivue/releases)
 
 [![下载 macOS 版](docs/assets/download-macos.svg)](https://github.com/systemoutprintlnhelloworld/Modivue/releases/latest/download/Modivue-macos-arm64.zip)
-[![下载 Windows 版](docs/assets/download-windows.svg)](https://github.com/systemoutprintlnhelloworld/Modivue/releases/latest/download/Modivue-windows-x64.zip)
+[![下载 Windows 版](docs/assets/download-windows.svg)](https://github.com/systemoutprintlnhelloworld/Modivue/releases/latest/download/Modivue-windows-x64-setup.exe)
 
 <!-- TODO: README.en.md 完成后在此加入「简体中文 · English」切换 -->
 
@@ -109,7 +109,7 @@
 | 平台 | 下载包 | 安装 |
 |---|---|---|
 | macOS Apple Silicon | `Modivue-macos-arm64.zip` | 解压，把 `Modivue.app` 拖进"应用程序"。暂无 Intel 版 |
-| Windows 10/11 x64（预览） | `Modivue-windows-x64.zip` | 解压后运行 `Modivue.exe`。需要 Microsoft Edge WebView2 Runtime |
+| Windows 10/11 x64（预览） | `Modivue-windows-x64-setup.exe` | 解压后运行 `Modivue.exe`。需要 Microsoft Edge WebView2 Runtime |
 | 命令行 | 源码 `cli/` | Node.js 22.5+，读取桌面端共享的本地数据库 |
 
 ### 首次打开前请读
