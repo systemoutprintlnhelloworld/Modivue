@@ -43,7 +43,7 @@ jobs:
           fi
           ditto -c -k --sequesterRsrc --keepParent dist/Modivue.app "dist/Modivue-macos-$(uname -m).zip"
       - name: Notarize macOS release DMG
-        if: startsWith(github.ref, 'refs/tags/') && runner.os == 'macOS'
+        if: startsWith(github.ref, 'refs/tags/') && runner.os == 'macOS' && secrets.MACOS_SIGN_IDENTITY != '' && secrets.APPLE_ID != '' && secrets.APPLE_TEAM_ID != '' && secrets.APPLE_APP_SPECIFIC_PASSWORD != ''
         env:
           MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
