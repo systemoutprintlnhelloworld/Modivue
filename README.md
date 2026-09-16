@@ -16,8 +16,8 @@
 [![Release](https://img.shields.io/github/v/release/systemoutprintlnhelloworld/Modivue?include_prereleases&sort=semver&style=flat-square&color=7AA2F7)](https://github.com/systemoutprintlnhelloworld/Modivue/releases)
 [![Downloads](https://img.shields.io/github/downloads/systemoutprintlnhelloworld/Modivue/total?style=flat-square&color=4FD1B0&label=downloads)](https://github.com/systemoutprintlnhelloworld/Modivue/releases)
 
-[![下载 macOS 版](docs/assets/download-macos.svg)](https://github.com/systemoutprintlnhelloworld/Modivue/releases)
-[![下载 Windows 版](docs/assets/download-windows.svg)](https://github.com/systemoutprintlnhelloworld/Modivue/releases)
+[![下载 macOS 版](docs/assets/download-macos.svg)](https://github.com/systemoutprintlnhelloworld/Modivue/releases/latest/download/Modivue-macos-arm64.dmg)
+[![下载 Windows 版](docs/assets/download-windows.svg)](https://github.com/systemoutprintlnhelloworld/Modivue/releases/latest/download/Modivue-windows-x64-setup.exe)
 
 <!-- TODO: README.en.md 完成后在此加入「简体中文 · English」切换 -->
 
@@ -149,7 +149,7 @@ xattr -cr /Applications/Modivue.app
 
 ---
 
-## 悬浮窗
+## 灵动岛
 
 形态名称与入口按当前桌面实现定义如下。
 
@@ -162,11 +162,15 @@ xattr -cr /Applications/Modivue.app
 
 悬浮窗可以拖动并吸附到屏幕左右边缘。任何界面下按 `⌘K` / `Ctrl+K` 都能搜索功能。完整说明见 [灵动岛悬浮面板](docs/features/island.md)。
 
+<div align="center"><img src="docs/assets/灵动岛.png" width="860" alt="灵动岛界面"></div>
+
 ---
 
 ## 模型核验
 
 核验结果是**行为证据**：它比较回答与参考分布或参考答案的差异。结果不是人类 IQ，匹配度也不等于身份置信度。原理、版本和局限见 [MODEL-VERIFICATION.md](MODEL-VERIFICATION.md)，操作说明见 [模型核验](docs/features/verification.md)。
+
+<div align="center"><img src="docs/assets/模型核验-main.png" width="860" alt="模型核验界面"></div>
 
 ### 先按你的情况选方法
 
