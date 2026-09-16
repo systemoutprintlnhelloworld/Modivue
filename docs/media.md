@@ -1,20 +1,39 @@
-# README 素材
+# 素材清单
 
-README 顶部和九宫格当前使用明确标记的 SVG 模板，不是真实界面或测量结果。用户提供录屏、截图后，更新 README 对应 `src` 即可。
+<!-- 本页供维护者替换 README 与功能文档中的图片使用 -->
 
-| 展示位置 | 当前素材 | 建议替换内容 |
+所有截图和录屏都使用**演示数据**，发布前逐项检查：
+
+- 不出现真实渠道域名、供应商名称、Key 指纹和真实余额；
+- 没有截图工具水印；
+- 没有文字选中高亮，不是滚动拼接的长图；
+- 同一组图片尺寸一致。
+
+## README
+
+| 位置 | 文件 | 规格 | 内容 |
+|---|---|---|---|
+| 顶部横幅 | `docs/assets/video.gif` | 2:1，无缝循环 | 品牌动图 |
+| 横幅静态图（可选） | `docs/assets/hero-banner.png` | 1280×640 | 横幅首帧，用作 Social preview 和减少动效时的替代图 |
+| 主演示 | `docs/assets/main-demo.gif` | 宽 1200 左右 | 极简态 → 移入展开 → 悬停单环详情 → 移开收回 |
+| 交互总览 | `docs/assets/interaction-overview.jpg` | 16:9 | 各状态总览；需把 "IQ" 改为"模型核验"并补上余额环 |
+
+## 功能宫格缩略图（16:9）
+
+| 文件 | 内容 | 对应文档 |
 |---|---|---|
-| 首屏 | `assets/hero-dark.svg`、`assets/hero-light.svg` | 6–10 秒真实桌面录屏：极简、展开、专注、收回 |
-| 概览 | `assets/feature-overview.svg` | 指标环与多轴趋势 |
-| 悬浮面板 | `assets/feature-island.svg` | 灵动岛三种形态 |
-| 会话 | `assets/feature-agents.svg` | 多个 Agent 的实际状态 |
-| 核验 | `assets/feature-verification.svg` | 一份展开的报告 |
-| 费用 | `assets/feature-cost.svg` | provider 余额历史与费用来源 |
-| 校准 | `assets/feature-calibration.svg` | 可信端采集和档案状态 |
-| 设置 | `assets/feature-settings.svg` | 分类通知与显示设置 |
-| 布局 | `assets/feature-layout.svg` | 长按后直接拖动的 GIF |
-| CLI | `assets/feature-cli.svg` | 脱敏后的实际终端输出 |
+| `docs/assets/features/overview.png` | 概览页：筛选栏、活跃模型、趋势图 | [overview.md](features/overview.md) |
+| `docs/assets/features/island.png` | 灵动岛专注态与详情卡片 | [island.md](features/island.md) |
+| `docs/assets/features/agents.png` | Agent 列表：已打开 / 待命 | [agents.md](features/agents.md) |
+| `docs/assets/features/verification.png` | 核验方法选择或核验报告 | [verification.md](features/verification.md) |
+| `docs/assets/features/cost.png` | 核验费用与供应商余额 | [cost.md](features/cost.md) |
+| `docs/assets/features/calibration.png` | 可信 API 对照或校准档案导入 | [calibration.md](features/calibration.md) |
+| `docs/assets/features/settings.png` | 设置页（检测或通知分类） | [settings.md](features/settings.md) |
+| `docs/assets/features/layout.png` | 拖动区块的录屏（GIF） | [overview.md#布局](features/overview.md#布局) |
+| `docs/assets/features/cli.png` | 终端中 `status` / `watch` 的输出 | [cli.md](features/cli.md) |
 
-九宫格模板为 640 × 360；替换素材建议保持 16:9。上传前遮去 Key、私人渠道地址、账户余额和会话内容。模板图不填写虚构数值。
+替换为 PNG 或 GIF 后，同步修改 README 中的文件扩展名。
 
-`建议/` 保存原设计提案，其中的 TODO、示例链接和产品说法不是当前发布承诺。实际功能以根 README 和功能文档为准。
+## 功能文档内的截图
+
+功能文档中的截图直接引用 `docs/assets/features/`；后续替换同名文件即可。

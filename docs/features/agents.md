@@ -1,17 +1,47 @@
 # Agent 状态
 
-应用从本机配置和运行会话发现 Agent。Codex、Claude Code 以及配置解析器中的其他工具会独立展示。配置文件存在不等于 Agent 正在运行，无法建立具体会话关联时会保留“已打开”而不猜测运行状态。
+<!-- 来源：README；旧版 README 的"本地代理""Windows 预览版""Statusline"条目。发布前请按当前代码核对，尤其是分级表 -->
+![Agent 状态](../assets/features/agents.png)
 
-| 配置解析器 | 配置解析器 | 配置解析器 |
+Modivue 会发现本机的 coding agent 会话，并区分两种情况：**只是装了、有配置**，和**正在运行**。灵动岛和概览页只显示正在工作及近期活跃的 Agent。
+
+[返回 README](../../README.md#支持的工具) · [功能索引](README.md)
+
+## 支持程度
+
+<!-- 说明：请按当前实测结果核对 -->
+
+| 支持程度 | 工具 | 说明 |
 |---|---|---|
-| Claude Code | Codex | Gemini CLI |
-| Qwen Code | OpenCode | Goose |
-| Continue | Pi | Grok Build |
-| Hermes | OpenClaw | GPTMe |
-| Cline | Roo Code | Aider |
+| 实时读取会话状态 | Claude Code、Codex | 能拿到会话、模型和运行状态 |
+| 本机安装并启动验证 | Gemini CLI、Qwen Code、Pi、OpenCode | 已在本机安装并启动验证 |
+| 可解析 provider 配置 | Goose、Continue、Grok Build、Hermes、OpenClaw、GPTMe、Cline、Roo Code、Aider | 有配置解析路径，尚未实机验收 |
 
-Codex 使用本机进程、状态库和会话记录；Claude Code 可接入 hook / statusline。Herdr 提供补充会话信息，不是启动监测的前提。子 Agent 归属父会话，不单独增加顶层会话数。
+"支持"表示有配置解析或会话发现路径，不表示每个工具都完成了真实上游请求的验收。后续计划见 [ROADMAP.md](../../ROADMAP.md)。
 
-这张表列的是配置解析能力，不代表 15 个工具均已完成 GUI 或真实上游验收。各项验证状态见 [路线图](../../ROADMAP.md)。配置切换与代理转发见 [本地代理](../proxy.md)。
+## 各工具怎么识别
 
-实现：[会话发现](../../src/core/agents.mjs)、[通用适配器](../../src/core/agent-adapters.mjs)。
+**Claude Code。** 通过 statusline 或 hook 心跳上报，记录 `session_id`、当前 `model.id`、工作目录和 prompt cache。接入方法见 [CLI 与状态栏](cli.md#接入-claude-code-状态栏)。
+
+**Codex。** 读取 Codex 正在持有的 thread writer lock，并结合 `~/.codex/state_5.sqlite` 获取会话、模型、父子 Agent 和 turn 状态。不需要替换 Codex 的状态栏。这种文件锁采集方式不适用于 Windows。
+
+**其他 CLI 工具。** 根据运行进程的工作目录读取项目配置，可以识别 Node 包入口。
+
+**Herdr。** 通过前台进程 PID 补充状态。
+
+**Windows。** 通过 CIM 发现进程，结合用户配置解析和代理 / Hook 记录。进程存在本身不代表 Agent 正在工作。
+
+## 与代理和主动探测的关系
+
+- 读取 Agent 配置是只读操作，接口不返回 token。
+- 只有静态配置的工具不能作为主动探测目标。
+- 如果 Agent 的 Base URL 已经指向 Modivue 代理，探测会解析回对应的真实上游，同时在 Agent 信息中保留 `proxyBaseUrl`。路由缺失或无效时保留本地地址，并由递归保护跳过探测，避免请求绕回自己。
+
+## 本地接口
+
+| 接口 | 用途 |
+|---|---|
+| `GET /api/agents` | 已启动的会话和适配能力目录 |
+| `GET /api/agent-sessions?includeEnded=1` | 包含已结束会话的详细历史 |
+
+端口与其他接口见 [本地代理与 API](../proxy.md)。

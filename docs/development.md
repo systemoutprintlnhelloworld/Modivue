@@ -1,61 +1,70 @@
-# 构建与发布
+# 构建、测试与发布
 
-源码运行需要 Node.js 22.5+，CI 使用 Node.js 24。Windows 构建还需要 .NET SDK 8；macOS 构建需要 Xcode 命令行工具。
+<!-- 来源：旧版 README 的"自动构建与发布""macOS 桌面应用""Windows 预览版""浏览器开发模式""Herdr 宿主验证"条目。发布前请按当前 package.json 与 workflow 核对 -->
+
+[返回 README](../README.md#从源码运行)
+
+## 环境要求
+
+| 目标 | 要求 |
+|---|---|
+| 浏览器开发模式 / CLI | Node.js 22.5+（使用内置 `node:sqlite`） |
+| macOS 应用 | 在 Apple Silicon Mac 上构建；产物架构与构建机器一致 |
+| Windows 应用 | Node.js 24、.NET SDK 8 |
+
+<!-- TODO: 统一 Node.js 版本要求 -->
+
+## 浏览器开发模式
 
 ```bash
 npm ci
-npm run dev
+npm run check
+npm run dev    # http://127.0.0.1:4173
 ```
 
-开发界面默认位于 `http://127.0.0.1:4173`。原生应用使用动态端口。
+用于前端调试。
 
-## 桌面构建
+## macOS 应用
 
 ```bash
-# macOS
 npm run desktop:build
-open "dist/Modivue.app"
+open dist/Modivue.app
 ```
 
-```powershell
-# Windows
+- 使用 AppKit 管理窗口，WKWebView 呈现监测界面，应用进程内启动只监听 `127.0.0.1` 的本地服务。
+- 构建脚本会封装当前 Node.js 可执行文件及其动态依赖，目标机器不需要安装 Node.js 或 Homebrew。
+- 数据目录：`~/Library/Application Support/Modivue`。
+- 当前使用临时签名，尚未配置 Apple Developer ID 证书与公证。
+
+## Windows 应用
+
+```bash
+npm ci
 npm run windows:build
 ```
 
-macOS 宿主使用 AppKit + WKWebView，打包 Node 及其动态依赖。产物架构与构建机器一致，目前下载包面向 Apple Silicon。Windows 使用 .NET 8 + WebView2，包内带 .NET 与 Node，机器还需 Edge WebView2 Runtime。
+- 发布包内含 .NET 8 与 Node，运行时需要 Microsoft Edge WebView2 Runtime。
+- 数据目录：`%LOCALAPPDATA%/Modivue`。
+- 宿主已交叉编译通过；原生鼠标交互与多 DPI 实机验收尚未完成；尚未配置代码签名。
 
-关闭详细窗口不会退出后台监测。通过 macOS 菜单栏或 Windows 托盘退出应用。
+## UI 测试
 
-## 检查
+macOS GUI 测试需要 WindowServer、辅助功能、事件发布和屏幕录制权限。授权后在 Herdr 中运行：
 
 ```bash
-npm run check:js
-npm run check:i18n
-npm run test:core
+npm run ui:test          # 全部
+npm run ui:test:hover
+npm run ui:test:drag
+npm run ui:test:menu
+npm run ui:test:web      # 包含英文翻译覆盖检查
+npm run runtime:test
 ```
 
-macOS 可运行 `npm run check:desktop`。原生 UI 与运行时回归使用 Herdr 专用宿主 pane，入口、权限及产物说明见 [UI 驱动文档](../tools/ui-driver/README.md)。构建成功不代表原生交互通过，Windows 实机与多 DPI 验收仍需分别记录。
+结果和截图写入 `.ui-artifacts/`。`ui:test:web` 发现未翻译条目时检查失败，清单写入 `.ui-artifacts/<运行编号>-web/i18n-coverage.json`。实现与权限说明见 [tools/ui-driver/README.md](../tools/ui-driver/README.md)。
 
-## 签名安装包
+## 自动构建与发布
 
-仓库工作流已配置签名发布路径，证书配置与实际发布仍需完成。不能把本地构建或旧 ZIP 当作已公证、已签名安装器。
-
-| 构建来源 | 产物 |
-| --- | --- |
-| Pull Request、`main`、普通手动 CI | 名称含 `unsigned` 的 ZIP 测试包 |
-| 与 `package.json` 版本一致的 `v*` 标签 | macOS Developer ID 签名、公证并装订票据的 DMG；Windows Authenticode 签名的 Inno Setup 安装器 |
-
-标签构建缺少证书会失败，不回退为未签名正式包。需要配置这些 GitHub Actions secrets：
-
-- macOS：`MACOS_CERTIFICATE_P12_BASE64`、`MACOS_CERTIFICATE_PASSWORD`、`MACOS_SIGN_IDENTITY`、`APPLE_ID`、`APPLE_TEAM_ID`、`APPLE_APP_SPECIFIC_PASSWORD`。
-- Windows：`WINDOWS_CERTIFICATE_BASE64`、`WINDOWS_CERTIFICATE_PASSWORD`。
-
-Windows 标签构建还依赖 Inno Setup 6 和 Windows SDK 的 `signtool.exe`。安装器按当前用户安装到 `%LOCALAPPDATA%\Programs\Modivue`。SmartScreen 会考虑证书信誉，签名并不保证新版本立即没有提示。
-
-下载时以 [Releases](https://github.com/systemoutprintlnhelloworld/Modivue/releases) 的实际附件与说明为准。
-
-## 仓库公开范围
-
-源码、构建脚本、功能文档、开发规范和 `建议/` 设计原稿随仓库同步。`建议/` 是历史提案，不等于已实现功能或发布承诺。
-
-个人工具配置、凭据、数据库、私有基准原件、构建产物与会话日志不提交。当前任务的原始实施记录和任务状态包含本机运行细节，也保留在本机；可公开的需求、规范和研究结论单独提交。不要使用 `git add -f` 绕过这些排除项。
+- 推送到 `main`、Pull Request 和手动运行时，流水线检查 JavaScript 与指标核心，分别构建 macOS 和 Windows，并上传 ZIP。
+- 推送与 `package.json` 版本一致的 `v*` 标签后，流水线发布 GitHub 预览版。
+- 版本号需要同时维护 `package.json`、lockfile、`Info.plist` 和界面页脚。
+- 签名 DMG 和 Windows 安装器已有构建流程，但尚未完成证书配置与正式发布。

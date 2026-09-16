@@ -26,3 +26,9 @@ desktop/windows/obj/
 /.trellis/workspace/
 /.trellis/tasks/09-08-iq-liquid-island/implement.md
 /.trellis/tasks/09-08-iq-liquid-island/task.json
+
+# Local README drafts and backups.
+/readme-ad.md
+/readme-v2.md
+/建议/备份/
+/建议/docs/
