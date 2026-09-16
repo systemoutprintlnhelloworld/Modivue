@@ -30,20 +30,6 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash
         run: node scripts/release-version.mjs "$GITHUB_REF_NAME"
-      - name: Require macOS release credentials
-        if: startsWith(github.ref, 'refs/tags/') && runner.os == 'macOS'
-        shell: bash
-        env:
-          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
-          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
-          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-        run: |
-          for name in MACOS_CERTIFICATE_P12_BASE64 MACOS_CERTIFICATE_PASSWORD MACOS_SIGN_IDENTITY APPLE_ID APPLE_TEAM_ID APPLE_APP_SPECIFIC_PASSWORD; do
-            test -n "${!name:-}" || { echo "Missing required release secret: $name" >&2; exit 1; }
-          done
       - name: Import Developer ID certificate
         if: startsWith(github.ref, 'refs/tags/') && runner.os == 'macOS'
         shell: bash
@@ -86,15 +72,6 @@ jobs:
         if: runner.os == 'Windows'
         with:
           dotnet-version: '8.0.x'
-      - name: Require Windows release credentials
-        if: startsWith(github.ref, 'refs/tags/') && runner.os == 'Windows'
-        shell: pwsh
-        env:
-          WINDOWS_CERTIFICATE_BASE64: ${{ startsWith(github.ref, 'refs/tags/') && secrets.WINDOWS_CERTIFICATE_BASE64 || '' }}
-          WINDOWS_CERTIFICATE_PASSWORD: ${{ startsWith(github.ref, 'refs/tags/') && secrets.WINDOWS_CERTIFICATE_PASSWORD || '' }}
-        run: |
-          if (-not $env:WINDOWS_CERTIFICATE_BASE64) { throw 'Missing required release secret: WINDOWS_CERTIFICATE_BASE64' }
-          if (-not $env:WINDOWS_CERTIFICATE_PASSWORD) { throw 'Missing required release secret: WINDOWS_CERTIFICATE_PASSWORD' }
       - name: Build Windows
         if: runner.os == 'Windows'
         shell: pwsh
@@ -116,6 +93,7 @@ jobs:
         with:
           name: Modivue-${{ runner.os }}-signed
           path: |
+            dist/*.zip
             dist/*.dmg
             dist/*-setup.exe
           if-no-files-found: error
