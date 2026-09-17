@@ -89,12 +89,14 @@ export async function agentConnections(env = process.env, home = homedir(), cwd 
     const providerId = base.model_provider || "openai";
     const provider = Object.assign({}, ...[config, profileFile, projectConfig]
       .map(file => file.value.model_providers?.[providerId] || {}));
+    const wireApi = provider.wire_api || "responses";
     const auth = await configFile(join(codexDirectory, "auth.json"));
     // Subscription OAuth credentials require the host's own authenticated transport.
     const apiKey = provider.experimental_bearer_token || (provider.env_key ? env[provider.env_key]
       : provider.requires_openai_auth === true || providerId === "openai"
         ? env.CODEX_API_KEY || env.OPENAI_API_KEY || auth.value.OPENAI_API_KEY : null) || null;
-    const configurationError = config.error || profileError || projectConfig.error || (!apiKey && auth.error) || null;
+    const configurationError = config.error || profileError || projectConfig.error || (!apiKey && auth.error)
+      || (!["chat", "responses"].includes(wireApi) ? "Codex provider wire_api 无效" : null);
     const projectPath = join(cwd, ".codex", "config.toml");
     const projectConnection = projectConfig.found && Boolean(projectConfig.value.model
       || projectConfig.value.model_provider || projectConfig.value.model_providers?.[providerId]);
@@ -104,7 +106,8 @@ export async function agentConnections(env = process.env, home = homedir(), cwd 
     agents.push({ id: "codex", label: "Codex", configPath: projectConnection
       ? projectPath : profileFile.found ? join(codexDirectory, `${profileName}.config.toml`) : codexPath, model: base.model || null,
       ...connection,
-      protocol: "openai", wireApi: "responses", provider: providerId, profile: profileName,
+      protocol: "openai", wireApi, provider: providerId, profile: profileName,
+      reasoningEffort: base.model_reasoning_effort || null,
       runtimeDirectory: codexDirectory, sqliteDirectory: base.sqlite_home || codexDirectory,
       apiKey, authHeader: "authorization", keyGroup: apiKey ? credentialGroup(apiKey) : null,
       source: projectConnection ? "project" : profileFile.found ? "profile" : "config.toml",

@@ -66,5 +66,6 @@ npm run runtime:test
 
 - 推送到 `main`、Pull Request 和手动运行时，流水线检查 JavaScript 与指标核心，分别构建 macOS 和 Windows，并上传 ZIP。
 - 推送与 `package.json` 版本一致的 `v*` 标签后，流水线发布 GitHub 预览版。
+- 确认 macOS ZIP、Windows ZIP 与安装器存在后，才把预览版提升为 Latest Release。README 的下载按钮通过 `releases/latest/download` 跟随该发布。
 - 版本号需要同时维护 `package.json`、lockfile、`Info.plist` 和界面页脚。
 - 签名 DMG 和 Windows 安装器已有构建流程，但尚未完成证书配置与正式发布。

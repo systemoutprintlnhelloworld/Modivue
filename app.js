@@ -1155,7 +1155,7 @@ function modelMetrics(model, includeBalance = false) {
     { kind: "cache", name: "Cache", value: formatPercent(model?.cacheRate), progress: Number.isFinite(model?.cacheRate) ? model.cacheRate * 100 : null, health: metricHealth("cache", Number.isFinite(model?.cacheRate) ? model.cacheRate * 100 : null), range: metricRange(model, "cache"), min: Number.isFinite(model?.cacheStats?.min) ? model.cacheStats.min * 100 : null, max: Number.isFinite(model?.cacheStats?.max) ? model.cacheStats.max * 100 : null },
     { kind: "ttft", name: "TTFT", value: formatDuration(model?.ttftMs), progress: ttftScore(model?.ttftMs), health: metricHealth("ttft", model?.ttftMs), range: metricRange(model, "ttft"), min: ttftScore(model?.ttftStats?.min), max: ttftScore(model?.ttftStats?.max) }
   ];
-  if (includeBalance) {
+  if (includeBalance && balance?.balanceSupported !== false) {
     const health = metricHealth("cache", balance?.status === "ok" && balance.ratio != null ? balance.ratio * 100 : null);
     metrics.push({ kind: "balance", name: "余额", value: balanceText(balance), progress: balance?.status === "ok" && balance.ratio != null ? balance.ratio * 100 : null,
       health: { ...health, label: `${translate("余额健康")}：${translate(health.label)}` },
@@ -1346,7 +1346,7 @@ function showModelHistoryPopover(event, model) {
     ${popoverTrend("模型核验", qualityValue(model), health[0].label, quality, health[0].color, { unavailable: "等待采样", maximum: qualityChartOptions(model).maximum })}
     ${popoverTrend("Cache", formatPercent(model.cacheRate), health[1].label, cache, health[1].color, { unavailable: "无缓存字段" })}
     ${popoverTrend("TTFT", formatDuration(model.ttftMs), health[2].label, ttft, health[2].color, { unavailable: "等待有效响应", rawTtft: true })}
-  </div>${verificationStatusMarkup(model)}<div class="popover-foot"><span class="popover-finance-balance"><small>${translate("渠道余额")}</small>${balanceBadge(model)}</span><span class="popover-finance-samples"><small>${translate("性能样本")}</small>${model.sampleCount}</span><span class="popover-finance-cost" title="已知费用请求 ${cost.known}/${cost.requests}"><small>${translate("核验费用")}</small>${cost.known ? formatCost(cost.total) : "--"}</span></div>`;
+  </div>${verificationStatusMarkup(model)}<div class="popover-foot">${balanceForModel(model)?.balanceSupported === false ? "" : `<span class="popover-finance-balance"><small>${translate("渠道余额")}</small>${balanceBadge(model)}</span>`}<span class="popover-finance-samples"><small>${translate("性能样本")}</small>${model.sampleCount}</span><span class="popover-finance-cost" title="已知费用请求 ${cost.known}/${cost.requests}"><small>${translate("核验费用")}</small>${cost.known ? formatCost(cost.total) : "--"}</span></div>`;
   $$("[data-popover-metric]", popover).forEach(button => { button.onclick = () => openMetric(model, button.dataset.popoverMetric); });
   }
   positionPopover(event);
@@ -1404,12 +1404,15 @@ function walletIcon() {
 }
 function balanceBadge(model) {
   const item = balanceForModel(model);
+  if (item?.balanceSupported === false) return "";
   return `<button type="button" class="balance-badge" data-balance-cost-open title="${escapeHtml(translate(item?.message || "供应商余额"))}">${walletIcon()}<span>${escapeHtml(balanceText(item))}</span></button>`;
 }
 function renderBalances() {
   const section = $("#balance-summary");
   if (!section || layoutDragging()) return;
-  section.innerHTML = `<div class="balance-heading"><span>${escapeHtml(translate("供应商余额"))}</span><span><button class="text-button" type="button" data-balance-open>${escapeHtml(translate("配置余额"))}</button><button class="text-button" type="button" data-action="refresh-balances" ${state.balanceRefreshing ? "disabled" : ""}>${escapeHtml(translate(state.balanceRefreshing ? "刷新中" : "刷新"))}</button></span></div>${state.balances.length ? `<div class="balance-grid">${state.balances.map(item => `<div class="balance-item"><span class="balance-ring" style="--balance:${item.status === "ok" ? (item.ratio ?? 0) * 100 : 0}%"><i></i></span><div><strong>${escapeHtml(item.label)} <small>${escapeHtml(item.keyGroup)}</small></strong><small>${escapeHtml(item.status === "ok" ? balanceText(item) : translate(item.status === "disabled" ? "未启用余额查询" : item.message || "余额不可用"))}</small></div></div>`).join("")}</div>` : `<p class="balance-empty">${escapeHtml(translate("尚未保存可查询余额的渠道"))}</p>`}`;
+  const balances = state.balances.filter(item => item.balanceSupported !== false);
+  section.hidden = state.balances.length > 0 && balances.length === 0;
+  section.innerHTML = `<div class="balance-heading"><span>${escapeHtml(translate("供应商余额"))}</span><span><button class="text-button" type="button" data-balance-open>${escapeHtml(translate("配置余额"))}</button><button class="text-button" type="button" data-action="refresh-balances" ${state.balanceRefreshing ? "disabled" : ""}>${escapeHtml(translate(state.balanceRefreshing ? "刷新中" : "刷新"))}</button></span></div>${balances.length ? `<div class="balance-grid">${balances.map(item => `<div class="balance-item"><span class="balance-ring" style="--balance:${item.status === "ok" ? (item.ratio ?? 0) * 100 : 0}%"><i></i></span><div><strong>${escapeHtml(item.label)} <small>${escapeHtml(item.keyGroup)}</small></strong><small>${escapeHtml(item.status === "ok" ? balanceText(item) : translate(item.status === "disabled" ? "未启用余额查询" : item.message || "余额不可用"))}</small></div></div>`).join("")}</div>` : `<p class="balance-empty">${escapeHtml(translate("尚未保存可查询余额的渠道"))}</p>`}`;
   mountLayouts(document, "overview");
 }
 async function loadBalances(refresh = false) {
@@ -1435,6 +1438,7 @@ async function loadBalances(refresh = false) {
 }
 function balanceSettingsView() {
     return `<section class="panel balance-settings" data-settings-group="connection">${viewHeader("供应商余额", "满环基准使用总额度或已观测最高余额；充值后自动更新。余额每 15 秒自动刷新，也可手动刷新。")}${state.balances.map(item => {
+    if (item.balanceSupported === false) return `<p>${escapeHtml(item.label)} · ${escapeHtml(translate(item.message))}</p>`;
     const config = item.config || {};
     return `<details data-detail-key="balance-${escapeHtml(item.providerId)}"><summary>${escapeHtml(item.label)} · ${escapeHtml(item.keyGroup)} · ${escapeHtml(balanceStatsText(item))}</summary><form class="balance-config-form" data-target-id="${escapeHtml(item.providerId)}"><input type="hidden" name="providerId" value="${escapeHtml(item.providerId)}"><p>${escapeHtml(item.baseUrl)} · ${escapeHtml(item.source)}${item.initial > 0 ? ` · ${escapeHtml(translate("初始基准"))} ${escapeHtml(balanceText({ status: "ok", remaining: item.initial, unit: item.unit }))}` : ""}</p><div class="trusted-fields"><label>${escapeHtml(translate("余额接口"))}<select name="adapter">${Object.entries(state.balanceAdapters).map(([id,label]) => `<option value="${id}" ${config.adapter === id ? "selected" : ""}>${escapeHtml(translate(label))}</option>`).join("")}</select></label><label><input name="enabled" type="checkbox" ${config.enabled ? "checked" : ""}>${escapeHtml(translate("启用余额查询"))}</label><label>${escapeHtml(translate("查询专用 Key"))}<input name="queryKey" type="password" autocomplete="off" placeholder="${escapeHtml(translate(config.queryKeyConfigured ? "已保存；留空继续使用" : "留空使用渠道 Key"))}"></label><label data-balance-field="new-api">${escapeHtml(translate("账户令牌"))}<input name="accessToken" type="password" autocomplete="off" placeholder="${escapeHtml(translate(config.accessTokenConfigured ? "已保存；留空继续使用" : "New API 账户令牌"))}"></label><label data-balance-field="new-api">${escapeHtml(translate("用户 ID"))}<input name="userId" value="${escapeHtml(config.userId || "")}"></label>${[["endpointPath","同站接口路径","/v1/usage"],["remainingPath","余额字段","data.balance"],["totalPath","总额度字段",""],["usedPath","已用额度字段",""],["unit","单位","USD"],["divisor","换算除数","1"]].map(([key,label,hint]) => `<label data-balance-field="custom">${escapeHtml(translate(label))}<input name="${key}" value="${escapeHtml(config[key] ?? "")}" placeholder="${hint}" ${key === "divisor" ? 'type="number" min="0.000001" step="any"' : ""}></label>`).join("")}</div><p class="balance-config-hint" title="${escapeHtml(translate("New API 账户余额需要在站点个人设置创建账户令牌，并填写用户 ID；Key 额度使用渠道 Key，原始 quota 不冒充货币。"))}">${escapeHtml(translate("New API 账户余额需要账户令牌和用户 ID"))}</p><label class="balance-reset"><input name="resetInitial" type="checkbox">${escapeHtml(translate("重新以本次余额作为满环基准"))}</label><button class="primary-button" type="submit">${escapeHtml(translate("保存并查询余额"))}</button><span role="status" class="balance-config-status"></span></form></details>`;
   }).join("")}</section>`;
@@ -1494,7 +1498,7 @@ function renderMetrics() {
     mountCostSummary();
     $("#cost-summary").innerHTML = `<div class="cost-heading"><span>核验费用</span><small>${escapeHtml(model?.label || "未选择对象")}</small></div><div class="cost-cell"><span>总花费</span><strong>${formatCost(cost.total)}</strong></div><div class="cost-cell"><span>平均单次</span><strong>${formatCost(cost.average)}</strong></div><div class="cost-cell"><span>最近单次</span><strong>${formatCost(cost.latest)}</strong></div><button type="button" class="cost-info" data-pricing-open title="${escapeHtml(costNote)} · ${escapeHtml(translate("配置渠道单价"))}" aria-label="${escapeHtml(translate("配置渠道单价"))}">ⓘ</button>`;
   }
-  $("#current-balance").hidden = state.view === "settings" || !model;
+  $("#current-balance").hidden = state.view === "settings" || !model || balanceForModel(model)?.balanceSupported === false;
   $("#current-balance").innerHTML = `<span>${escapeHtml(translate("当前渠道余额"))}</span>${balanceBadge(model)}`;
   renderBalances();
   const cache = model?.cacheRate;
@@ -1602,6 +1606,7 @@ function renderCharts() {
   }
   $("#trend-chart").innerHTML = lines.length ? chartSvg(lines, { axes, label: `${formatRange()}指标趋势` }) : `<div class="empty-state chart-empty">当前模型暂无可绘制趋势。</div>`;
   $$(".legend [data-series]").forEach((button) => {
+    button.hidden = button.dataset.series === "余额" && balance?.balanceSupported === false;
     const hidden = state.hiddenTrendSeries.has(button.dataset.series);
     button.classList.toggle("muted", hidden); button.setAttribute("aria-pressed", String(!hidden));
     button.onclick = () => { hidden ? state.hiddenTrendSeries.delete(button.dataset.series) : state.hiddenTrendSeries.add(button.dataset.series); renderCharts(); };
@@ -1870,9 +1875,10 @@ function providerBalanceCards() {
   const providers = state.balances.filter(item => (!route || balanceRoot(item.baseUrl) === route)
     && (!state.filters.keyGroup || item.keyGroup === keyGroup)
     && (!modelProviders || modelProviders.has(item.providerId)));
+  if (providers.length && providers.every(item => item.balanceSupported === false)) return "";
   if (!providers.length) return `<article class="panel provider-balance-card" id="provider-balance-empty">${viewHeader("渠道余额趋势", "")}
     <div class="empty-state">${escapeHtml(translate("当前筛选下暂无余额渠道"))}</div></article>`;
-  return providers.map(item => {
+  return providers.filter(item => item.balanceSupported !== false).map(item => {
     const history = (item.history || []).filter(point => Number.isFinite(point.value) && point.unit
       && Date.parse(point.timestamp) >= since && Date.parse(point.timestamp) <= now)
       .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
@@ -2728,7 +2734,7 @@ function setView(view) {
   if (state.view === "settings" && view !== "settings") void flushSettingsDraft();
   state.view = view;
   mountCostSummary();
-  $("#current-balance").hidden = view === "settings" || !selectedModel();
+  $("#current-balance").hidden = view === "settings" || !selectedModel() || balanceForModel(selectedModel())?.balanceSupported === false;
   renderGlobalFilters();
   const titles = { overview: "概览", models: "模型", routes: "路由", cache: "Cache", ttft: "TTFT", quality: "模型核验", cost: "花费统计", alerts: "告警", logs: "日志", settings: "设置" };
   $("#page-title").textContent = titles[view] || "概览";

@@ -16,6 +16,40 @@ const siteRoot = base => base.replace(/\/(?:api\/)?v1(?:beta)?\/?$/i, "").replac
 export const balanceAdapters = { auto: "官方余额接口", usage: "Sub API / Sub2API · /v1/usage", "new-api": "New API · 账户余额",
   "new-api-token": "New API · Key 额度", general: "通用 · /user/balance", custom: "自定义 JSON 接口" };
 export const balanceRefreshMs = 15000;
+const frameworkCache = new Map();
+
+async function providerFramework(baseUrl) {
+  const root = siteRoot(baseUrl);
+  if (official(baseUrl)[0]) return null;
+  let target;
+  try { target = new URL(root); }
+  catch { return null; }
+  if (!["localhost", "127.0.0.1", "[::1]"].includes(target.hostname)) return null;
+  const cached = frameworkCache.get(root);
+  if (cached && Date.now() - cached.at < 60000) return cached.promise;
+  const promise = (async () => {
+    try {
+      // CPA exposes a public identity at its root. Do not send API keys or
+      // query management endpoints: usage counters are not account balances.
+      const response = await fetch(`${root}/`, { headers: { accept: "application/json" },
+        redirect: "error", signal: AbortSignal.timeout(2000) });
+      if (!response.ok || !response.headers.get("content-type")?.includes("application/json")) {
+        await response.body?.cancel(); return null;
+      }
+      const chunks = []; let size = 0;
+      for await (const chunk of response.body) {
+        size += chunk.length;
+        if (size > 8192) return null;
+        chunks.push(chunk);
+      }
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      return body.message === "CLI Proxy API Server" && Array.isArray(body.endpoints) ? "cliproxyapi" : null;
+    } catch { return null; }
+  })();
+  frameworkCache.set(root, { at: Date.now(), promise });
+  return promise;
+}
+
 async function readState() {
   try { return JSON.parse(await readFile(path, "utf8")); }
   catch (error) { if (error.code === "ENOENT") return { configs: {}, snapshots: {} }; throw error; }
@@ -49,7 +83,7 @@ async function providers() {
       label: provider.label || previous?.label || new URL(baseUrl).hostname,
       balanceConfig: provider.balanceConfig || previous?.balanceConfig });
   }
-  return [...unique.values()];
+  return Promise.all([...unique.values()].map(async provider => ({ ...provider, framework: await providerFramework(provider.baseUrl) })));
 }
 function configFor(provider, state) {
   return state.configs[provider.id] || provider.balanceConfig || { adapter: "auto", enabled: Boolean(official(provider.baseUrl)[0]) };
@@ -57,6 +91,7 @@ function configFor(provider, state) {
 export async function configureBalance(input) {
   const provider = (await providers()).find(p => p.id === input.providerId);
   if (!provider) throw new TypeError("余额渠道已不可用，请刷新");
+  if (provider.framework === "cliproxyapi") throw new TypeError("CLIProxyAPI 暂不提供余额");
   if (!Object.hasOwn(balanceAdapters, input.adapter) || typeof input.enabled !== "boolean") throw new TypeError("余额接口配置无效");
   const config = { adapter: input.adapter, enabled: input.enabled };
   for (const key of ["accessToken", "userId", "queryKey", "endpointPath", "remainingPath", "totalPath", "usedPath", "unit"]) {
@@ -130,6 +165,11 @@ export async function listBalances({ refresh = false } = {}) {
   inFlight = (async () => {
     const state = await readState(), changes = {}, histories = {};
     const rows = await Promise.all((await providers()).map(async provider => {
+      if (provider.framework === "cliproxyapi") return {
+        providerId: provider.id, label: provider.label, baseUrl: provider.baseUrl, keyGroup: provider.keyGroup,
+        source: provider.source, wireApi: provider.wireApi, framework: provider.framework,
+        balanceSupported: false, status: "unsupported", message: "CLIProxyAPI 暂不提供余额", history: []
+      };
       const config = configFor(provider, state), previous = state.snapshots[provider.id];
       let snapshot = previous;
       if (config.enabled && (refresh || !previous || Date.now() - Date.parse(previous.checkedAt) >= balanceRefreshMs)) {

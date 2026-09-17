@@ -1,5 +1,6 @@
 // Source-language keys keep existing Chinese UI copy readable during migration.
 const english = {
+  "CLIProxyAPI 暂不提供余额": "CLIProxyAPI balance integration is not available yet",
   "标准界面显示环": "Dashboard: visible rings",
   "暂无活动 Agent": "No active agents",
   "花费统计": "Cost statistics",

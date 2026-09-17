@@ -64,4 +64,4 @@ Pushes to `main`, pull requests, and manual workflow runs check and build both p
 
 Tagged builds publish a GitHub prerelease with macOS ZIP, Windows ZIP, and the Windows installer when produced. Missing signing credentials do not make these unsigned previews signed releases. macOS notarization and Windows Authenticode require separate valid certificates and credentials.
 
-Prereleases must use a verified version-specific asset URL; do not assume `releases/latest/download` selects them. Confirm that both platform assets exist before updating README download buttons.
+Prereleases must use a verified version-specific asset URL; `releases/latest/download` does not select them. Promote a prerelease to Latest only after confirming that the macOS ZIP, Windows ZIP, and installer exist. The README download buttons then follow that promoted release through `releases/latest/download`.

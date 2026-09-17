@@ -15,8 +15,8 @@ Gateway balance · cache hits · time to first token · model verification, visi
 [![Release](https://img.shields.io/github/v/release/systemoutprintlnhelloworld/Modivue?include_prereleases&sort=semver&style=flat-square&color=7AA2F7)](https://github.com/systemoutprintlnhelloworld/Modivue/releases)
 [![Downloads](https://img.shields.io/github/downloads/systemoutprintlnhelloworld/Modivue/total?style=flat-square&color=4FD1B0&label=downloads)](https://github.com/systemoutprintlnhelloworld/Modivue/releases)
 
-[![Download macOS](docs/assets/download-macos.svg)](https://github.com/systemoutprintlnhelloworld/Modivue/releases/download/v0.4.7/Modivue-macos-arm64.zip)
-**Windows downloads are paused** while Agent detection and island navigation are being fixed and verified.
+[![Download macOS](docs/assets/download-macos.svg)](https://github.com/systemoutprintlnhelloworld/Modivue/releases/latest/download/Modivue-macos-arm64.zip)
+[![Download Windows](docs/assets/download-windows.svg)](https://github.com/systemoutprintlnhelloworld/Modivue/releases/latest/download/Modivue-windows-x64-setup.exe)
 
 [简体中文](README.md) · **English**
 
@@ -106,7 +106,7 @@ Metrics are separated by **model × channel × key group × reasoning effort**. 
 | Platform | Package | Installation |
 |---|---|---|
 | macOS Apple Silicon | `Modivue-macos-arm64.zip` | Unzip and move `Modivue.app` to Applications. No Intel package is currently provided. |
-| Windows 10/11 x64, downloads paused | Not currently offered | Portable and installer builds share the affected code. The installer has not been verified on a Windows machine. |
+| Windows 10/11 x64, preview | `Modivue-windows-x64-setup.exe` | Run the installer. The release also includes a portable ZIP. Microsoft Edge WebView2 Runtime is required. |
 | CLI | Source files in `cli/` | Node.js 22.5 or later. Reads the desktop app's shared local database. |
 
 ### Before opening for the first time
@@ -122,9 +122,9 @@ xattr -cr /Applications/Modivue.app
 
 Do not clear quarantine for an untrusted download.
 
-**Windows:** Historical preview packages are unsigned and may trigger SmartScreen. The download links are paused; disabling system protection is not a fix.
+**Windows:** Current release packages are unsigned and may trigger SmartScreen. After verifying the source and file, use the system-provided **More info → Run anyway** option if required; do not disable system protection.
 
-Windows downloads will resume after functional acceptance and release signing are configured. Signing does not guarantee immediate SmartScreen reputation. See [Build, test, and release](docs/en/development.md).
+The release workflow produces a macOS ZIP and Windows ZIP/installer. Trusted Windows signing and macOS notarization credentials are not configured yet; the existence of an installer does not mean it is signed. See [Build, test, and release](docs/en/development.md).
 
 ---
 
@@ -209,6 +209,24 @@ Request counts describe planned samples, not a guarantee of the final bill. Retr
 </details>
 
 ---
+
+## API provider frameworks
+
+**3 framework integrations**, with different capabilities—not a claim that all support balances or that every release has been tested:
+
+<p align="center">
+<a href="#api-provider-frameworks"><img src="docs/assets/badges/provider-new-api.svg" alt="New API: account and token balance"></a>
+<a href="#api-provider-frameworks"><img src="docs/assets/badges/provider-sub2api.svg" alt="Sub API / Sub2API: usage balance adapter"></a>
+<a href="#api-provider-frameworks"><img src="docs/assets/badges/provider-cpa.svg" alt="CLIProxyAPI: detected; balance deferred"></a>
+</p>
+
+| Framework | Detection / selection | Balance | Cache / TTFT | Model verification |
+| --- | --- | --- | --- | --- |
+| New API | Select account balance or token quota in settings | `/api/user/self` for accounts; `/api/usage/token/` for keys. Raw quota is not presented as currency. | Shared protocol collection; requires actual usage / first-content events | Shared evaluators, subject to model, protocol, and reference support |
+| Sub API / Sub2API | Select the usage adapter in settings | `/v1/usage`, only for deployments returning supported balance fields | Same as above | Same as above |
+| [CLIProxyAPI (CPA)](https://github.com/router-for-me/CLIProxyAPI) | Detects a local deployment through the public identifier at its service root | **Hidden for now**; usage / token counters are not wallet balances | Streaming or non-streaming requests share the collection path when routed through Modivue; only explicit usage and first valid content are recorded | Depends on model and references; remote evaluators cannot access a loopback address |
+
+Reading Agent configuration does not intercept its requests. Cache usage can come from local Codex records; real TTFT requires traffic through Modivue's proxy or an active performance sample. Active samples and verification may consume provider credits. CPA management APIs and management keys are not used.
 
 ## Supported agents
 

@@ -16,8 +16,8 @@
 [![Release](https://img.shields.io/github/v/release/systemoutprintlnhelloworld/Modivue?include_prereleases&sort=semver&style=flat-square&color=7AA2F7)](https://github.com/systemoutprintlnhelloworld/Modivue/releases)
 [![Downloads](https://img.shields.io/github/downloads/systemoutprintlnhelloworld/Modivue/total?style=flat-square&color=4FD1B0&label=downloads)](https://github.com/systemoutprintlnhelloworld/Modivue/releases)
 
-[![下载 macOS 版](docs/assets/download-macos.svg)](https://github.com/systemoutprintlnhelloworld/Modivue/releases/download/v0.4.7/Modivue-macos-arm64.zip)
-**Windows 下载暂时暂停**：正在修复 Agent 检测与灵动岛点击跳转，验收完成前不提供下载入口。
+[![下载 macOS 版](docs/assets/download-macos.svg)](https://github.com/systemoutprintlnhelloworld/Modivue/releases/latest/download/Modivue-macos-arm64.zip)
+[![下载 Windows 版](docs/assets/download-windows.svg)](https://github.com/systemoutprintlnhelloworld/Modivue/releases/latest/download/Modivue-windows-x64-setup.exe)
 
 [简体中文](README.md) · [English](README.en.md)
 
@@ -109,7 +109,7 @@
 | 平台 | 下载包 | 安装 |
 |---|---|---|
 | macOS Apple Silicon | `Modivue-macos-arm64.zip` | 解压，把 `Modivue.app` 拖进"应用程序"。暂无 Intel 版 |
-| Windows 10/11 x64（暂停下载） | 暂不提供 | portable 与安装版共用待修复代码；安装版尚未实机验收 |
+| Windows 10/11 x64（预览） | `Modivue-windows-x64-setup.exe` | 运行安装器。Release 同时提供 portable ZIP；需要 Microsoft Edge WebView2 Runtime |
 | 命令行 | 源码 `cli/` | Node.js 22.5+，读取桌面端共享的本地数据库 |
 
 ### 首次打开前请读
@@ -125,9 +125,9 @@ xattr -cr /Applications/Modivue.app
 
 首次打开遇到系统拦截时，使用系统设置中的“仍要打开”；命令行清除隔离标记仅适用于你信任的本地包。
 
-**Windows：** 历史预览包未签名，可能触发 SmartScreen。下载入口暂时撤下；不会通过关闭系统防护来消除提示。
+**Windows：** 当前发布包未签名，可能触发 SmartScreen。确认下载来源与文件后，可使用系统提供的“更多信息 → 仍要运行”；不需要关闭系统防护。
 
-Windows 恢复下载前需要完成功能验收与发布签名配置；签名不保证立即获得 SmartScreen 信誉。详见 [构建与发布](docs/development.md)。
+发布流程会生成 macOS ZIP 与 Windows ZIP / 安装器。当前尚未配置可信 Windows 签名与 macOS 公证凭据；安装器存在不代表已签名。详见 [构建与发布](docs/development.md)。
 
 ---
 
@@ -212,6 +212,24 @@ Windows 恢复下载前需要完成功能验收与发布签名配置；签名不
 </details>
 
 ---
+
+## API Provider 框架
+
+目前有 **3 类框架接入**，能力不同，不代表都支持余额或所有版本已实机验收：
+
+<p align="center">
+<a href="#api-provider-框架"><img src="docs/assets/badges/provider-new-api.svg" alt="New API：账户与 Key 余额"></a>
+<a href="#api-provider-框架"><img src="docs/assets/badges/provider-sub2api.svg" alt="Sub API / Sub2API：usage 余额适配"></a>
+<a href="#api-provider-框架"><img src="docs/assets/badges/provider-cpa.svg" alt="CLIProxyAPI：已识别，暂不接入余额"></a>
+</p>
+
+| 框架 | 识别 / 选择 | 余额 | Cache / TTFT | 模型核验 |
+| --- | --- | --- | --- | --- |
+| New API | 设置中选择账户余额或 Key 额度 | `/api/user/self` 账户余额；`/api/usage/token/` Key 额度，原始 quota 不冒充货币 | 共用协议采集，需实际 usage / 首个有效输出事件 | 共用核验器，受模型、协议和基准限制 |
+| Sub API / Sub2API | 设置中选择 usage 适配器 | `/v1/usage`；仅支持返回可解析额度字段的部署 | 同上 | 同上 |
+| [CLIProxyAPI（CPA）](https://github.com/router-for-me/CLIProxyAPI) | 本机部署通过服务根路径的公开标识检测 | **暂不显示**，不把 usage / token 统计当作钱包余额 | 流式或非流式请求经 Modivue 代理时共用采集链路；只记录响应明确返回的 usage 和首个有效内容 | 可用方法取决于模型与基准；本机地址不能直接供远程核验服务访问 |
+
+直接读取 Agent 配置不会自动接管它的请求。Cache 可以来自 Codex 本地 usage；真实 TTFT 需要请求经过 Modivue 本地代理，或主动发起一次性能采样。主动采样和核验可能消耗渠道额度。CPA 当前不接入管理 API，也不索取管理密钥。
 
 ## 支持的工具
 
