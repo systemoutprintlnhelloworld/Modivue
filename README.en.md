@@ -16,7 +16,7 @@ Gateway balance · cache hits · time to first token · model verification, visi
 [![Downloads](https://img.shields.io/github/downloads/systemoutprintlnhelloworld/Modivue/total?style=flat-square&color=4FD1B0&label=downloads)](https://github.com/systemoutprintlnhelloworld/Modivue/releases)
 
 [![Download macOS](docs/assets/download-macos.svg)](https://github.com/systemoutprintlnhelloworld/Modivue/releases/download/v0.4.7/Modivue-macos-arm64.zip)
-[![Download Windows](docs/assets/download-windows.svg)](https://github.com/systemoutprintlnhelloworld/Modivue/releases/download/v0.4.7/Modivue-windows-x64-setup.exe)
+**Windows downloads are paused** while Agent detection and island navigation are being fixed and verified.
 
 [简体中文](README.md) · **English**
 
@@ -106,7 +106,7 @@ Metrics are separated by **model × channel × key group × reasoning effort**. 
 | Platform | Package | Installation |
 |---|---|---|
 | macOS Apple Silicon | `Modivue-macos-arm64.zip` | Unzip and move `Modivue.app` to Applications. No Intel package is currently provided. |
-| Windows 10/11 x64, preview | `Modivue-windows-x64-setup.exe` | Run the installer. Microsoft Edge WebView2 Runtime is required. A separate portable ZIP is also available in the release. |
+| Windows 10/11 x64, downloads paused | Not currently offered | Portable and installer builds share the affected code. The installer has not been verified on a Windows machine. |
 | CLI | Source files in `cli/` | Node.js 22.5 or later. Reads the desktop app's shared local database. |
 
 ### Before opening for the first time
@@ -122,9 +122,9 @@ xattr -cr /Applications/Modivue.app
 
 Do not clear quarantine for an untrusted download.
 
-**Windows:** SmartScreen may show a warning for an unsigned program. After checking the source, choose **More info → Run anyway** if you want to proceed.
+**Windows:** Historical preview packages are unsigned and may trigger SmartScreen. The download links are paused; disabling system protection is not a fix.
 
-The release workflow produces a macOS ZIP and Windows ZIP/installer without signing credentials. Signed packages and macOS notarization require the corresponding credentials; the existence of an installer does not mean it is signed. See [Build, test, and release](docs/en/development.md).
+Windows downloads will resume after functional acceptance and release signing are configured. Signing does not guarantee immediate SmartScreen reputation. See [Build, test, and release](docs/en/development.md).
 
 ---
 
@@ -214,7 +214,7 @@ Request counts describe planned samples, not a guarantee of the final bill. Retr
 
 | Support level | Agents |
 |---|---|
-| Live session-state collection | Claude Code through status-line / hook heartbeats; Codex through local session evidence. Codex's file-lock collection path does not apply on Windows. |
+| Live session-state collection | Claude Code through status-line / hook heartbeats; Codex through local lock ownership and unfinished-session evidence. |
 | Recorded local installation and launch checks | Gemini CLI, Qwen Code, Pi, OpenCode |
 | Provider configuration parsing, real-installation acceptance still pending | Goose, Continue, Grok Build, Hermes, OpenClaw, GPTMe, Cline, Roo Code, Aider |
 
@@ -253,7 +253,7 @@ See [Before opening for the first time](#before-opening-for-the-first-time).
 No Intel download is currently provided. The published macOS package targets Apple Silicon.
 
 **Is agent status equally reliable on Windows and macOS?**
-No. Windows uses process discovery and configuration parsing together with proxy or hook evidence. A running process alone does not prove that an agent is working. The macOS Codex file-lock collection path is not available on Windows.
+No. Windows uses process discovery and configuration parsing together with proxy or hook evidence. A running process alone does not prove that an agent is working. Codex discovery uses Windows Restart Manager to identify lock owners, then checks for unfinished local turns; macOS uses `lsof` for lock ownership.
 
 ---
 
@@ -296,4 +296,6 @@ When reporting an issue, include your OS version, agent, protocol such as Chat C
 
 ## License
 
-A project-wide open-source license has not yet been selected, and the repository currently has no root `LICENSE` file. Check future license files and release notes for the project's terms. Reused assets and reference implementations retain their own notices and licenses; see [asset attribution](docs/assets/NOTICE.md).
+Original project code is licensed under the [MIT License](LICENSE). Third-party code, assets, and trademarks retain their own terms and notices; see [asset attribution](docs/assets/NOTICE.md).
+
+A free Windows code-signing application is being prepared. SignPath approval and a signing certificate have not been obtained; see [application preparation](docs/windows-signing.md).

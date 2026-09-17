@@ -24,7 +24,7 @@ try {
   if ($LASTEXITCODE -ne 0) { throw 'Windows host build failed' }
   $app = Join-Path $destination 'app'
   New-Item -ItemType Directory -Force -Path $app, (Join-Path $destination 'runtime') | Out-Null
-  foreach ($name in @('server.mjs','app.js','index.html','styles.css','package.json','package-lock.json','src','cli')) {
+  foreach ($name in @('server.mjs','app.js','index.html','styles.css','package.json','package-lock.json','LICENSE','src','cli')) {
     Copy-Item (Join-Path $project $name) $app -Recurse -Force
   }
   Copy-Item (Get-Command node.exe).Source (Join-Path $destination 'runtime/node.exe') -Force

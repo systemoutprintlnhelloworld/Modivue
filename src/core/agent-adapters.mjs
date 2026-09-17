@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { readFile } from "node:fs/promises";
 import { parse as parseToml } from "smol-toml";
 import { parse as parseYaml } from "yaml";
@@ -197,7 +197,7 @@ export async function readAdapterConnection(adapter, env, home, cwd, argv = []) 
     try {
       const contents = await readFile(path, "utf8");
       configPath = path;
-      if (path.endsWith("/.env")) {
+      if (basename(path) === ".env") {
         for (const line of contents.split(/\r?\n/)) {
           const match = line.match(/^\s*(?:export\s+)?([A-Z_][A-Z0-9_]*)\s*=\s*(.*?)\s*$/);
           if (match) fileEnv[match[1]] = match[2].replace(/^(["'])(.*)\1$/, "$2");
@@ -221,5 +221,5 @@ export async function readAdapterConnection(adapter, env, home, cwd, argv = []) 
   const values = resolveAdapterConfig(adapter.id, config, runtimeEnv);
   const explicit = override.model && override.baseUrl && override.apiKey;
   return { ...values, ...(explicit ? { ...override, protocol: adapter.protocol, wireApi: adapter.protocol === "gemini" ? "generateContent" : "chat", error: null, configStatus: "explicit" } : {}),
-    configPath, source: explicit ? "environment" : configPath ? "config" : null, ...(error ? { error } : {}) };
+    configPath, source: explicit ? "environment" : configPath ? "config" : null, ...(error ? { error, configStatus: "error" } : {}) };
 }

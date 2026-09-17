@@ -366,6 +366,8 @@ async function flushSettingsDraft() {
 }
 
 async function selectModelById(id) {
+  // The island may observe a new session before the hidden dashboard polls.
+  if (!modelByIdentityId(id)) await loadAgents();
   const model = modelByIdentityId(id);
   if (!model) return;
   if (!filteredModels().some((item) => item.id === model.id)) Object.keys(state.filters).forEach((key) => { state.filters[key] = ""; });
@@ -2698,7 +2700,7 @@ async function loadAgents() {
     status.className = live.length ? "catalog-status ready" : "catalog-status warning";
     const capabilityTitle = state.supportedAgents.map((item) => {
       const installLabel = !item.installed ? "未发现命令" : item.scope === "isolated" ? "已安装（隔离环境）" : "已安装";
-      const stateLabel = !item.installed ? "未发现命令" : item.credentialConfigured ? `${installLabel} · 模型/凭据可解析` : item.modelConfigured ? `${installLabel} · 未检测到独立凭据` : item.configFound ? `${installLabel} · 配置未解析模型` : `${installLabel} · 尚未配置`;
+      const stateLabel = item.credentialConfigured && item.modelConfigured ? `${installLabel} · 模型/凭据可解析` : item.modelConfigured ? `${installLabel} · 未检测到独立凭据` : item.configFound ? `${installLabel} · 配置未解析模型` : `${installLabel} · 尚未配置`;
       const verificationLabel = item.adapterVerification === "PASS" ? " · 隔离适配回归通过" : "";
       return `${item.label}：${stateLabel}${verificationLabel}`;
     }).join("\n");
@@ -3381,7 +3383,7 @@ async function bootstrap() {
       document.body.addEventListener("pointermove", nativeHover);
     }
     document.body.addEventListener("pointerleave", () => {
-      if (window.webkit?.messageHandlers?.modivue) return;
+      if (hasDesktopBridge()) return;
       hidePopover();
       setIslandHover(false);
     });

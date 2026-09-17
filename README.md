@@ -17,7 +17,7 @@
 [![Downloads](https://img.shields.io/github/downloads/systemoutprintlnhelloworld/Modivue/total?style=flat-square&color=4FD1B0&label=downloads)](https://github.com/systemoutprintlnhelloworld/Modivue/releases)
 
 [![下载 macOS 版](docs/assets/download-macos.svg)](https://github.com/systemoutprintlnhelloworld/Modivue/releases/download/v0.4.7/Modivue-macos-arm64.zip)
-[![下载 Windows 版](docs/assets/download-windows.svg)](https://github.com/systemoutprintlnhelloworld/Modivue/releases/download/v0.4.7/Modivue-windows-x64-setup.exe)
+**Windows 下载暂时暂停**：正在修复 Agent 检测与灵动岛点击跳转，验收完成前不提供下载入口。
 
 [简体中文](README.md) · [English](README.en.md)
 
@@ -109,7 +109,7 @@
 | 平台 | 下载包 | 安装 |
 |---|---|---|
 | macOS Apple Silicon | `Modivue-macos-arm64.zip` | 解压，把 `Modivue.app` 拖进"应用程序"。暂无 Intel 版 |
-| Windows 10/11 x64（预览） | `Modivue-windows-x64-setup.exe` | 运行安装器。另提供便携 ZIP；需要 Microsoft Edge WebView2 Runtime |
+| Windows 10/11 x64（暂停下载） | 暂不提供 | portable 与安装版共用待修复代码；安装版尚未实机验收 |
 | 命令行 | 源码 `cli/` | Node.js 22.5+，读取桌面端共享的本地数据库 |
 
 ### 首次打开前请读
@@ -125,9 +125,9 @@ xattr -cr /Applications/Modivue.app
 
 首次打开遇到系统拦截时，使用系统设置中的“仍要打开”；命令行清除隔离标记仅适用于你信任的本地包。
 
-**Windows：** 未签名的程序首次运行时可能出现 SmartScreen 提示。确认来源可信后，点"更多信息 → 仍要运行"。
+**Windows：** 历史预览包未签名，可能触发 SmartScreen。下载入口暂时撤下；不会通过关闭系统防护来消除提示。
 
-Windows 未签名安装器已随预览版发布；签名和 macOS 公证仍需证书配置，详见 [构建与发布](docs/development.md)。
+Windows 恢复下载前需要完成功能验收与发布签名配置；签名不保证立即获得 SmartScreen 信誉。详见 [构建与发布](docs/development.md)。
 
 ---
 
@@ -219,7 +219,7 @@ Windows 未签名安装器已随预览版发布；签名和 macOS 公证仍需�
 
 | 支持程度 | 工具 |
 |---|---|
-| 实时读取会话状态 | Claude Code（statusline / hook 心跳）、Codex（本机会话状态；Windows 上不适用文件锁采集） |
+| 实时读取会话状态 | Claude Code（statusline / hook 心跳）、Codex（本机持锁进程与未结束会话证据） |
 | 本机安装并启动验证 | Gemini CLI、Qwen Code、Pi、OpenCode |
 | 可解析 provider 配置，尚未实机验收 | Goose、Continue、Grok Build、Hermes、OpenClaw、GPTMe、Cline、Roo Code、Aider |
 
@@ -258,7 +258,7 @@ Windows 未签名安装器已随预览版发布；签名和 macOS 公证仍需�
 目前没有。当前构建产物为 Apple Silicon。
 
 **Windows 上 Agent 状态和 macOS 一样准确吗？**
-不完全一样。Windows 通过进程发现和配置解析识别 Agent，进程存在不代表它正在工作；Codex 在 macOS 上的文件锁采集方式不适用于 Windows。
+不完全一样。Windows 通过进程发现和配置解析识别 Agent，进程存在不代表它正在工作；Codex 使用 Windows Restart Manager 读取持锁进程，并结合本机未结束的 turn 判断工作状态。macOS 使用 `lsof` 读取持锁进程。
 
 ---
 
@@ -299,8 +299,9 @@ npm run windows:build    # Windows，需要 .NET SDK 8
 
 ## 许可证
 
-<!-- TODO（发布前必须完成）：选定许可证并添加 LICENSE 文件。没有许可证时，他人在法律上无权使用这些代码 -->
-仓库尚未选定开源许可证，请以根目录的 LICENSE 文件和 Release 说明为准。
+项目原创代码采用 [MIT License](LICENSE)。第三方代码、素材与商标保留各自许可和声明，见 [素材归属](docs/assets/NOTICE.md)。
+
+Windows 免费代码签名正在准备申请，尚未获得 SignPath 批准或签名证书，见 [申请准备](docs/windows-signing.md)。
 
 ## 友情链接
 
