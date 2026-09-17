@@ -49,7 +49,7 @@
 
 ---
 
-**Modivue** 是一个运行在 macOS 和 Windows 上的本机悬浮窗，面向通过 API 中转站使用 Claude Code、Codex 等 coding agent 的开发者。它读取中转站余额，记录请求的缓存命中和首字延迟，并能按需发起模型核验，保存"这个渠道返回的模型是否和参考行为一致"的原始证据。所有数据写入本机 SQLite。
+**Modivue** 是一个运行在 macOS 和 Windows 上的本机悬浮窗，面向通过 API 中转站使用 Claude Code、Codex 等 coding agent 的开发者。它读取中转站余额，记录请求的缓存命中和首字延迟，并能按需发起模型核验，保存"这个渠道返回的模型是否和参考行为一致"的原始证据。请求测量与核验报告写入本机 SQLite；余额和辅助配置另存本机文件。
 
 <div align="center">
 <!-- 录屏素材使用脱敏演示数据。 -->
@@ -109,7 +109,7 @@
 | 平台 | 下载包 | 安装 |
 |---|---|---|
 | macOS Apple Silicon | `Modivue-macos-arm64.zip` | 解压，把 `Modivue.app` 拖进"应用程序"。暂无 Intel 版 |
-| Windows 10/11 x64（预览） | `Modivue-windows-x64-setup.exe` | 解压后运行 `Modivue.exe`。需要 Microsoft Edge WebView2 Runtime |
+| Windows 10/11 x64（预览） | `Modivue-windows-x64-setup.exe` | 运行安装器。另提供便携 ZIP；需要 Microsoft Edge WebView2 Runtime |
 | 命令行 | 源码 `cli/` | Node.js 22.5+，读取桌面端共享的本地数据库 |
 
 ### 首次打开前请读
@@ -127,7 +127,7 @@ xattr -cr /Applications/Modivue.app
 
 **Windows：** 未签名的程序首次运行时可能出现 SmartScreen 提示。确认来源可信后，点"更多信息 → 仍要运行"。
 
-签名 DMG 和 Windows 安装器已有构建流程，但还没有正式发布，详见 [构建与发布](docs/development.md)。
+Windows 未签名安装器已随预览版发布；签名和 macOS 公证仍需证书配置，详见 [构建与发布](docs/development.md)。
 
 ---
 
@@ -178,7 +178,7 @@ xattr -cr /Applications/Modivue.app
 
 | 你的情况 | 建议方法 | 需要准备 | 请求量参考 |
 |---|---|---|---|
-| 有一道熟悉的题，想长期盯着看 | 单问题测试 | 题目和参考答案 | 每轮 1 次请求；默认完成后 60 秒再测，可设 5–3600 秒 |
+| 有一道熟悉的题，想长期盯着看 | 单问题测试 | 题目和参考答案 | 每轮 1 次请求；自动轮次遵守核验间隔，范围 1–1440 分钟 |
 | 没有可信渠道，想快速看"更像哪个模型" | Meow 模型指向 | 无，基准内置 | 预览档 6 次；完整档 GPT 32 / 48 / 96 次，Claude 48 / 72 / 120 次 |
 | 想看知识边界是否符合 | KBF 知识边界 | 无，16 个历史模型参考内置 | 可先试采一批，但试采不下完整结论 |
 | 有一个可信渠道，想做同条件对照 | HLWY、One Token、Astra、自定义概率探针 | 先在可信渠道采集参考档案，见 [可信参考与校准](docs/features/calibration.md) | One Token / Astra 建议每题至少 10 次；HLWY 少于 50 个有效样本只算预览 |
@@ -301,3 +301,7 @@ npm run windows:build    # Windows，需要 .NET SDK 8
 
 <!-- TODO（发布前必须完成）：选定许可证并添加 LICENSE 文件。没有许可证时，他人在法律上无权使用这些代码 -->
 仓库尚未选定开源许可证，请以根目录的 LICENSE 文件和 Release 说明为准。
+
+## 友情链接
+
+[LINUX DO](https://linux.do/)

@@ -37,7 +37,7 @@ Anthropic 协议  http://127.0.0.1:4173/proxy/anthropic/v1
 | OpenAI Responses | `usage.input_tokens_details.cached_tokens` |
 | Anthropic Messages | `usage.cache_read_input_tokens` |
 
-TTFT 只从首个有效文本或工具事件开始计时。
+TTFT 从请求发出开始计时，到首个有效文本或工具事件到达时结束。
 
 ## 多渠道路由
 
@@ -58,7 +58,7 @@ Anthropic 的路径规则相同，查询参数原样转发。旧的两个环境�
 
 ## 主动探测目标
 
-服务会读取已配置且有独立 API Key 的 Claude Code / Codex 连接作为探测目标。探测目标也可通过 `MODIVUE_PROBE_OPENAI_BASE_URL`、`MODIVUE_PROBE_OPENAI_API_KEY`、`MODIVUE_PROBE_ANTHROPIC_BASE_URL` 和 `MODIVUE_PROBE_ANTHROPIC_API_KEY` 补充。
+服务会读取已配置且有独立 API Key 的 Claude Code / Codex 连接作为探测目标。探测目标也可通过 `MODIVUE_OPENAI_UPSTREAM`、`MODIVUE_PROBE_OPENAI_KEY`、`MODIVUE_PROBE_OPENAI_MODEL`（可选 `MODIVUE_PROBE_OPENAI_API`），以及对应的 `MODIVUE_ANTHROPIC_UPSTREAM`、`MODIVUE_PROBE_ANTHROPIC_KEY`、`MODIVUE_PROBE_ANTHROPIC_MODEL` 补充。
 
 探测的频率和上限见 [费用与余额](features/cost.md#控制主动探测的花费)。
 
@@ -77,3 +77,18 @@ Anthropic 的路径规则相同，查询参数原样转发。旧的两个环境�
 ## 模型目录
 
 服务启动时从 [Models.dev catalog.json](https://models.dev/catalog.json) 同步模型目录，之后每 6 小时检查一次，保存 ETag、上游修改时间和本地同步时间。返回 `304` 时只刷新同步时间；下载或解析失败时保留上次成功的目录并标记为陈旧。网络不可用时界面标记"未同步"，保留原始模型名。
+
+
+## CC Switch 与已打开的会话
+
+默认代理每次请求重新读取对应的 CCS 当前渠道，并同时使用该条记录的地址与 Key。无效配置、歧义或递归路由会被拒绝，不回退到旧渠道。命名路由和内部核验保留指定目标。
+
+这不等于自动接管 Agent。CCS 将 Base URL 写成远程地址时，请求可以绕过 Modivue；已经加载的 Codex app-server 会话还可能保留旧连接。界面读取到新配置，不能证明该会话的请求已经切换。重启 Modivue 也不能更新另一个进程的连接。
+
+要让后续 CCS 切换生效，必须先让 Agent 始终连接 Modivue 默认代理，CCS 中继续保存真实上游。迁移现有会话前应确认活动状态与连接它的客户端，不应为单个会话停止整个共享 app-server。本版本没有自动改写 Agent 配置；桌面端重启后本机端口也可能改变。
+
+## 核对实际转发
+
+在日志中清除旧渠道筛选，等待下一次普通请求结束。展开记录，确认 `measurement.source` 等于 `observation`；此时 `base_url` 和 `key_group` 才是实际出站请求的地址与 Key 分组。`probe` 和 `codex-rollout` 不是普通代理转发证据。`/api/config` 显示的是配置，不是请求轨迹。
+
+`GET /api/samples` 可查询相同记录。日志为空可能是尚未请求、请求未结束、直连绕过，或路由选择阶段被拒绝，不能仅凭空日志判断原因。

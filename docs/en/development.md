@@ -1,43 +1,67 @@
-# Build, test, and release
+# Build, check, and release
+
+[中文](../development.md) · [Back to README](../../README.en.md#run-from-source)
 
 ## Requirements
 
-| Target | Requirement |
+| Target | Requirements |
 |---|---|
-| Browser development / CLI | Node.js 22.5+ |
-| macOS app | Apple Silicon Mac |
-| Windows app | Node.js 24 and .NET SDK 8 |
+| Development server / CLI | Node.js 22.5+ for built-in `node:sqlite`; CI uses Node.js 24. |
+| macOS app | Apple Silicon Mac and Xcode command-line tools. The build architecture follows the host. |
+| Windows app | Node.js and .NET SDK 8; CI uses Node.js 24. Inno Setup 6 produces the installer. |
 
 ## Browser development
 
 ```bash
 npm ci
-npm run check
+npm run check:js
+npm run check:i18n
+npm run test:core
 npm run dev
 ```
 
-## Desktop builds
+The development interface defaults to `http://127.0.0.1:4173`. `npm run check` also includes macOS Swift checks and therefore is not a platform-neutral command.
+
+## macOS
 
 ```bash
+npm run check:desktop
 npm run desktop:build
-open dist/Modivue.app
+open "dist/Modivue.app"
+```
+
+AppKit hosts the windows and WKWebView displays the interface. A child Node service listens on loopback. The build bundles Node and its dynamic dependencies, so the destination machine does not need Node or Homebrew.
+
+Data is stored in `~/Library/Application Support/Modivue`. Existing preview packages use ad-hoc signing and are not Apple-notarized. A successful build or signature check does not prove successful native interaction.
+
+## Windows
+
+```powershell
+npm ci
 npm run windows:build
 ```
 
-The macOS app uses AppKit and WKWebView and bundles its Node runtime. Windows packages include .NET 8 and Node and require Microsoft Edge WebView2 Runtime. Current packages use temporary or no code signing and are not notarized.
+Packages include .NET 8 and Node; Microsoft Edge WebView2 Runtime is required. Data is stored in `%LOCALAPPDATA%/Modivue`. The Inno Setup installer installs for the current user. Portable ZIPs are also produced. Native mouse interaction and multi-DPI validation remain separate from build success. An installer can still be unsigned.
 
 ## UI checks
 
-UI checks require WindowServer, accessibility, event publishing, and screen-recording permissions on macOS. Run existing checks in the supported host:
+macOS GUI checks require WindowServer, Accessibility, event posting, and screen-recording permission. Use the dedicated Herdr test pane, not a pane running someone else's program:
 
 ```bash
 npm run ui:test
+npm run ui:test:hover
+npm run ui:test:drag
+npm run ui:test:menu
 npm run ui:test:web
 npm run runtime:test
 ```
 
-## Release workflow
+Results and screenshots go to `.ui-artifacts/`. The web check reports untranslated text in its run's `i18n-coverage.json`. See [UI driver instructions](../../tools/ui-driver/README.md).
 
-Push to `main`, open a pull request, or run the workflow manually for checks and platform archives. Push a tag matching the package version, such as `v0.4.7`, to publish a GitHub preview release with macOS and Windows packages. Keep `package.json`, lockfile, `Info.plist`, and footer versions aligned.
+## Automated releases
 
-[Back to README](../../README.en.md) · [Feature index](features/README.md)
+Pushes to `main`, pull requests, and manual workflow runs check and build both platforms. A `v*` tag must match `package.json`; synchronize the root version and lockfile before tagging. The build generates desktop version metadata from the package version.
+
+Tagged builds publish a GitHub prerelease with macOS ZIP, Windows ZIP, and the Windows installer when produced. Missing signing credentials do not make these unsigned previews signed releases. macOS notarization and Windows Authenticode require separate valid certificates and credentials.
+
+Prereleases must use a verified version-specific asset URL; do not assume `releases/latest/download` selects them. Confirm that both platform assets exist before updating README download buttons.
