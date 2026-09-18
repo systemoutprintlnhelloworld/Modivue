@@ -206,6 +206,18 @@ const sessionConnections = new Map();
 let detectCache = { at: 0, key: "", value: null };
 let detectInFlight = null;
 
+async function readProcessConfigEnvironment(pid) {
+  if (process.platform !== "darwin" || !Number.isSafeInteger(Number(pid))) return {};
+  try {
+    const { stdout } = await runFile("/bin/ps", ["eww", "-p", String(pid), "-o", "command="], { timeout: 1000, maxBuffer: 1024 * 1024 });
+    const values = {};
+    for (const match of String(stdout).matchAll(/(?:^|\s)([A-Z_][A-Z0-9_]*)=([^\s]+)/g)) {
+      if (/(?:^|_)(?:API_?KEY|AUTH_?TOKEN|TOKEN|SECRET|BASE_?URL|ENDPOINT|MODEL|CODEX_HOME|CLAUDE_CONFIG_DIR)$/.test(match[1])) values[match[1]] = match[2];
+    }
+    return values;
+  } catch { return {}; }
+}
+
 async function herdrPaneSnapshots(env, home) {
   // Finder has no HERDR_SOCKET_PATH. Discover named sessions as well as the
   // default socket, so a stale default server cannot hide the live workspace.
@@ -241,7 +253,7 @@ async function detectAgentsFresh(actualEnv, actualHome, actualCwd, cacheKey) {
   const claudeConnection = byHost.get("claude-code");
   const live = [
     ...await claudeTranscriptSessions(actualHome, claudeConnection),
-    ...await codexRuntimeSessions(byHost.get("codex")?.runtimeDirectory || actualEnv.CODEX_HOME || join(actualHome, ".codex"), byHost.get("codex")),
+    ...await codexRuntimeSessions(byHost.get("codex")?.runtimeDirectory || actualEnv.CODEX_HOME || join(actualHome, ".codex"), byHost.get("codex"), actualEnv, actualHome),
     ...await genericRuntimeSessions(actualEnv, actualHome, actualCwd)
   ];
   const unique = new Map();
@@ -298,8 +310,9 @@ async function detectAgentsFresh(actualEnv, actualHome, actualCwd, cacheKey) {
       const status = ["working", "running", "planning", "tool", "waiting", "idle", "blocked", "done", "error"].includes(pane.agent_status) ? pane.agent_status : null;
       const processCwd = foreground?.cwd || session?.cwd || pane.cwd || actualCwd;
       const adapter = agentAdapters.find(item => item.id === host);
-      const connection = adapter ? (await genericConnections(actualEnv, actualHome, processCwd, [adapter], foreground?.argv || []))[0] || {}
-        : (await agentConnections(actualEnv, actualHome, processCwd)).find(item => item.id === host) || {};
+      const runtimeEnv = { ...actualEnv, ...await readProcessConfigEnvironment(foreground?.pid) };
+      const connection = adapter ? (await genericConnections(runtimeEnv, actualHome, processCwd, [adapter], foreground?.argv || []))[0] || {}
+        : (await agentConnections(runtimeEnv, actualHome, processCwd)).find(item => item.id === host) || {};
       sessionConnections.set(key, connection);
       if (session) {
         if (status && !(["working", "running"].includes(status) && ["planning", "tool"].includes(session.status))) {
@@ -430,9 +443,10 @@ async function genericRuntimeSessions(env, home, cwd) {
     const { adapter, pid, argv } = entry;
     const hook = process.platform === "win32" ? listAgentSessions({ host: adapter.id }).find(session => session.metadata?.pid === pid) : null;
     const processCwd = hook?.cwd || await readProcessCwd(pid, process.platform === "win32" ? null : cwd);
+    const runtimeEnv = { ...env, ...await readProcessConfigEnvironment(pid) };
     const base = ["codex", "claude-code"].includes(adapter.id)
-      ? (await agentConnections(env, home, processCwd || home)).find(item => item.id === adapter.id) || {}
-      : (await genericConnections(env, home, processCwd || home, [adapter], argv))[0] || {};
+      ? (await agentConnections(runtimeEnv, home, processCwd || home)).find(item => item.id === adapter.id) || {}
+      : (await genericConnections(runtimeEnv, home, processCwd || home, [adapter], argv))[0] || {};
     const resumed = adapter.id === "codex" && argv.findIndex(value => value === "resume") >= 0
       ? argv[argv.findIndex(value => value === "resume") + 1] : null;
     const sessionId = hook?.sessionId || resumed || `pid:${pid}`;
@@ -552,7 +566,7 @@ async function claudeTranscriptSessions(home, connection) {
   return sessions;
 }
 
-async function codexRuntimeSessions(directory, connection) {
+async function codexRuntimeSessions(directory, connection, env = process.env, home = homedir()) {
   const lockDirectory = join(directory, "thread-writer-locks");
   const lockOwners = new Map();
   let sessionIds;
@@ -606,10 +620,17 @@ async function codexRuntimeSessions(directory, connection) {
     } catch {}
     const sessions = await Promise.all(rows.filter((row) => running.has(row.id)).map(async (row) => {
         const updatedAt = Number(row.updated_at_ms);
+        const ownerPid = lockOwners.get(join(lockDirectory, `${row.id}.lock`)) || null;
+        const runtimeEnv = { ...env, ...await readProcessConfigEnvironment(ownerPid) };
+        const runtimeConnection = ownerPid
+          ? (await agentConnections(runtimeEnv, home, row.cwd || home)).find(item => item.id === "codex") || connection
+          : connection;
+        if (runtimeConnection) sessionConnections.set(`codex:${row.id}`, runtimeConnection);
         // The shared app-server keeps writer locks after a visible CLI has
         // closed. Only an unfinished turn makes the lock a live-session
         // signal; idle CLIs are discovered independently by their process.
         const passiveMetrics = await readCodexPassiveMetrics(row.rollout_path);
+        if (passiveMetrics?.quota) passiveMetrics.quota.routeProvider = row.model_provider || runtimeConnection?.provider || null;
         return enrichRuntimeSession({ host: "codex", sessionId: row.id,
           status: "active", parentSessionId: parentByChild.get(row.id) || null,
           model: row.model || null, displayName: row.agent_nickname || null, cwd: row.cwd,
@@ -617,9 +638,8 @@ async function codexRuntimeSessions(directory, connection) {
           lastSeenAt: updatedAt ? new Date(updatedAt).toISOString() : new Date().toISOString(),
           passiveMetrics,
           metadata: { modelProvider: row.model_provider, reasoningEffort: row.reasoning_effort || null, agentRole: row.agent_role || null,
-            detection: "writer-lock", rolloutPath: row.rollout_path || null,
-            pid: lockOwners.get(join(lockDirectory, `${row.id}.lock`)) || null }
-        }, connection);
+            detection: "writer-lock", rolloutPath: row.rollout_path || null, pid: ownerPid }
+        }, runtimeConnection);
       }));
     return [
       ...sessions.filter(Boolean),
@@ -631,10 +651,31 @@ async function codexRuntimeSessions(directory, connection) {
   finally { database?.close(); }
 }
 
-// Codex writes cumulative token_count events to its local rollout. Reading a
-// bounded tail is passive and cannot interfere with the foreground request.
-// The most recent last_token_usage is per-turn usage, so it is suitable for a
-// cache-rate display without treating thread-wide totals as one request.
+function codexQuotaSnapshot(rateLimits, observedAt) {
+  if (!rateLimits || typeof rateLimits !== "object") return null;
+  const number = (value) => value === null || value === undefined || value === "" || typeof value === "boolean" ? NaN : Number(value);
+  const windows = [rateLimits.primary, rateLimits.secondary, rateLimits.individual_limit]
+    .flatMap((window) => {
+      const usedPercent = number(window?.used_percent);
+      const windowMinutes = number(window?.window_minutes);
+      const resetSeconds = number(window?.resets_at ?? window?.reset_at);
+      if (!Number.isFinite(usedPercent) || usedPercent < 0 || usedPercent > 100
+        || !Number.isFinite(windowMinutes) || windowMinutes <= 0
+        || !Number.isFinite(resetSeconds) || resetSeconds <= 0) return [];
+      return [{ usedPercent, remainingPercent: 100 - usedPercent, windowMinutes,
+        resetsAt: new Date(resetSeconds * 1000).toISOString() }];
+    })
+    .sort((left, right) => left.windowMinutes - right.windowMinutes)
+    .filter((window, index, rows) => index === 0 || window.windowMinutes !== rows[index - 1].windowMinutes);
+  if (!windows.length) return null;
+  return { source: "codex-rollout", observedAt, windows,
+    planType: typeof rateLimits.plan_type === "string" ? rateLimits.plan_type : null };
+}
+
+// Codex writes token usage and subscription quota snapshots to its local
+// rollout. Reading a bounded tail is passive and cannot interfere with the
+// foreground request. last_token_usage is per-turn usage; rate_limits carries
+// the upstream windows without exposing OAuth credentials.
 async function readCodexPassiveMetrics(rolloutPath) {
   if (!rolloutPath) return null;
   try {
@@ -647,23 +688,27 @@ async function readCodexPassiveMetrics(rolloutPath) {
     const read = await handle.read(buffer, 0, bytes, position);
     await handle.close();
     const text = buffer.subarray(0, read.bytesRead).toString("utf8");
-    let latest = null;
+    let latestUsage = null, latestQuota = null;
     for (const line of text.split(/\r?\n/)) {
       try {
         const record = JSON.parse(line);
         const info = record?.payload?.type === "token_count" ? record.payload.info : null;
         const usage = info?.last_token_usage;
         if (usage && Number.isFinite(Number(usage.input_tokens)) && Number.isFinite(Number(usage.cached_input_tokens))) {
-          latest = { usage, timestamp: record.timestamp || null, ordinal: record.ordinal || null };
+          latestUsage = { usage, timestamp: record.timestamp || null, ordinal: record.ordinal || null };
         }
+        const quota = record?.payload?.type === "token_count"
+          ? codexQuotaSnapshot(record.payload.rate_limits, record.timestamp || null) : null;
+        if (quota) latestQuota = quota;
       } catch {}
     }
-    if (!latest) return null;
-    const inputTokens = Number(latest.usage.input_tokens);
-    const cacheReadTokens = Number(latest.usage.cached_input_tokens);
-    if (inputTokens <= 0 || cacheReadTokens < 0 || cacheReadTokens > inputTokens) return null;
-    return { source: "codex-rollout", cacheHitRate: cacheReadTokens / inputTokens,
-      inputTokens, cacheReadTokens, rawUsage: latest.usage,
-      observedAt: latest.timestamp, eventId: `${latest.timestamp || ""}:${latest.ordinal || ""}` };
+    const result = latestQuota ? { source: "codex-rollout", quota: latestQuota } : null;
+    if (!latestUsage) return result;
+    const inputTokens = Number(latestUsage.usage.input_tokens);
+    const cacheReadTokens = Number(latestUsage.usage.cached_input_tokens);
+    if (inputTokens <= 0 || cacheReadTokens < 0 || cacheReadTokens > inputTokens) return result;
+    return { ...result, source: "codex-rollout", cacheHitRate: cacheReadTokens / inputTokens,
+      inputTokens, cacheReadTokens, rawUsage: latestUsage.usage,
+      observedAt: latestUsage.timestamp, eventId: `${latestUsage.timestamp || ""}:${latestUsage.ordinal || ""}` };
   } catch { return null; }
 }

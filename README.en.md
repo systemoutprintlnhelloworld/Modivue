@@ -317,4 +317,4 @@ When reporting an issue, include your OS version, agent, protocol such as Chat C
 
 Original project code is licensed under the [MIT License](LICENSE). Third-party code, assets, and trademarks retain their own terms and notices; see [asset attribution](docs/assets/NOTICE.md).
 
-A free Windows code-signing application is being prepared. SignPath approval and a signing certificate have not been obtained; see [application preparation](docs/windows-signing.md).
+A free Windows code-signing application is being prepared. SignPath approval and a signing certificate have not been obtained; see the [Code signing policy and application preparation](docs/windows-signing.md#code-signing-policy).

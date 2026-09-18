@@ -91,7 +91,7 @@ function configFor(provider, state) {
 export async function configureBalance(input) {
   const provider = (await providers()).find(p => p.id === input.providerId);
   if (!provider) throw new TypeError("余额渠道已不可用，请刷新");
-  if (provider.framework === "cliproxyapi") throw new TypeError("CLIProxyAPI 暂不提供余额");
+  if (provider.framework === "cliproxyapi") throw new TypeError("CLIProxyAPI 使用订阅额度，不显示余额");
   if (!Object.hasOwn(balanceAdapters, input.adapter) || typeof input.enabled !== "boolean") throw new TypeError("余额接口配置无效");
   const config = { adapter: input.adapter, enabled: input.enabled };
   for (const key of ["accessToken", "userId", "queryKey", "endpointPath", "remainingPath", "totalPath", "usedPath", "unit"]) {
@@ -168,7 +168,7 @@ export async function listBalances({ refresh = false } = {}) {
       if (provider.framework === "cliproxyapi") return {
         providerId: provider.id, label: provider.label, baseUrl: provider.baseUrl, keyGroup: provider.keyGroup,
         source: provider.source, wireApi: provider.wireApi, framework: provider.framework,
-        balanceSupported: false, status: "unsupported", message: "CLIProxyAPI 暂不提供余额", history: []
+        balanceSupported: false, status: "unsupported", message: "CLIProxyAPI 使用订阅额度，不显示余额", history: []
       };
       const config = configFor(provider, state), previous = state.snapshots[provider.id];
       let snapshot = previous;
