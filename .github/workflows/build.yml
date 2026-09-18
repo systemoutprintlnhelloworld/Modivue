@@ -133,4 +133,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.ref_name }}
-        run: gh release create "$RELEASE_TAG" artifacts/* --verify-tag --generate-notes --title "Modivue $RELEASE_TAG" --prerelease
+        run: gh release create "$RELEASE_TAG" artifacts/* --verify-tag --generate-notes --title "Modivue $RELEASE_TAG" --latest
