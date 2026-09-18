@@ -298,8 +298,8 @@ body.light.desktop-island .popover-summary strong { color: #f5f7fa; }
 .route-chart svg { display: block; width: 100%; height: 100%; }
 .island { --pointer-y: 50%; --tail-stretch: 1; width: 208px; max-height: calc(100vh - 24px); gap: 8px; padding: 10px; border-radius: 18px; transition: width .32s cubic-bezier(.2, .75, .2, 1), border-radius .32s ease, background .32s ease; overflow: visible; }
 .island::before { content: ""; position: absolute; right: -12px; top: var(--pointer-y); width: 20px; height: 34px; border-radius: 50%; background: inherit; border-right: 1px solid rgba(89, 204, 255, .46); transform: translateY(-50%) scaleX(var(--tail-stretch)); transform-origin: left center; transition: transform .25s ease, top .16s ease; pointer-events: none; }
-.island.expanded { width: 326px; border-radius: 15px; padding: 12px; }
-body:has(.island.expanded) .main-content { padding-right: 342px; }
+body.desktop-island #quick-island.expanded { width: var(--island-expanded-width, 326px); border-radius: 15px; padding: 12px; }
+body:has(.island.expanded) .main-content { padding-right: calc(var(--island-expanded-width, 326px) + 16px); }
 .island-grip { width: 28px; height: 4px; margin: 0 auto 2px; border-radius: 3px; }
 #island-models { display: grid; gap: 4px; max-height: calc(100vh - 105px); overflow-x: hidden; overflow-y: auto; scrollbar-width: thin; scrollbar-color: rgba(89, 204, 255, .34) transparent; }
 .island-model { position: relative; width: 100%; min-height: 75px; max-height: 90px; height: auto; display: grid; grid-template-columns: 27px minmax(0, 1fr); align-items: start; gap: 7px; padding: 7px 6px; border-radius: 9px; text-align: left; transition: min-height .28s cubic-bezier(.2,.8,.2,1), max-height .28s cubic-bezier(.2,.8,.2,1), opacity .2s ease, transform .28s cubic-bezier(.2,.8,.2,1); }
@@ -377,7 +377,7 @@ body.light .hover-popover { background: rgba(255, 255, 255, .97); }
   .model-strip { overflow-x: auto; padding-bottom: 4px; }
   .model-chip { min-width: 205px; }
   .island { right: 10px; bottom: 10px; top: auto; width: min(208px, calc(100vw - 20px)); max-height: min(58vh, 520px); transform: none; }
-  .island.expanded { width: min(326px, calc(100vw - 20px)); }
+  body.desktop-island #quick-island.expanded { width: min(var(--island-expanded-width, 326px), calc(100vw - 20px)); }
   #island-models { max-height: min(42vh, 390px); }
   .toast { right: 15px; bottom: 74px; }
   .route-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }

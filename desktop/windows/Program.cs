@@ -78,6 +78,7 @@ internal sealed class MonitorContext : ApplicationContext
     private bool mainReady;
     private string? pendingNavigation;
     private RectangleF rail = new(6, 18, 100, 220), buffer;
+    private float islandWidth = 112, islandExpandedWidth = 570, islandMinHeight = 420;
     private bool pressed, dragging, expanded, right = true, exiting, ticking, bufferDrag, clickThrough;
     private Point dragStart, windowStart;
     private Point? snapStart, snapEnd;
@@ -185,7 +186,7 @@ internal sealed class MonitorContext : ApplicationContext
                     rail.Height = 20;
                     if (body.TryGetProperty("buffer", out var b)) buffer = Rect(b);
                     var area = Screen.FromControl(island).WorkingArea;
-                    var newHeight = Math.Min(area.Height, Pixels(Math.Max(420, body.GetProperty("height").GetSingle() + 32)));
+                    var newHeight = Math.Min(area.Height, Pixels(Math.Max(islandMinHeight, body.GetProperty("height").GetSingle() + 32)));
                     var centerY = island.Top + island.Height / 2;
                     island.Height = newHeight;
                     island.Top = Math.Clamp(centerY - newHeight / 2, area.Top, area.Bottom - newHeight);
@@ -200,9 +201,17 @@ internal sealed class MonitorContext : ApplicationContext
                     SetWindowLongPtr(island.Handle, -20, (nint)(clickThrough ? style | 0x80020 : style & ~0x20));
                     if (clickThrough) await islandWeb.ExecuteScriptAsync("window.modivue?.nativeHover(null)");
                     break;
+                case "island-size":
+                    if (body.TryGetProperty("width", out var compactWidth) && compactWidth.TryGetSingle(out var nextWidth) && float.IsFinite(nextWidth)) islandWidth = Math.Clamp(nextWidth, 80, 320);
+                    if (body.TryGetProperty("expandedWidth", out var expandedWidth) && expandedWidth.TryGetSingle(out var nextExpandedWidth) && float.IsFinite(nextExpandedWidth)) islandExpandedWidth = Math.Clamp(nextExpandedWidth, 320, 900);
+                    if (body.TryGetProperty("height", out var islandHeight) && islandHeight.TryGetSingle(out var nextHeight) && float.IsFinite(nextHeight)) islandMinHeight = Math.Clamp(nextHeight, 160, 1200);
+                    var configuredWidth = Pixels(expanded ? islandExpandedWidth : islandWidth);
+                    if (right) island.Left += island.Width - configuredWidth;
+                    island.Width = configuredWidth;
+                    break;
                 case "island-hover":
                     expanded = body.GetProperty("expanded").GetBoolean();
-                    int width = Pixels(expanded ? 570 : 112);
+                    int width = Pixels(expanded ? islandExpandedWidth : islandWidth);
                     if (right) island.Left += island.Width - width;
                     island.Width = width; break;
                 case "open-main":

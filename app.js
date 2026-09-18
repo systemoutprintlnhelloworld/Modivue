@@ -3247,6 +3247,8 @@ function applyAppearance() {
   root.style.setProperty("--island-opacity", `${(Number.isFinite(islandOpacity) ? islandOpacity : 94) / 100}`);
   const islandWidth = Number(state.settings.islandWidth);
   root.style.setProperty("--island-width", `${Number.isFinite(islandWidth) ? islandWidth : 112}px`);
+  const islandExpandedWidth = Number(state.settings.islandExpandedWidth);
+  root.style.setProperty("--island-expanded-width", `${Number.isFinite(islandExpandedWidth) ? islandExpandedWidth : 570}px`);
   root.style.setProperty("--island-duration", `${Number(state.settings.animationDurationMs) || 420}ms`);
   root.style.setProperty("--font-scale", String((Number(state.settings.fontScale) || 100) / 100));
   root.classList.toggle("large-text", state.settings.fontScale > 130);
