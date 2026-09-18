@@ -72,11 +72,12 @@ export async function agentConnections(env = process.env, home = homedir(), cwd 
   }
   const codexDirectory = env.CODEX_HOME || join(home, ".codex");
   const codexPath = join(codexDirectory, "config.toml");
-  const [config, projectConfig] = await Promise.all([
+  const [config, projectConfig, auth] = await Promise.all([
     configFile(codexPath, "toml"),
-    configFile(join(cwd, ".codex", "config.toml"), "toml")
+    configFile(join(cwd, ".codex", "config.toml"), "toml"),
+    configFile(join(codexDirectory, "auth.json"))
   ]);
-  if (config.found || projectConfig.found || env.CODEX_API_KEY || env.OPENAI_API_KEY || env.OPENAI_BASE_URL) {
+  if (config.found || projectConfig.found || auth.found || env.CODEX_API_KEY || env.OPENAI_API_KEY || env.OPENAI_BASE_URL) {
     const profileName = env.MODIVUE_CODEX_PROFILE || null;
     if (profileName && !/^[a-zA-Z0-9_-]+$/.test(profileName)) throw new TypeError("MODIVUE_CODEX_PROFILE 格式无效");
     const profileFile = profileName ? await configFile(join(codexDirectory, `${profileName}.config.toml`), "toml") : { value: {}, found: false };
@@ -90,7 +91,6 @@ export async function agentConnections(env = process.env, home = homedir(), cwd 
     const provider = Object.assign({}, ...[config, profileFile, projectConfig]
       .map(file => file.value.model_providers?.[providerId] || {}));
     const wireApi = provider.wire_api || "responses";
-    const auth = await configFile(join(codexDirectory, "auth.json"));
     // Subscription OAuth credentials require the host's own authenticated transport.
     const apiKey = provider.experimental_bearer_token || (provider.env_key ? env[provider.env_key]
       : provider.requires_openai_auth === true || providerId === "openai"
@@ -368,6 +368,22 @@ async function detectAgentsFresh(actualEnv, actualHome, actualCwd, cacheKey) {
   for (const [key, session] of unique) {
     const pid = session.metadata?.pid;
     if (pid && String(session.sessionId).startsWith("pid:") && concreteByPid.has(`${session.host}:${pid}`)) unique.delete(key);
+  }
+  // Subscription quota belongs to the routed Codex account, not to one
+  // in-progress turn. Idle CLIs have no active SQLite turn, so reuse only the
+  // latest quota snapshot from the same provider; per-turn Cache stays local.
+  const quotaByRoute = new Map();
+  for (const [key, session] of unique) {
+    if (session.host !== "codex" || session.passiveMetrics?.quota) continue;
+    const connection = sessionConnections.get(key);
+    const provider = session.metadata?.modelProvider || session.provider || connection?.provider;
+    const sqliteDirectory = session.sqliteDirectory || connection?.sqliteDirectory
+      || byHost.get("codex")?.sqliteDirectory;
+    if (!provider || !sqliteDirectory) continue;
+    const route = `${sqliteDirectory}\0${provider}`;
+    if (!quotaByRoute.has(route)) quotaByRoute.set(route, await readLatestCodexQuota(sqliteDirectory, provider));
+    const quota = quotaByRoute.get(route);
+    if (quota) session.passiveMetrics = { ...session.passiveMetrics, source: "codex-rollout", quota };
   }
   const now = Date.now();
   // A discovered process is a live runtime even when its host hook has not
@@ -711,4 +727,20 @@ async function readCodexPassiveMetrics(rolloutPath) {
       inputTokens, cacheReadTokens, rawUsage: latestUsage.usage,
       observedAt: latestUsage.timestamp, eventId: `${latestUsage.timestamp || ""}:${latestUsage.ordinal || ""}` };
   } catch { return null; }
+}
+
+async function readLatestCodexQuota(sqliteDirectory, provider) {
+  let database;
+  try {
+    database = new DatabaseSync(join(sqliteDirectory, "state_5.sqlite"), { readOnly: true });
+    const rows = database.prepare(`SELECT rollout_path FROM threads
+      WHERE model_provider = ? AND rollout_path IS NOT NULL
+      ORDER BY updated_at_ms DESC LIMIT 20`).all(provider);
+    for (const row of rows) {
+      const quota = (await readCodexPassiveMetrics(row.rollout_path))?.quota;
+      if (quota) return { ...quota, routeProvider: provider };
+    }
+  } catch {}
+  finally { database?.close(); }
+  return null;
 }
