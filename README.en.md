@@ -40,6 +40,7 @@ Gateway balance · cache hits · time to first token · model verification, visi
 <a href="docs/en/features/agents.md"><img src="docs/assets/badges/cline.svg" alt="Cline"></a>
 <a href="docs/en/features/agents.md"><img src="docs/assets/badges/roo.svg" alt="Roo Code"></a>
 <a href="docs/en/features/agents.md"><img src="docs/assets/badges/aider.svg" alt="Aider"></a>
+<a href="docs/en/features/agents.md"><img src="docs/assets/badges/dsh.svg" alt="DeepSeek Harness"></a>
 </p>
 
 <sub>Support levels differ. See <a href="#supported-agents">supported agents</a> for the distinction between configuration parsing and runtime validation.</sub>
@@ -216,7 +217,7 @@ Request counts describe planned samples, not a guarantee of the final bill. Retr
 |---|---|
 | Live session-state collection | Claude Code through status-line / hook heartbeats; Codex through local session evidence. Codex's file-lock collection path does not apply on Windows. |
 | Recorded local installation and launch checks | Gemini CLI, Qwen Code, Pi, OpenCode |
-| Provider configuration parsing, real-installation acceptance still pending | Goose, Continue, Grok Build, Hermes, OpenClaw, GPTMe, Cline, Roo Code, Aider |
+| Provider configuration parsing, real-installation acceptance still pending | Goose, Continue, Grok Build, Hermes, DeepSeek Harness, OpenClaw, GPTMe, Cline, Roo Code, Aider |
 
 These levels do not claim that every adapter has passed a real upstream request test. See [Agent status](docs/en/features/agents.md) for discovery methods, [ROADMAP.md](ROADMAP.md) for pending work in Chinese, and [asset attribution](docs/assets/NOTICE.md) for icon sources and licenses.
 

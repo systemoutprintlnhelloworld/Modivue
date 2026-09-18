@@ -30,6 +30,32 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash
         run: node scripts/release-version.mjs "$GITHUB_REF_NAME"
+      - name: Import macOS Developer ID certificate
+        if: startsWith(github.ref, 'refs/tags/') && runner.os == 'macOS'
+        shell: bash
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$MACOS_CERTIFICATE_P12_BASE64" || -z "$MACOS_CERTIFICATE_PASSWORD" || -z "$MACOS_SIGN_IDENTITY" ]]; then
+            echo 'Developer ID certificate secrets are not configured; using ad-hoc signing for this tag.'
+            exit 0
+          fi
+          KEYCHAIN_PATH="$RUNNER_TEMP/modivue-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          CERT_PATH="$RUNNER_TEMP/modivue-developer-id.p12"
+          echo "$KEYCHAIN_PASSWORD" > "$RUNNER_TEMP/modivue-keychain-password"
+          echo "$MACOS_CERTIFICATE_P12_BASE64" | base64 -D > "$CERT_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -k "$KEYCHAIN_PATH" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
+          security default-keychain -s "$KEYCHAIN_PATH"
+          echo "MACOS_KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
       - name: Build macOS
         if: runner.os == 'macOS'
         env:
@@ -44,18 +70,22 @@ jobs:
           ditto -c -k --sequesterRsrc --keepParent dist/Modivue.app "dist/Modivue-macos-$(uname -m).zip"
       - name: Notarize macOS release DMG
         if: startsWith(github.ref, 'refs/tags/') && runner.os == 'macOS'
-        continue-on-error: true
         env:
           MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
         run: |
-          if [[ -z "$MACOS_SIGN_IDENTITY" || -z "$APPLE_ID" || -z "$APPLE_TEAM_ID" || -z "$APPLE_APP_SPECIFIC_PASSWORD" ]]; then
-            echo 'Signing secrets are not configured; keeping unsigned ZIP.'
+          if [[ -z "$MACOS_SIGN_IDENTITY" || -z "$APPLE_ID" || -z "$APPLE_TEAM_ID" || -z "$APPLE_APP_SPECIFIC_PASSWORD" || -z "$MACOS_KEYCHAIN_PATH" ]]; then
+            echo 'Developer ID and notarization secrets are not configured; keeping an explicitly unsigned/ad-hoc ZIP.'
             exit 0
           fi
           bash scripts/package-macos-release.sh
+      - name: Clean up macOS signing keychain
+        if: always() && runner.os == 'macOS'
+        shell: bash
+        run: |
+          if [[ -n "${MACOS_KEYCHAIN_PATH:-}" ]]; then security delete-keychain "$MACOS_KEYCHAIN_PATH" || true; fi
       - uses: actions/setup-dotnet@v4
         if: runner.os == 'Windows'
         with:

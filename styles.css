@@ -947,8 +947,8 @@ body.desktop-island:has(.spotlight-tour) .hover-popover { max-height: calc(100vh
 }
 
 /* UI concept 2.0: stable ring slots, a dedicated gutter and shorter drag cue. */
-body.desktop-island #quick-island { width: 100px; padding: 12px 8px 12px 22px; }
-body.desktop-island[data-island-side="left"] #quick-island { padding: 12px 22px 12px 8px; }
+body.desktop-island #quick-island { width: var(--island-width, 100px); padding: 12px 8px; }
+body.desktop-island[data-island-side="left"] #quick-island { padding: 12px 8px; }
 #island-buffer { display: none; }
 body.desktop-island #island-buffer { display: grid; place-items: center; position: absolute; z-index: 6; left: 3px; top: 50%; width: 14px; height: max(42px, calc(var(--island-visible-height, 79px) - 8px)); padding: 0; transform: translateY(-50%); border: 0; border-radius: 99px; background: transparent; color: transparent; font-size: 0; cursor: grab; transition: height var(--island-duration, 420ms) ease, top var(--island-duration, 420ms) ease; }
 body.desktop-island[data-island-mode="focus"] #island-buffer { height: 166px; }
@@ -1195,3 +1195,8 @@ body.layout-dragging, body.layout-dragging * { cursor: grabbing !important; -web
 @media (prefers-reduced-motion: reduce) { body.layout-dragging [data-layout] > [data-layout-card] { animation: none; } }
 @media (max-width: 1300px) { .dashboard-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } .dashboard-grid > .health-panel, .dashboard-grid > .compare-panel, .dashboard-grid > .events-panel { grid-column: 1 / -1; } }
 @media (max-width: 650px) { .dashboard-grid { grid-template-columns: 1fr; } }
+
+/* User-adjustable island geometry: keep the visual content centered while the native drag gutter stays overlayed. */
+body.desktop-island #quick-island { width: var(--island-width, 100px); padding-inline: 8px; }
+body.desktop-island .island-stage, body.desktop-island #island-models, body.desktop-island #island-focus { justify-items: center; }
+body.desktop-island .island-command { justify-self: center; }

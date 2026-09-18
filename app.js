@@ -70,6 +70,8 @@ const defaultSettings = {
   notifications: false,
   acknowledgedAt: null,
   tourSeen: false,
+  islandTourSeen: false,
+  mainTourSeen: false,
   defaultQuestionId: "candy-21"
 };
 
@@ -1230,7 +1232,8 @@ function reportIslandLayout() {
   const envelope = parseFloat(island.style.getPropertyValue("--island-envelope-height")) || height;
   // Native island sizing must account for the expanded popover as well as the
   // rail; otherwise the lower balance/cost rows are clipped until scrolling.
-  const contentHeight = Math.max(envelope, popoverHeight + 32);
+  const preferredHeight = Number(state.settings.islandHeight);
+  const contentHeight = Math.max(envelope, popoverHeight + 32, Number.isFinite(preferredHeight) ? preferredHeight : 420);
   const surfaceRect = element => ({ ...element.getBoundingClientRect().toJSON(), radius: parseFloat(getComputedStyle(element).borderTopLeftRadius) || 0 });
   desktopMessage({ type: "island-layout", x, y, width,
     height: contentHeight, glass: state.settings.themePreset === "glass" && islandState.mode !== "compact",
@@ -3232,7 +3235,10 @@ function applyAppearance() {
   island.style.setProperty("--focus-bg", state.settings.focusBackground);
   root.style.setProperty("--popover-bg", state.settings.popoverBackground);
   if (Number.isFinite(state.settings.panelRadius)) root.style.setProperty("--panel-radius", `${state.settings.panelRadius}px`);
-  root.style.setProperty("--island-opacity", `${(Number(state.settings.islandOpacity) || 94) / 100}`);
+  const islandOpacity = Number(state.settings.islandOpacity);
+  root.style.setProperty("--island-opacity", `${(Number.isFinite(islandOpacity) ? islandOpacity : 94) / 100}`);
+  const islandWidth = Number(state.settings.islandWidth);
+  root.style.setProperty("--island-width", `${Number.isFinite(islandWidth) ? islandWidth : 112}px`);
   root.style.setProperty("--island-duration", `${Number(state.settings.animationDurationMs) || 420}ms`);
   root.style.setProperty("--font-scale", String((Number(state.settings.fontScale) || 100) / 100));
   root.classList.toggle("large-text", state.settings.fontScale > 130);
@@ -3240,7 +3246,11 @@ function applyAppearance() {
   root.style.colorScheme = root.classList.contains("light") ? "light" : "dark";
   if (desktopMode === "main") desktopMessage({ type: "appearance", dark: !root.classList.contains("light"), glass: preset === "glass", background: getComputedStyle(root).getPropertyValue("--bg").trim() });
   document.body.dataset.clickThrough = String(Boolean(state.settings.clickThroughIsland));
-  if (desktopMode === "island") { desktopMessage({ type: "island-interaction", clickThrough: Boolean(state.settings.clickThroughIsland) }); reportIslandLayout(); }
+  if (desktopMode === "island") {
+    desktopMessage({ type: "island-interaction", clickThrough: Boolean(state.settings.clickThroughIsland) });
+    desktopMessage({ type: "island-size", width: Number(state.settings.islandWidth), expandedWidth: Number(state.settings.islandExpandedWidth), height: Number(state.settings.islandHeight) });
+    reportIslandLayout();
+  }
   for (const [key, variable] of [["focusOpacity", "--focus-opacity"], ["popoverOpacity", "--popover-opacity"], ["panelOpacity", "--panel-opacity"], ["compactBackingOpacity", "--compact-backing-opacity"], ["compactRingOpacity", "--compact-ring-opacity"]]) {
     root.style.setProperty(variable, String(state.settings[key] / 100));
   }
@@ -3261,14 +3271,21 @@ function applyAppearance() {
 }
 
 const tourSteps = [
-  [".health-panel", "主窗口先显示当前四元组的核心环、Cache、TTFT 和核验状态；顶部模型卡可切换模型，首屏指标卡可直接点击进入对应详细页。"],
-  ["#agent-status", "主窗口这里汇总每个 coding agent 的工作、规划、工具调用、等待和完成状态；多个 Agent 会分别保留，不合并成一个在线状态。"],
-  [".metric-grid", "主窗口的三张指标卡支持点击跳转：模型核验、Cache 和 TTFT 会打开详细窗口的对应 Tab，并保留当前模型四元组。"],
-  ["#model-strip", "顶部四元组条支持分页和触控板横向滑动；左右箭头可浏览全部渠道、模型、推理档位与 Key 组合。"],
-  ["[data-view=routes]", "私人渠道排行榜按最近活跃、核验、Cache、TTFT 或样本量排序；点击任一行可查看该四元组的三项指标曲线和全部历史核验记录。"],
-  ["#refresh-button", "拓展窗口（实时灵动岛）会在极简、普通、专注和扩展详情之间平滑切换；侧边拖条可点击或拖动，释放后吸附左右边缘，悬停模型可查看扩展信息。"],
-  ['[data-view="settings"]', "设置按外观、交互、检测策略和题库分类，并支持 Spotlight 搜索、透明度、显示指标、主题色、连接线风格与自定义问题；修改会自动保存并提示。"],
-  ['[data-view="quality"]', "模型核验页支持普通核验、插队核验、单题题库和历史报告；失败请求会保留上游错误、部分回答、尝试次数和重试信息。"]
+  ["[data-view=overview]", "概览展示当前四元组、核心指标、趋势和告警入口。这里是详细窗口的起点。"],
+  ["[data-view=models]", "模型页按四元组查看模型、渠道、推理档位和可用样本。"],
+  ["[data-view=routes]", "路由页比较不同渠道的活跃度、核验、Cache、TTFT 和样本量。"],
+  ["[data-view=cache]", "Cache 页只使用提供方返回的缓存字段，展示命中率、覆盖率和趋势。"],
+  ["[data-view=ttft]", "TTFT 页展示首个有效输出的耗时、样本和时间范围。"],
+  ["[data-view=quality]", "模型核验页展示概率探针、Juice、报告证据、失败原因和历史记录。"],
+  ["[data-view=cost]", "花费统计按渠道和 Key 分组展示真实费用或明确标记为估算的数据。"],
+  ["[data-view=alerts]", "告警页汇总模型核验、TTFT、Cache、请求失败和余额告警，并保留处理状态。"],
+  ["[data-view=logs]", "日志页按时间查看原始采样和请求结果，便于追溯指标来源。"],
+  ["[data-view=settings]", "设置页管理显示项、外观、检测间隔、告警音效和引导重播。"],
+  [".health-panel", "概览顶部显示当前四元组的核心环、Cache、TTFT 和模型核验状态；顶部模型卡可切换四元组。"],
+  ["#agent-status", "这里汇总每个 coding agent 的工作、规划、工具调用、等待和完成状态；不同 Agent 会分别保留。"],
+  [".metric-grid", "三张指标卡可跳转到模型核验、Cache 和 TTFT 详细页，并保留当前模型四元组。"],
+  ["#model-strip", "顶部四元组条支持分页和触控板横向滑动，可浏览渠道、模型、推理档位与 Key 组合。"],
+  ["#refresh-button", "拓展窗口会在极简、普通、专注和扩展详情之间切换；侧边拖条可拖动并吸附左右边缘。"]
 ];
 let tourCleanup;
 function closeTour() { tourCleanup?.(); tourCleanup = null; document.querySelector(".spotlight-tour")?.remove(); }
@@ -3278,10 +3295,10 @@ function startTour() {
   if (!islandTour) setView("overview");
   else desktopMessage({ type: "island-tour", active: true });
   const steps = islandTour ? [
-    ["#quick-island", "极简形态只显示工作中的四元组。模型图标与无数值环保持可见。"],
+    ["#quick-island", "我在这里！这是 Modivue 的灵动岛。极简形态只显示工作中的四元组，模型图标与无数值环保持可见。"],
     ["#island-buffer", "普通形态显示全部目标。上下边缘可滚动列表；顶部横条与侧面竖条都可拖动，松开后吸附左右边缘。点击侧条返回普通形态。"],
     ["#island-focus", "专注形态显示当前目标的指标。点击 Cache、TTFT 或模型核验进入同一四元组的对应详情页。"],
-    [".island-stage", "拓展窗口显示渠道、Agent 状态、历史趋势与核验进度；点击任一趋势进入对应详情，显示哪些指标和信息可在设置中调整。"],
+    ["#island-expand", "拓展菜单会从灵动岛旁展开，显示渠道、Agent 状态、历史趋势和核验进度；点击趋势可进入对应详情。"],
     ["#island-settings", "设置按钮打开灵动岛专属显示项；连接线支持丝带、水流、脉冲风格预览，减少动态选项可关闭持续动画。"],
     ["#island-expand", "展开按钮进入主窗口概览；窗口拖动会跟随鼠标并平滑吸附到左右边缘。"],
     ["#island-models", "模型过多时可通过上下边界滚动和轮播浏览，点击指标环进入对应四元组详情。"]
@@ -3295,6 +3312,11 @@ function startTour() {
   const render = () => {
     const [selector, text] = steps[index];
     const target = document.querySelector(selector);
+    if (!islandTour) {
+      const requestedView = target?.dataset?.view;
+      if (requestedView) setView(requestedView);
+      else if (index >= 10) setView("overview");
+    }
     if (!target?.getClientRects().length) {
       if (index < steps.length - 1) { index++; prepare(); return; }
       return finish();
@@ -3335,8 +3357,21 @@ function startTour() {
   };
   const finish = async () => {
     closeTour(); previousFocus?.focus({ preventScroll: true });
-    if (islandTour) { enterIslandState({ type: "leave" }); desktopMessage({ type: "island-tour", active: false }); return; }
-    try { await fetchJson("/api/settings", { method: "PATCH", body: JSON.stringify({ tourSeen: true }) }); state.settings.tourSeen = true; }
+    if (islandTour) {
+      enterIslandState({ type: "leave" });
+      desktopMessage({ type: "island-tour", active: false });
+      try {
+        await fetchJson("/api/settings", { method: "PATCH", body: JSON.stringify({ islandTourSeen: true }) });
+        state.settings.islandTourSeen = true;
+      } catch (error) { showToast(`灵动岛引导偏好保存失败：${error.message}`, "error"); }
+      desktopMessage({ type: "island-tour-complete", openMainTour: !state.settings.mainTourSeen });
+      return;
+    }
+    try {
+      await fetchJson("/api/settings", { method: "PATCH", body: JSON.stringify({ tourSeen: true, mainTourSeen: true }) });
+      state.settings.tourSeen = true;
+      state.settings.mainTourSeen = true;
+    }
     catch (error) { showToast(`引导偏好保存失败：${error.message}`, "error"); }
   };
   const skip = $(".tour-skip", overlay);
@@ -3387,9 +3422,10 @@ async function bootstrap() {
     });
   }
   await loadSettings(); applyAppearance(); await Promise.all([syncCatalog(), loadAgents(), loadConfig(), loadEvaluators(), loadZtest().catch(() => {}), loadCalibration(), loadBalances().catch(() => {}), loadQuestions()]); await refreshObservations();
-  if (!state.settings.tourSeen && desktopMode !== "island") startTour();
-  if (desktopMode === "island" && new URLSearchParams(location.search).get("tour") === "1") startTour();
+  if (desktopMode === "island" && (!state.settings.islandTourSeen || new URLSearchParams(location.search).get("tour") === "1")) startTour();
+  if (desktopMode === "island" && state.settings.islandTourSeen && !state.settings.mainTourSeen && new URLSearchParams(location.search).get("tour") !== "1") desktopMessage({ type: "request-main-tour" });
   if (desktopMode === "main") desktopMessage({ type: "main-ready" });
+  if (!desktopMode && !state.settings.mainTourSeen) startTour();
   window.setInterval(async () => { if (document.visibilityState === "visible" || desktopMode === "island") {
     await loadSettings({ applyDefaultRange: false }); applyAppearance();
     await loadAgents();

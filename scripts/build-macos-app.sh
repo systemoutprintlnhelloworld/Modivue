@@ -105,14 +105,17 @@ cp -R "$PROJECT_ROOT/node_modules/playwright-core" "$APP_RESOURCES/node_modules/
 chmod +x "$CONTENTS/MacOS/Modivue" "$RESOURCES/runtime/node"
 if command -v codesign >/dev/null 2>&1; then
   SIGN_IDENTITY="${MACOS_SIGN_IDENTITY:--}"
+  codesign_with_keychain() {
+    if [ -n "${MACOS_KEYCHAIN_PATH:-}" ]; then codesign --keychain "$MACOS_KEYCHAIN_PATH" "$@"; else codesign "$@"; fi
+  }
   if [ "$SIGN_IDENTITY" = "-" ]; then
-    for dylib in "$RESOURCES/lib/"*.dylib; do [ ! -f "$dylib" ] || codesign --force --sign - "$dylib"; done
-    codesign --force --entitlements "$PROJECT_ROOT/desktop/Modivue.entitlements" --sign - "$RESOURCES/runtime/node"
-    codesign --force --deep --sign - "$APP_BUNDLE"
+    for dylib in "$RESOURCES/lib/"*.dylib; do [ ! -f "$dylib" ] || codesign_with_keychain --force --sign - "$dylib"; done
+    codesign_with_keychain --force --entitlements "$PROJECT_ROOT/desktop/Modivue.entitlements" --sign - "$RESOURCES/runtime/node"
+    codesign_with_keychain --force --deep --sign - "$APP_BUNDLE"
   else
-    for dylib in "$RESOURCES/lib/"*.dylib; do [ ! -f "$dylib" ] || codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$dylib"; done
-    codesign --force --options runtime --timestamp --entitlements "$PROJECT_ROOT/desktop/Modivue.entitlements" --sign "$SIGN_IDENTITY" "$RESOURCES/runtime/node"
-    codesign --force --deep --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP_BUNDLE"
+    for dylib in "$RESOURCES/lib/"*.dylib; do [ ! -f "$dylib" ] || codesign_with_keychain --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$dylib"; done
+    codesign_with_keychain --force --options runtime --timestamp --entitlements "$PROJECT_ROOT/desktop/Modivue.entitlements" --sign "$SIGN_IDENTITY" "$RESOURCES/runtime/node"
+    codesign_with_keychain --force --deep --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP_BUNDLE"
   fi
 fi
 touch "$APP_BUNDLE"

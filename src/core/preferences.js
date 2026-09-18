@@ -13,11 +13,14 @@ export const preferenceFields = [
   { key: "normalBackground", label: "普通形态背景", group: "appearance", type: "color", value: "#101217" },
   { key: "focusBackground", label: "专注形态背景", group: "appearance", type: "color", value: "#101217" },
   { key: "popoverBackground", label: "悬浮详情背景", group: "appearance", type: "color", value: "#101217" },
-  { key: "islandOpacity", label: "灵动岛不透明度", group: "appearance", min: 40, max: 100, unit: "%", value: 94 },
+  { key: "islandOpacity", label: "灵动岛不透明度", group: "appearance", min: 0, max: 100, unit: "%", value: 94 },
   { key: "panelRadius", label: "主窗口卡片圆角", group: "appearance", min: 0, max: 32, unit: "px", value: 12 },
   { key: "islandShape", label: "灵动岛轮廓", group: "appearance", options: { pill: "椭圆胶囊", rounded: "圆角矩形", square: "小圆角" }, value: "pill" },
   { key: "islandMaxAgents", label: "普通形态最多显示目标", hint: "按模型、渠道、Key、推理档位去重；超过上限时悬停上下边界滚动", group: "interaction", min: 1, max: 12, unit: "个", value: 5 },
   { key: "islandScrollSpeed", label: "边界滚动速度", group: "interaction", min: 30, max: 360, unit: "px/s", value: 110 },
+  { key: "islandWidth", label: "灵动岛宽度", hint: "调整灵动岛内容轨道宽度；拖拽缓冲区不占用内容中心", group: "interaction", min: 80, max: 320, unit: "px", value: 112 },
+  { key: "islandExpandedWidth", label: "灵动岛展开宽度", hint: "调整展开详情的原生窗口宽度", group: "interaction", min: 320, max: 900, unit: "px", value: 570 },
+  { key: "islandHeight", label: "灵动岛高度", hint: "调整原生窗口的最小高度；内容不足时仍按实际内容收缩", group: "interaction", min: 160, max: 1200, unit: "px", value: 420 },
   { key: "animationDurationMs", label: "形态过渡时长", group: "interaction", min: 150, max: 900, unit: "ms", value: 420 },
   { key: "focusDwellMs", label: "普通到专注停留", hint: "首次进入至少保留 550ms 普通形态", group: "interaction", min: 150, max: 2000, unit: "ms", value: 350 },
   { key: "collapseDelayMs", label: "离开收起延迟", group: "interaction", min: 100, max: 1500, unit: "ms", value: 360 },
@@ -54,9 +57,9 @@ export const preferenceFields = [
   { key: "kbfReferenceModel", label: "KBF 参考模型", hint: "当前模型未覆盖时，可明确选择要比较的历史参考模型", group: "verification", options: {"current": "当前申报模型", "anthropic/claude-opus-4.6": "anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6": "anthropic/claude-sonnet-4.6", "deepseek/deepseek-v3.2": "deepseek/deepseek-v3.2", "google/gemini-2.5-flash-lite": "google/gemini-2.5-flash-lite", "google/gemini-3-flash-preview": "google/gemini-3-flash-preview", "z-ai/glm-4.7-flash": "z-ai/glm-4.7-flash", "z-ai/glm-4.7": "z-ai/glm-4.7", "z-ai/glm-5": "z-ai/glm-5", "openai/gpt-4.1-mini": "openai/gpt-4.1-mini", "openai/gpt-4.1-nano": "openai/gpt-4.1-nano", "openai/gpt-5.4": "openai/gpt-5.4", "moonshotai/kimi-k2-0905": "moonshotai/kimi-k2-0905", "meta-llama/llama-4-scout": "meta-llama/llama-4-scout", "qwen/qwen3.5-27b": "qwen/qwen3.5-27b", "qwen/qwen3.5-397b-a17b": "qwen/qwen3.5-397b-a17b", "qwen/qwen3.5-9b": "qwen/qwen3.5-9b"}, value: "current" },
   { key: "idleGraceSeconds", label: "工作结束后的让行时间", group: "verification", min: 0, max: 60, unit: "秒", value: 3 },
   ...[
-    ["focusOpacity", "专注背景不透明度", 94, 40], ["popoverOpacity", "扩展详情不透明度", 98, 40],
-    ["panelOpacity", "详细窗口面板不透明度", 94, 40], ["compactBackingOpacity", "极简图标底色不透明度", 88, 50],
-    ["compactRingOpacity", "极简空环不透明度", 72, 40]
+    ["focusOpacity", "专注背景不透明度", 94, 0], ["popoverOpacity", "扩展详情不透明度", 98, 0],
+    ["panelOpacity", "详细窗口面板不透明度", 94, 0], ["compactBackingOpacity", "极简图标底色不透明度", 88, 0],
+    ["compactRingOpacity", "极简空环不透明度", 72, 0]
   ].map(([key, label, value, min]) => ({ key, label, group: "appearance", min, max: 100, unit: "%", value })),
   { key: "compactMetric", label: "极简形态环指标", group: "display",
     options: { quality: "模型核验", cache: "Cache", ttft: "TTFT", balance: "余额", none: "仅模型图标" }, value: "quality" },

@@ -313,12 +313,16 @@ const defaults = Object.freeze({ ...preferenceDefaults, probeEnabled: true, prob
   verificationIntervalMinutes: 15, verificationRequestDelaySeconds: 2,
   probeMaxOutputTokens: 16, probeInstruction: "Reply with the word ok.", ttftThresholdMs: 2000, cacheThreshold: 0.2,
   qualityConsecutive: 2, defaultHours: 1, evaluatorId: "meow-fingerprint", meowTier: "screen", notifications: false, acknowledgedAt: null,
-  tourSeen: false, defaultQuestionId: "candy-21" });
+  tourSeen: false, islandTourSeen: false, mainTourSeen: false, defaultQuestionId: "candy-21" });
 
 export function getSettings() {
   const row = db.prepare("SELECT value FROM preferences WHERE name = 'settings'").get();
   const saved = row ? JSON.parse(row.value) : {};
   delete saved.questionIntervalSeconds;
+  if (saved.tourSeen === true) {
+    saved.islandTourSeen ??= true;
+    saved.mainTourSeen ??= true;
+  }
   if (Object.hasOwn(saved, "normalMetric")) {
     for (const kind of ["quality", "cache", "ttft", "balance"]) {
       saved[`normalShow${kind[0].toUpperCase()}${kind.slice(1)}`] ??= saved.normalMetric === kind;
@@ -446,7 +450,7 @@ export function updateSettings(patch) {
       if (!listQuestions().some(question => question.id === value)) throw new TypeError("请选择已有的单问题测试题目");
     } else if (key === "meowTier") {
       if (!["screen", "low", "medium", "high"].includes(value)) throw new TypeError("Meow 核验强度无效");
-    } else if (key === "tourSeen") {
+    } else if (["tourSeen", "islandTourSeen", "mainTourSeen"].includes(key)) {
       if (typeof value !== "boolean") throw new TypeError(`${key} 必须为布尔值`);
     } else {
       const bounds = { probeIntervalMinutes: [1, 1440], verificationIntervalMinutes: [1, 1440], verificationRequestDelaySeconds: [1, 60], probeDailyLimit: [1, 10000], verificationSamples: [1, 500], probeMaxOutputTokens: [8, 4096], islandMaxAgents: [1, 12],

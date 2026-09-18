@@ -15,7 +15,7 @@ Modivue 会发现本机的 coding agent 会话，并区分两种情况：**只�
 |---|---|---|
 | 实时读取会话状态 | Claude Code、Codex | 能拿到会话、模型和运行状态 |
 | 本机安装并启动验证 | Gemini CLI、Qwen Code、Pi、OpenCode | 已在本机安装并启动验证 |
-| 可解析 provider 配置 | Goose、Continue、Grok Build、Hermes、OpenClaw、GPTMe、Cline、Roo Code、Aider | 有配置解析路径，尚未实机验收 |
+| 可解析 provider 配置 | Goose、Continue、Grok Build、Hermes、DeepSeek Harness、OpenClaw、GPTMe、Cline、Roo Code、Aider | 有配置解析路径，尚未实机验收 |
 
 "支持"表示有配置解析或会话发现路径，不表示每个工具都完成了真实上游请求的验收。后续计划见 [ROADMAP.md](../../ROADMAP.md)。
 
@@ -25,9 +25,11 @@ Modivue 会发现本机的 coding agent 会话，并区分两种情况：**只�
 
 **Codex。** 读取 Codex 正在持有的 thread writer lock，并结合 `~/.codex/state_5.sqlite` 获取会话、模型、父子 Agent 和 turn 状态。不需要替换 Codex 的状态栏。这种文件锁采集方式不适用于 Windows。
 
-**其他 CLI 工具。** 根据运行进程的工作目录读取项目配置，可以识别 Node 包入口。
+**其他 CLI 工具。** 根据运行进程的工作目录读取项目配置，可以识别 Node 包入口。DeepSeek Harness 使用官方 `dsh` 命令；适配器只读 `$DSH_HOME/settings.yaml`（默认 `~/.dsh/settings.yaml`）和 `$DSH_HOME/.credentials.yaml`，解析 `agent-default-model`、`llm-pi-ai` 或 `llm-deepseek` 的当前 provider、模型、协议、地址和凭据引用。
 
 **Herdr。** 通过前台进程 PID 补充状态。
+
+**DeepSeek Harness 的配置边界。** 官方文档说明，模型设置修改会在下一次请求生效，不需要重启 Harness。Modivue 的适配器同样只读取磁盘快照；它不会接管 DSH 内部请求，也不会把凭据暴露到接口。官方命令、配置字段和协议说明见 [DeepSeek Harness README](https://github.com/deepseek-ai/deepseek-harness)、[模型配置指南](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/user/guide/providers.md) 和 [默认模型源码](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/core/agent-default-model/src/index.ts)。
 
 **Windows。** 通过 CIM 发现进程，结合用户配置解析和代理 / Hook 记录。进程存在本身不代表 Agent 正在工作。
 

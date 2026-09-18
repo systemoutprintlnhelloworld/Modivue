@@ -23,7 +23,7 @@
 
 [功能](#功能) · [下载安装](#下载与安装) · [开始使用](#开始使用) · [模型核验](#模型核验) · [常见问题](#常见问题) · [文档](#文档)
 
-<h2>支持检测你的 </h2>
+<h2>支持监测这些 Coding Agent</h2>
 
 <p align="center">
 <a href="docs/features/agents.md"><img src="docs/assets/badges/claude-code.svg" alt="Claude Code"></a>
@@ -41,6 +41,7 @@
 <a href="docs/features/agents.md"><img src="docs/assets/badges/cline.svg" alt="Cline"></a>
 <a href="docs/features/agents.md"><img src="docs/assets/badges/roo.svg" alt="Roo Code"></a>
 <a href="docs/features/agents.md"><img src="docs/assets/badges/aider.svg" alt="Aider"></a>
+<a href="docs/features/agents.md"><img src="docs/assets/badges/dsh.svg" alt="DeepSeek Harness"></a>
 </p>
 
 <sub>各工具的支持程度不同，分级见 <a href="#支持的工具">支持的工具</a>。</sub>
@@ -221,7 +222,7 @@ Windows 未签名安装器已随预览版发布；签名和 macOS 公证仍需�
 |---|---|
 | 实时读取会话状态 | Claude Code（statusline / hook 心跳）、Codex（本机会话状态；Windows 上不适用文件锁采集） |
 | 本机安装并启动验证 | Gemini CLI、Qwen Code、Pi、OpenCode |
-| 可解析 provider 配置，尚未实机验收 | Goose、Continue、Grok Build、Hermes、OpenClaw、GPTMe、Cline、Roo Code、Aider |
+| 可解析 provider 配置，尚未实机验收 | Goose、Continue、Grok Build、Hermes、DeepSeek Harness、OpenClaw、GPTMe、Cline、Roo Code、Aider |
 
 各工具的识别方式见 [Agent 状态](docs/features/agents.md)，后续适配计划见 [ROADMAP.md](ROADMAP.md)，图标来源与许可见 [素材归属](docs/assets/NOTICE.md)。
 

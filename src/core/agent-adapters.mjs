@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { readFile } from "node:fs/promises";
 import { parse as parseToml } from "smol-toml";
 import { parse as parseYaml } from "yaml";
@@ -19,6 +19,7 @@ export const agentAdapters = [
   ["pi", "Pi", "pi", "openai", [".pi/agent/settings.json", ".pi/agent/models.json"], ["PI_MODEL", "PI_BASE_URL", "PI_API_KEY"]],
   ["grok-build", "Grok Build", "grok", "openai", [".grok/config.toml"], []],
   ["hermes", "Hermes", "hermes", "openai", [".hermes/.env", ".hermes/config.yaml"], []],
+  ["dsh", "DeepSeek Harness", "dsh", "openai", [".dsh/settings.yaml", ".dsh/settings.yml", ".dsh/settings.json"], []],
   ["openclaw", "OpenClaw", "openclaw", "openai", [".openclaw/openclaw.json"], []],
   ["cursor-agent", "Cursor Agent", "cursor-agent", "openai", [".cursor-agent/settings.json"], ["CURSOR_MODEL", "CURSOR_BASE_URL", "CURSOR_API_KEY"]],
   ["warp", "Warp AI", "warp", "openai", [".warp/settings.json"], ["WARP_MODEL", "WARP_BASE_URL", "WARP_API_KEY"]],
@@ -31,7 +32,7 @@ export const agentAdapters = [
   ["plandex", "Plandex", "plandex", "openai", [".plandex/config.json"], ["PLANDEX_MODEL", "PLANDEX_BASE_URL", "PLANDEX_API_KEY"]],
   ["gptme", "GPTMe", "gptme", "openai", [".config/gptme/config.toml"], ["GPTME_MODEL", "GPTME_BASE_URL", "GPTME_API_KEY"]]
 ].map(([id, label, command, protocol, configPaths, envKeys]) => ({ id, label, command, protocol, configPaths, envKeys,
-  configCapability: ["aider", "gemini-cli", "opencode", "goose", "qwen-code", "continue", "pi", "grok-build", "hermes", "openclaw", "gptme", "cline", "roo-code"].includes(id) ? "selected-provider" : "presence-only",
+  configCapability: ["aider", "gemini-cli", "opencode", "goose", "qwen-code", "continue", "pi", "grok-build", "hermes", "dsh", "openclaw", "gptme", "cline", "roo-code"].includes(id) ? "selected-provider" : "presence-only",
   aliases: { "github-copilot": ["copilot"], "cursor-agent": ["cursor", "agent"], "continue": ["cn"], "grok-build": ["grok"], "gemini-cli": ["gemini"], "qwen-code": ["qwen"] }[id] || [],
   processPatterns: { "cline": ["saoudrizwan.claude-dev"], "roo-code": ["rooveterinaryinc.roo-cline"], "continue": ["continue.continue"], "cursor-agent": ["cursor-agent"], "github-copilot": ["GitHub Copilot"], "amazon-q": ["amazon-q"], "windsurf": ["Windsurf"] }[id] || [] }));
 
@@ -59,20 +60,32 @@ export function adapterConfigPaths(adapter, home, cwd) {
 }
 
 export function adapterForProcess(argv) {
-  // Match executable/package paths, never arbitrary prompt arguments.
-  const bundle = (typeof argv === "string" ? argv : argv?.[0] || "").match(/^\/.*\/(Warp|Windsurf|Trae)\.app\/Contents\/MacOS\//)?.[1];
-  if (bundle) return agentAdapters.find(adapter => adapter.id === bundle.toLowerCase()) || null;
-  const words = (typeof argv === "string" ? argv.trim().match(/"[^"]*"|[^\s]+/g) || [] : argv || [])
+  // Match executable/package paths, never arbitrary prompt arguments. Windows
+  // process listings can use mixed-case drive paths and cmd.exe wrappers.
+  const raw = typeof argv === "string" ? argv : (argv || []).join(" ");
+  const words = (typeof argv === "string" ? raw.trim().match(/"[^"]*"|[^\s]+/g) || [] : argv || [])
     .map(word => word.replace(/^"|"$/g, "").replaceAll("\\", "/"));
-  const command = words[0]?.split("/").at(-1)?.replace(/\.(exe|cmd)$/i, "");
-  const entry = /^(?:node|bun|python(?:3(?:\.\d+)?)?)$/.test(command || "") ? words.find((word, index) => index > 0 && !word.startsWith("-")) : words[0];
-  if (!entry) return null;
-  const name = entry.split("/").at(-1).replace(/\.(exe|cmd)$/i, "");
-  return agentAdapters.find(adapter => name === adapter.command || adapter.aliases.includes(name)
-    || ({ "gemini-cli": /\/@google\/gemini-cli\//, "qwen-code": /\/@qwen-code\/qwen-code\//,
-      pi: /\/(?:@mariozechner|@earendil-works)\/pi-coding-agent\//,
-      opencode: /\/opencode(?:-ai|-darwin[^/]*)?\//, aider: /\/aider(?:\/|$)/,
-      hermes: /\/hermes_cli\// }[adapter.id]?.test(entry))) || null;
+  const normalized = words.map(word => word.toLowerCase());
+  const bundle = raw.replaceAll("\\", "/").match(/^\/.*\/(Warp|Windsurf|Trae)\.app\/Contents\/MacOS\//i)?.[1];
+  if (bundle) return agentAdapters.find(adapter => adapter.id === bundle.toLowerCase()) || null;
+  const command = normalized[0]?.split("/").at(-1)?.replace(/\.(exe|cmd)$/i, "");
+  const nodeRuntime = /^(?:node|bun|python(?:3(?:\.\d+)?)?)$/.test(command || "");
+  let entryIndex = nodeRuntime ? normalized.findIndex((word, index) => index > 0 && !word.startsWith("-")) : 0;
+  // `cmd.exe /c pi ...` is common for npm-installed Windows shims. Keep the
+  // command after /c as the executable candidate instead of treating cmd as a
+  // separate unsupported process.
+  if (/^(?:cmd|powershell|pwsh)$/.test(command || "")) {
+    const switchIndex = normalized.findIndex(word => ["/c", "-command", "-c"].includes(word));
+    if (switchIndex >= 0) entryIndex = switchIndex + 1;
+  }
+  const entry = entryIndex >= 0 ? words[entryIndex] : null;
+  const name = entry?.split("/").at(-1)?.replace(/\.(exe|cmd)$/i, "").toLowerCase();
+  if (!entry || !name) return null;
+  return agentAdapters.find(adapter => name === adapter.command.toLowerCase() || adapter.aliases.some(alias => name === alias.toLowerCase())
+    || ({ "gemini-cli": /\/@google\/gemini-cli\//i, "qwen-code": /\/@qwen-code\/qwen-code\//i,
+      pi: /\/(?:@mariozechner|@earendil-works)\/pi-coding-agent(?:\/|$)/i,
+      opencode: /\/opencode(?:-ai|-darwin[^/]*)?\//i, aider: /\/aider(?:\/|$)/i,
+      hermes: /\/hermes_cli\//i, dsh: /\/(?:@deepseek-ai\/dsh|deepseek-harness)(?:\/|$)/i }[adapter.id]?.test(entry))) || null;
 }
 
 function joinHome(path, root) {
@@ -83,7 +96,7 @@ const text = value => typeof value === "string" && value.trim() ? value.trim() :
 const transports = {
   openai: ["openai", "chat"], "openai-completions": ["openai", "chat"], "openai-compatible": ["openai", "chat"],
   responses: ["openai", "responses"], "openai-responses": ["openai", "responses"], chat_completions: ["openai", "chat"],
-  anthropic: ["anthropic", "messages"], "anthropic-messages": ["anthropic", "messages"],
+  anthropic: ["anthropic", "messages"], "anthropic-messages": ["anthropic", "messages"], messages: ["anthropic", "messages"], "chat-completions": ["openai", "chat"],
   gemini: ["gemini", "generateContent"], "google-generative-ai": ["gemini", "generateContent"]
 };
 
@@ -132,6 +145,28 @@ export function resolveAdapterConfig(id, config, env = {}) {
       || config.custom_providers?.find(item => item.name === model.provider);
     return route(model.default, selected?.api_mode || (selected ? "openai" : null),
       model.base_url || selected?.base_url, selected?.api_key, config.agent?.reasoning_effort);
+  }
+  if (id === "dsh") {
+    const selection = config["agent-default-model"] || config.agentDefaultModel || {};
+    const providerId = text(selection.provider);
+    const model = text(selection.model);
+    const pi = config["llm-pi-ai"] || {};
+    const selected = providerId ? pi.providers?.[providerId] || null : null;
+    const deepseek = config["llm-deepseek"] || {};
+    const isOfficialDeepSeek = providerId === "deepseek-official" || (!selected && Object.keys(deepseek).length > 0);
+    const profile = isOfficialDeepSeek ? deepseek : selected || {};
+    const protocol = profile.protocol || profile.api || (isOfficialDeepSeek ? "chat-completions" : null);
+    const defaultBase = isOfficialDeepSeek
+      ? (protocol === "messages" ? "https://api.deepseek.com/anthropic" : "https://api.deepseek.com")
+      : null;
+    const credentialRef = text(profile.apiKeyEnv);
+    const refs = config.__dshCredentials?.refs || {};
+    const apiKey = credentialRef ? refs[credentialRef] || env[credentialRef] : null;
+    const result = route(model, protocol, profile.baseURL || env.DEEPSEEK_BASE_URL || defaultBase, apiKey, selection.reasoningEffort || profile.reasoningEffort);
+    if (!providerId || !model) return { ...result, error: "未找到 DeepSeek Harness 当前默认模型", configStatus: "ambiguous" };
+    if (!selected && !isOfficialDeepSeek) return { ...result, error: "DeepSeek Harness 默认模型引用的 provider 未配置", configStatus: "ambiguous" };
+    if (!credentialRef && !apiKey) return { ...result, error: "DeepSeek Harness 当前 provider 未配置凭据引用", configStatus: "parsed" };
+    return result;
   }
   if (id === "qwen-code") {
     const auth = config.security?.auth || {};
@@ -186,7 +221,11 @@ export function resolveAdapterConfig(id, config, env = {}) {
 
 export async function readAdapterConnection(adapter, env, home, cwd, argv = []) {
   let config = {}, fileEnv = {}, configPath = null, error = null;
-  const paths = adapter.id === "gemini-cli" && env.GEMINI_CLI_HOME
+  const dshHome = env.DSH_HOME || join(home, ".dsh");
+  const dshCredentialsPath = adapter.id === "dsh" ? join(dshHome, ".credentials.yaml") : null;
+  const paths = adapter.id === "dsh"
+    ? [join(dshHome, "settings.yaml"), join(dshHome, "settings.yml"), join(dshHome, "settings.json")]
+    : adapter.id === "gemini-cli" && env.GEMINI_CLI_HOME
     ? [join(env.GEMINI_CLI_HOME, ".gemini/.env"), join(env.GEMINI_CLI_HOME, ".gemini/settings.json"), join(cwd, ".gemini/.env"), join(cwd, ".gemini/settings.json")]
     : adapter.id === "opencode" && env.OPENCODE_CONFIG
     ? [...adapterConfigPaths(adapter, home, cwd), env.OPENCODE_CONFIG]
@@ -197,7 +236,7 @@ export async function readAdapterConnection(adapter, env, home, cwd, argv = []) 
     try {
       const contents = await readFile(path, "utf8");
       configPath = path;
-      if (path.endsWith("/.env")) {
+      if (basename(path) === ".env") {
         for (const line of contents.split(/\r?\n/)) {
           const match = line.match(/^\s*(?:export\s+)?([A-Z_][A-Z0-9_]*)\s*=\s*(.*?)\s*$/);
           if (match) fileEnv[match[1]] = match[2].replace(/^(["'])(.*)\1$/, "$2");
@@ -208,18 +247,38 @@ export async function readAdapterConnection(adapter, env, home, cwd, argv = []) 
       }
     } catch (cause) { if (cause.code !== "ENOENT") error = "配置无法读取或格式无效"; }
   }
+  if (dshCredentialsPath) {
+    try {
+      const credentials = parseYaml(await readFile(dshCredentialsPath, "utf8"));
+      config.__dshCredentials = credentials;
+    } catch (cause) { if (cause.code !== "ENOENT") error = "凭据配置无法读取或格式无效"; }
+  }
   const runtimeEnv = { ...fileEnv, ...config.env, ...env };
-  const modelIndex = argv.findIndex(value => value === "--model" || value === "-m");
-  const cliModel = modelIndex >= 0 ? argv[modelIndex + 1] : argv.find(value => value.startsWith("--model="))?.slice(8);
+  const optionValue = (names) => {
+    const index = argv.findIndex(value => names.includes(value));
+    return index >= 0 ? argv[index + 1] : argv.find(value => names.some(name => value.startsWith(`${name}=`)))?.split("=", 2)[1];
+  };
+  const cliModel = optionValue(["--model", "-m"]);
+  const cliProvider = optionValue(["--provider"]);
   if (cliModel) {
     if (["gemini-cli", "qwen-code"].includes(adapter.id)) config.model = { ...config.model, name: cliModel };
-    else if (adapter.id === "pi") config.defaultModel = cliModel;
+    else if (adapter.id === "pi") {
+      // Pi accepts both `--provider P --model M` and `--model P/M`.
+      // The static settings file contains the previous default, so use the
+      // command line attached to this process as the current route.
+      const separator = cliModel.indexOf("/");
+      if (separator > 0 && !cliProvider) {
+        config.defaultProvider = cliModel.slice(0, separator);
+        config.defaultModel = cliModel.slice(separator + 1);
+      } else config.defaultModel = cliModel;
+    }
     else if (adapter.id === "goose") config.GOOSE_MODEL = cliModel;
     else if (["opencode", "aider"].includes(adapter.id)) config.model = cliModel;
   }
+  if (adapter.id === "pi" && cliProvider) config.defaultProvider = cliProvider;
   const override = adapterEnvironment(adapter, runtimeEnv);
   const values = resolveAdapterConfig(adapter.id, config, runtimeEnv);
   const explicit = override.model && override.baseUrl && override.apiKey;
   return { ...values, ...(explicit ? { ...override, protocol: adapter.protocol, wireApi: adapter.protocol === "gemini" ? "generateContent" : "chat", error: null, configStatus: "explicit" } : {}),
-    configPath, source: explicit ? "environment" : configPath ? "config" : null, ...(error ? { error } : {}) };
+    configPath, source: explicit ? "environment" : configPath ? "config" : null, ...(error ? { error, configStatus: "error" } : {}) };
 }

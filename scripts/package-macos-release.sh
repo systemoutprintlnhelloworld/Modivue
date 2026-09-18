@@ -13,10 +13,13 @@ done
 if [ ! -d "$APP_BUNDLE" ]; then echo "Build dist/Modivue.app before packaging" >&2; exit 1; fi
 
 rm -f "$DMG_PATH"
+codesign_with_keychain() {
+  if [ -n "${MACOS_KEYCHAIN_PATH:-}" ]; then codesign --keychain "$MACOS_KEYCHAIN_PATH" "$@"; else codesign "$@"; fi
+}
 ditto "$APP_BUNDLE" "$STAGING_DIRECTORY/Modivue.app"
 ln -s /Applications "$STAGING_DIRECTORY/Applications"
 hdiutil create -volname Modivue -srcfolder "$STAGING_DIRECTORY" -ov -format UDZO "$DMG_PATH"
-codesign --force --timestamp --sign "$MACOS_SIGN_IDENTITY" "$DMG_PATH"
+codesign_with_keychain --force --timestamp --sign "$MACOS_SIGN_IDENTITY" "$DMG_PATH"
 xcrun notarytool submit "$DMG_PATH" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" --wait
 xcrun stapler staple "$DMG_PATH"
 xcrun stapler validate "$DMG_PATH"

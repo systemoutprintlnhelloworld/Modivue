@@ -151,8 +151,12 @@ final class ModivueApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNav
     // Keep the native panel close to the island content. A full-screen
     // transparent WebView can be composited as an opaque black rectangle.
     private var islandContentHeight: CGFloat = 420
+    private var islandMinHeight: CGFloat = 420
+    private var islandWidth: CGFloat = 112
+    private var islandExpandedWidth: CGFloat = 570
     private var islandTourActive = false
     private var pendingCollapse: DispatchWorkItem?
+    private var pendingMainTour = false
 
     static func main() {
         let application = NSApplication.shared
@@ -401,8 +405,8 @@ final class ModivueApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNav
         let screenHeight = (NSScreen.main?.visibleFrame.height ?? 720) - 40
         // The visible rail controls its own height. Reserve transparent space
         // for history without shifting the model under the pointer.
-        let height = min(islandTourActive ? 760 : max(420, islandContentHeight), screenHeight)
-        return NSSize(width: expanded || islandTourActive ? 570 : 112, height: height)
+        let height = min(islandTourActive ? 760 : max(islandMinHeight, islandContentHeight), screenHeight)
+        return NSSize(width: expanded || islandTourActive ? islandExpandedWidth : islandWidth, height: height)
     }
 
     private func placeIsland(_ panel: NSPanel, size: NSSize) {
@@ -508,7 +512,13 @@ final class ModivueApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNav
         NSApp.activate(ignoringOtherApps: true)
         mainWindow?.makeKeyAndOrderFront(nil)
         mainWindow?.orderFrontRegardless()
-        if mainLoaded { applyPendingNavigation() }
+        if mainLoaded {
+            applyPendingNavigation()
+            if pendingMainTour {
+                pendingMainTour = false
+                mainWebView?.evaluateJavaScript("window.modivue?.startTour?.()")
+            }
+        }
     }
 
     @objc private func showIsland() { islandWindow?.orderFrontRegardless() }
@@ -694,6 +704,11 @@ final class ModivueApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNav
                 islandWindow?.ignoresMouseEvents = clickThrough
                 if clickThrough { islandWebView?.evaluateJavaScript("window.modivue?.nativeHover?.(null)") }
             }
+        case "island-size":
+            if let width = body["width"] as? Double, width.isFinite { islandWidth = min(max(80, CGFloat(width)), 320) }
+            if let expandedWidth = body["expandedWidth"] as? Double, expandedWidth.isFinite { islandExpandedWidth = min(max(320, CGFloat(expandedWidth)), 900) }
+            if let height = body["height"] as? Double, height.isFinite { islandMinHeight = min(max(160, CGFloat(height)), 1200) }
+            resizeIsland(expanded: (islandWindow?.frame.width ?? 0) > 200)
         case "start-island-tour":
             pendingCollapse?.cancel()
             islandTourActive = true
@@ -704,6 +719,14 @@ final class ModivueApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNav
             islandTourActive = body["active"] as? Bool == true
             pendingCollapse?.cancel()
             resizeIsland(expanded: islandTourActive)
+        case "island-tour-complete":
+            // The first-run flow is intentionally island-first. Open the
+            // dashboard only after the island tour has persisted its state.
+            pendingMainTour = body["openMainTour"] as? Bool == true
+            if pendingMainTour { openDashboard() }
+        case "request-main-tour":
+            pendingMainTour = true
+            openDashboard()
         case "island-layout":
             if message.webView === islandWebView {
                 let surfaces = body["surfaces"] as? [[String: Any]] ?? []
@@ -727,7 +750,7 @@ final class ModivueApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNav
                 } else { view.secondaryDragRect = .zero }
                 if let reportedHeight = body["height"] as? Double, reportedHeight.isFinite {
                     let screenHeight = (islandWindow?.screen ?? NSScreen.main)?.visibleFrame.height ?? 720
-                    let nextHeight = min(max(420, CGFloat(reportedHeight) + 32), screenHeight - 40)
+                    let nextHeight = min(max(islandMinHeight, CGFloat(reportedHeight) + 32), screenHeight - 40)
                     if abs(nextHeight - islandContentHeight) > 1 {
                         islandContentHeight = nextHeight
                         resizeIsland(expanded: (islandWindow?.frame.width ?? 0) > 200)
@@ -756,6 +779,12 @@ final class ModivueApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNav
             if message.webView === mainWebView {
                 mainLoaded = true
                 applyPendingNavigation()
+                if pendingMainTour {
+                    pendingMainTour = false
+                    DispatchQueue.main.async { [weak self] in
+                        self?.mainWebView?.evaluateJavaScript("window.modivue?.startTour?.()")
+                    }
+                }
             }
         default: break
         }

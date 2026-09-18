@@ -89,12 +89,14 @@ export async function agentConnections(env = process.env, home = homedir(), cwd 
     const providerId = base.model_provider || "openai";
     const provider = Object.assign({}, ...[config, profileFile, projectConfig]
       .map(file => file.value.model_providers?.[providerId] || {}));
+    const wireApi = provider.wire_api || "responses";
     const auth = await configFile(join(codexDirectory, "auth.json"));
     // Subscription OAuth credentials require the host's own authenticated transport.
     const apiKey = provider.experimental_bearer_token || (provider.env_key ? env[provider.env_key]
       : provider.requires_openai_auth === true || providerId === "openai"
         ? env.CODEX_API_KEY || env.OPENAI_API_KEY || auth.value.OPENAI_API_KEY : null) || null;
-    const configurationError = config.error || profileError || projectConfig.error || (!apiKey && auth.error) || null;
+    const configurationError = config.error || profileError || projectConfig.error || (!apiKey && auth.error)
+      || (!["chat", "responses"].includes(wireApi) ? "Codex provider wire_api 无效" : null);
     const projectPath = join(cwd, ".codex", "config.toml");
     const projectConnection = projectConfig.found && Boolean(projectConfig.value.model
       || projectConfig.value.model_provider || projectConfig.value.model_providers?.[providerId]);
@@ -104,7 +106,8 @@ export async function agentConnections(env = process.env, home = homedir(), cwd 
     agents.push({ id: "codex", label: "Codex", configPath: projectConnection
       ? projectPath : profileFile.found ? join(codexDirectory, `${profileName}.config.toml`) : codexPath, model: base.model || null,
       ...connection,
-      protocol: "openai", wireApi: "responses", provider: providerId, profile: profileName,
+      protocol: "openai", wireApi, provider: providerId, profile: profileName,
+      reasoningEffort: base.model_reasoning_effort || null,
       runtimeDirectory: codexDirectory, sqliteDirectory: base.sqlite_home || codexDirectory,
       apiKey, authHeader: "authorization", keyGroup: apiKey ? credentialGroup(apiKey) : null,
       source: projectConnection ? "project" : profileFile.found ? "profile" : "config.toml",
@@ -172,7 +175,11 @@ export async function supportedAgentStatus(env = process.env, home = homedir(), 
     gptme: join(cwd, ".local/agent-clis/python/gptme/bin/gptme")
   };
   const commandLocation = async (entry) => {
-    try { const result = await runFile("/usr/bin/which", [entry.command], { timeout: 1000, maxBuffer: 4096 }); return { installed: true, path: result.stdout.trim(), scope: "system" }; }
+    try {
+      const command = process.platform === "win32" ? "where.exe" : "/usr/bin/which";
+      const result = await runFile(command, [entry.command], { timeout: 1000, maxBuffer: 4096, windowsHide: true });
+      return { installed: true, path: result.stdout.trim().split(/\r?\n/)[0], scope: "system" };
+    }
     catch {}
     try { await access(localCommands[entry.id]); return { installed: true, path: localCommands[entry.id], scope: "isolated" }; }
     catch { return { installed: false, path: null, scope: null }; }
@@ -415,7 +422,11 @@ async function genericRuntimeSessions(env, home, cwd) {
     return adapter ? [{ pid: Number(match[1]), ppid: Number(match[2]), argv, adapter }] : [];
   });
   for (const entry of processes) {
-    if (processes.some(parent => parent.pid === entry.ppid && parent.adapter.id === entry.adapter.id)) continue;
+    // Windows npm shims launch the native CLI. Retain the actual lock owner,
+    // not its Node wrapper, so process and SQLite discovery share one PID.
+    if (process.platform === "win32"
+      ? processes.some(child => child.ppid === entry.pid && child.adapter.id === entry.adapter.id)
+      : processes.some(parent => parent.pid === entry.ppid && parent.adapter.id === entry.adapter.id)) continue;
     const { adapter, pid, argv } = entry;
     const hook = process.platform === "win32" ? listAgentSessions({ host: adapter.id }).find(session => session.metadata?.pid === pid) : null;
     const processCwd = hook?.cwd || await readProcessCwd(pid, process.platform === "win32" ? null : cwd);
@@ -428,7 +439,7 @@ async function genericRuntimeSessions(env, home, cwd) {
     sessionConnections.set(`${adapter.id}:${sessionId}`, base);
     found.push(enrichRuntimeSession({ ...hook, host: adapter.id, sessionId, status: hook?.status || "unknown", cwd: processCwd,
       model: hook?.model || base.model || null, baseUrl: base.baseUrl || null, keyGroup: base.keyGroup || null,
-      protocol: base.protocol || adapter.protocol, source: hook?.source || (process.platform === "win32" ? "windows-process" : "process"), lastSeenAt: new Date().toISOString(),
+      protocol: base.protocol || adapter.protocol, source: hook?.source || "process", lastSeenAt: new Date().toISOString(),
       metadata: { detection: "process", pid, reasoningEffort: base.reasoningEffort || null } },
     { ...base, id: adapter.id, label: adapter.label }));
   }
@@ -487,7 +498,7 @@ function enrichRuntimeSession(session, connection) {
 }
 
 async function claudeTranscriptSessions(home, connection) {
-  if (!connection) return [];
+  if (!connection || process.platform === "win32") return [];
   let stdout;
   try {
     ({ stdout } = await runFile("/usr/sbin/lsof", ["-a", "-c", "claude", "-Fpn"], { timeout: 1500, maxBuffer: 512 * 1024 }));
@@ -551,15 +562,22 @@ async function codexRuntimeSessions(directory, connection) {
     const lockPaths = entries.map((name) => join(lockDirectory, name));
     let stdout = "";
     try {
-      ({ stdout } = await runFile("/usr/sbin/lsof", ["-Fpn", "--", ...lockPaths], { timeout: 1500, maxBuffer: 256 * 1024 }));
+      if (process.platform === "win32") {
+        const script = await readFile(new URL("./windows-lock-owners.ps1", import.meta.url), "utf8");
+        // Keep the path as data, not interpolated PowerShell source.
+        ({ stdout } = await runFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
+          env: { ...process.env, MODIVUE_CODEX_LOCK_DIRECTORY: lockDirectory },
+          timeout: 5000, maxBuffer: 256 * 1024, windowsHide: true
+        }));
+      } else ({ stdout } = await runFile("/usr/sbin/lsof", ["-Fpn", "--", ...lockPaths], { timeout: 1500, maxBuffer: 256 * 1024 }));
     } catch (error) {
       // lsof returns status 1 when at least one path is not open. Its stdout
       // still contains the live locks that must be retained.
       stdout = error.stdout || "";
     }
-    const held = new Set(stdout.split("\n").filter((line) => line.startsWith("n")).map((line) => line.slice(1)));
+    const held = new Set(stdout.split(/\r?\n/).filter((line) => line.startsWith("n")).map((line) => line.slice(1)));
     let owner = null;
-    for (const line of stdout.split("\n")) {
+    for (const line of stdout.split(/\r?\n/)) {
       if (line.startsWith("p")) owner = Number(line.slice(1));
       if (line.startsWith("n") && owner) lockOwners.set(line.slice(1), owner);
     }
