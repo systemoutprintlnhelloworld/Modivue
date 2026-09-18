@@ -22,6 +22,38 @@ internal static class Program
 internal sealed class IslandForm : Form
 {
     public bool ClickThrough { get; set; }
+    private (RectangleF Bounds, float Radius)[] surfaces = [];
+
+    public void SetSurfaces(IEnumerable<(RectangleF Bounds, float Radius)> value)
+    {
+        surfaces = value.ToArray();
+        Invalidate();
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        base.OnPaint(e);
+        // WebView2 draws in a child HWND. A color-key-only parent remains
+        // transparent to native mouse input even under visible web content.
+        // Back the interactive surfaces, leaving the surrounding desktop clear.
+        using var brush = new SolidBrush(Color.FromArgb(20, 24, 32));
+        var scale = DeviceDpi / 96f;
+        e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+        foreach (var (bounds, radius) in surfaces) {
+            var rect = new RectangleF(bounds.X * scale, bounds.Y * scale, bounds.Width * scale, bounds.Height * scale);
+            if (rect.Width <= 0 || rect.Height <= 0) continue;
+            var diameter = Math.Clamp(radius * scale * 2, 0, Math.Min(rect.Width, rect.Height));
+            if (diameter == 0) { e.Graphics.FillRectangle(brush, rect); continue; }
+            using var path = new System.Drawing.Drawing2D.GraphicsPath();
+            path.AddArc(rect.Left, rect.Top, diameter, diameter, 180, 90);
+            path.AddArc(rect.Right - diameter, rect.Top, diameter, diameter, 270, 90);
+            path.AddArc(rect.Right - diameter, rect.Bottom - diameter, diameter, diameter, 0, 90);
+            path.AddArc(rect.Left, rect.Bottom - diameter, diameter, diameter, 90, 90);
+            path.CloseFigure();
+            e.Graphics.FillPath(brush, path);
+        }
+    }
+
     protected override void WndProc(ref Message message)
     {
         const int WM_NCHITTEST = 0x84, HTTRANSPARENT = -1;
@@ -43,6 +75,8 @@ internal sealed class MonitorContext : ApplicationContext
     private readonly ToolStripItem menuOpen, menuIsland, menuExit;
     private readonly System.Windows.Forms.Timer pointer = new() { Interval = 16 };
     private readonly Uri origin;
+    private bool mainReady;
+    private string? pendingNavigation;
     private RectangleF rail = new(6, 18, 100, 220), buffer;
     private bool pressed, dragging, expanded, right = true, exiting, ticking, bufferDrag, clickThrough;
     private Point dragStart, windowStart;
@@ -65,7 +99,8 @@ internal sealed class MonitorContext : ApplicationContext
         start.ArgumentList.Add(Path.Combine(root, "app", "server.mjs"));
         start.ArgumentList.Add("--desktop-parent");
         start.Environment["MODIVUE_PORT"] = port.ToString();
-        start.Environment["MODIVUE_DATA_DIR"] = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Modivue");
+        start.Environment["MODIVUE_DATA_DIR"] = Environment.GetEnvironmentVariable("MODIVUE_DATA_DIR")
+            ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Modivue");
         start.Environment["MODIVUE_LANGUAGES"] = System.Globalization.CultureInfo.CurrentUICulture.Name;
         service = Process.Start(start) ?? throw new InvalidOperationException(Localized("无法启动 Modivue 本地服务。", "Cannot start the local Modivue service."));
         main.Controls.Add(mainWeb); island.Controls.Add(islandWeb);
@@ -93,7 +128,7 @@ internal sealed class MonitorContext : ApplicationContext
                 await Task.Delay(250);
             }
             if (!ready) throw new InvalidOperationException(Localized("本地服务未能启动。", "Local service failed to start."));
-            var profile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Modivue", "WebView2");
+            var profile = Path.Combine(service.StartInfo.Environment["MODIVUE_DATA_DIR"]!, "WebView2");
             var environment = await CoreWebView2Environment.CreateAsync(null, profile);
             await Prepare(mainWeb, environment, "main"); await Prepare(islandWeb, environment, "island");
             pointer.Start();
@@ -110,6 +145,7 @@ internal sealed class MonitorContext : ApplicationContext
         web.CoreWebView2.NewWindowRequested += (_, e) => { e.Handled = true; OpenExternal(e.Uri); };
         web.CoreWebView2.NavigationStarting += (_, e) => {
             if (!e.Uri.StartsWith(origin.AbsoluteUri, StringComparison.Ordinal)) { e.Cancel = true; OpenExternal(e.Uri); }
+            else if (web == mainWeb) mainReady = false;
         };
         web.CoreWebView2.WebMessageReceived += async (_, e) => {
             if (!e.Source.StartsWith(origin.AbsoluteUri, StringComparison.Ordinal)) return;
@@ -153,6 +189,9 @@ internal sealed class MonitorContext : ApplicationContext
                     var centerY = island.Top + island.Height / 2;
                     island.Height = newHeight;
                     island.Top = Math.Clamp(centerY - newHeight / 2, area.Top, area.Bottom - newHeight);
+                    if (body.TryGetProperty("surfaces", out var surfaces))
+                        island.SetSurfaces(surfaces.EnumerateArray().Select(surface =>
+                            (Rect(surface), surface.GetProperty("radius").GetSingle())));
                     break;
                 case "island-interaction":
                     clickThrough = body.GetProperty("clickThrough").GetBoolean();
@@ -167,14 +206,28 @@ internal sealed class MonitorContext : ApplicationContext
                     if (right) island.Left += island.Width - width;
                     island.Width = width; break;
                 case "open-main":
+                    pendingNavigation = body.GetRawText();
+                    if (main.WindowState == FormWindowState.Minimized) main.WindowState = FormWindowState.Normal;
                     main.Show(); main.Activate();
-                    if (body.TryGetProperty("modelId", out var model)) await mainWeb.ExecuteScriptAsync($"window.modivue?.selectModel({model.GetRawText()})");
-                    if (body.TryGetProperty("view", out var view)) await mainWeb.ExecuteScriptAsync($"window.modivue?.openView({view.GetRawText()})");
+                    await ApplyPendingNavigation();
+                    break;
+                case "main-ready":
+                    if (web == mainWeb) { mainReady = true; await ApplyPendingNavigation(); }
                     break;
                 case "start-island-tour": island.Show(); await islandWeb.ExecuteScriptAsync("window.modivue?.startTour()"); break;
             }
         };
         web.Source = new Uri(origin, $"/?desktop={mode}");
+    }
+
+    private async Task ApplyPendingNavigation()
+    {
+        if (!mainReady || pendingNavigation is null) return;
+        var navigation = pendingNavigation;
+        pendingNavigation = null;
+        // ExecuteScriptAsync does not await a JavaScript Promise. Keep model
+        // selection and tab navigation in one ordered JavaScript operation.
+        await mainWeb.ExecuteScriptAsync($"void (async () => {{ const target = {navigation}; if (target.modelId) await window.modivue.selectModel(target.modelId); if (target.view) window.modivue.openView(target.view); }})()");
     }
 
     private static Task<string> Reply(WebView2 web, string requestId, object result)
@@ -226,7 +279,7 @@ internal sealed class MonitorContext : ApplicationContext
                 if (t == 1) snapEnd = null;
             }
             pressed = down;
-            if (!dragging) await islandWeb.ExecuteScriptAsync($"window.modivue?.nativeHover({JsonSerializer.Serialize(new { clientX = css.X, clientY = css.Y })})");
+            if (!dragging) await islandWeb.ExecuteScriptAsync($"window.modivue?.nativeHover({JsonSerializer.Serialize(new { clientX = css.X, clientY = css.Y, screenX = Cursor.Position.X, screenY = Cursor.Position.Y })})");
         } finally { ticking = false; }
     }
 

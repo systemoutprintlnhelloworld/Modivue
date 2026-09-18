@@ -15,8 +15,8 @@ Gateway balance · cache hits · time to first token · model verification, visi
 [![Release](https://img.shields.io/github/v/release/systemoutprintlnhelloworld/Modivue?include_prereleases&sort=semver&style=flat-square&color=7AA2F7)](https://github.com/systemoutprintlnhelloworld/Modivue/releases)
 [![Downloads](https://img.shields.io/github/downloads/systemoutprintlnhelloworld/Modivue/total?style=flat-square&color=4FD1B0&label=downloads)](https://github.com/systemoutprintlnhelloworld/Modivue/releases)
 
-[![Download macOS](docs/assets/download-macos.svg)](https://github.com/systemoutprintlnhelloworld/Modivue/releases/download/v0.4.7/Modivue-macos-arm64.zip)
-[![Download Windows](docs/assets/download-windows.svg)](https://github.com/systemoutprintlnhelloworld/Modivue/releases/download/v0.4.7/Modivue-windows-x64-setup.exe)
+[![Download macOS](docs/assets/download-macos.svg)](https://github.com/systemoutprintlnhelloworld/Modivue/releases/latest/download/Modivue-macos-arm64.zip)
+[![Download Windows](docs/assets/download-windows.svg)](https://github.com/systemoutprintlnhelloworld/Modivue/releases/latest/download/Modivue-windows-x64-setup.exe)
 
 [简体中文](README.md) · **English**
 
@@ -107,7 +107,7 @@ Metrics are separated by **model × channel × key group × reasoning effort**. 
 | Platform | Package | Installation |
 |---|---|---|
 | macOS Apple Silicon | `Modivue-macos-arm64.zip` | Unzip and move `Modivue.app` to Applications. No Intel package is currently provided. |
-| Windows 10/11 x64, preview | `Modivue-windows-x64-setup.exe` | Run the installer. Microsoft Edge WebView2 Runtime is required. A separate portable ZIP is also available in the release. |
+| Windows 10/11 x64, preview | `Modivue-windows-x64-setup.exe` | Run the installer. The release also includes a portable ZIP. Microsoft Edge WebView2 Runtime is required. |
 | CLI | Source files in `cli/` | Node.js 22.5 or later. Reads the desktop app's shared local database. |
 
 ### Before opening for the first time
@@ -123,9 +123,9 @@ xattr -cr /Applications/Modivue.app
 
 Do not clear quarantine for an untrusted download.
 
-**Windows:** SmartScreen may show a warning for an unsigned program. After checking the source, choose **More info → Run anyway** if you want to proceed.
+**Windows:** Current release packages are unsigned and may trigger SmartScreen. After verifying the source and file, use the system-provided **More info → Run anyway** option if required; do not disable system protection.
 
-The release workflow produces a macOS ZIP and Windows ZIP/installer without signing credentials. Signed packages and macOS notarization require the corresponding credentials; the existence of an installer does not mean it is signed. See [Build, test, and release](docs/en/development.md).
+The release workflow produces a macOS ZIP and Windows ZIP/installer. Trusted Windows signing and macOS notarization credentials are not configured yet; the existence of an installer does not mean it is signed. See [Build, test, and release](docs/en/development.md).
 
 ---
 
@@ -211,11 +211,29 @@ Request counts describe planned samples, not a guarantee of the final bill. Retr
 
 ---
 
+## API provider frameworks
+
+**3 framework integrations**, with different capabilities—not a claim that all support balances or that every release has been tested:
+
+<p align="center">
+<a href="#api-provider-frameworks"><img src="docs/assets/badges/provider-new-api.svg" alt="New API: account and token balance"></a>
+<a href="#api-provider-frameworks"><img src="docs/assets/badges/provider-sub2api.svg" alt="Sub API / Sub2API: usage balance adapter"></a>
+<a href="#api-provider-frameworks"><img src="docs/assets/badges/provider-cpa.svg" alt="CLIProxyAPI: detected; balance deferred"></a>
+</p>
+
+| Framework | Detection / selection | Balance | Cache / TTFT | Model verification |
+| --- | --- | --- | --- | --- |
+| New API | Select account balance or token quota in settings | `/api/user/self` for accounts; `/api/usage/token/` for keys. Raw quota is not presented as currency. | Shared protocol collection; requires actual usage / first-content events | Shared evaluators, subject to model, protocol, and reference support |
+| Sub API / Sub2API | Select the usage adapter in settings | `/v1/usage`, only for deployments returning supported balance fields | Same as above | Same as above |
+| [CLIProxyAPI (CPA)](https://github.com/router-for-me/CLIProxyAPI) | Detects a local deployment through the public identifier at its service root | **Hidden for now**; usage / token counters are not wallet balances | Streaming or non-streaming requests share the collection path when routed through Modivue; only explicit usage and first valid content are recorded | Depends on model and references; remote evaluators cannot access a loopback address |
+
+Reading Agent configuration does not intercept its requests. Cache usage can come from local Codex records; real TTFT requires traffic through Modivue's proxy or an active performance sample. Active samples and verification may consume provider credits. CPA management APIs and management keys are not used.
+
 ## Supported agents
 
 | Support level | Agents |
 |---|---|
-| Live session-state collection | Claude Code through status-line / hook heartbeats; Codex through local session evidence. Codex's file-lock collection path does not apply on Windows. |
+| Live session-state collection | Claude Code through status-line / hook heartbeats; Codex through local lock ownership and unfinished-session evidence. |
 | Recorded local installation and launch checks | Gemini CLI, Qwen Code, Pi, OpenCode |
 | Provider configuration parsing, real-installation acceptance still pending | Goose, Continue, Grok Build, Hermes, DeepSeek Harness, OpenClaw, GPTMe, Cline, Roo Code, Aider |
 
@@ -254,7 +272,7 @@ See [Before opening for the first time](#before-opening-for-the-first-time).
 No Intel download is currently provided. The published macOS package targets Apple Silicon.
 
 **Is agent status equally reliable on Windows and macOS?**
-No. Windows uses process discovery and configuration parsing together with proxy or hook evidence. A running process alone does not prove that an agent is working. The macOS Codex file-lock collection path is not available on Windows.
+No. Windows uses process discovery and configuration parsing together with proxy or hook evidence. A running process alone does not prove that an agent is working. Codex discovery uses Windows Restart Manager to identify lock owners, then checks for unfinished local turns; macOS uses `lsof` for lock ownership.
 
 ---
 
@@ -297,4 +315,6 @@ When reporting an issue, include your OS version, agent, protocol such as Chat C
 
 ## License
 
-A project-wide open-source license has not yet been selected, and the repository currently has no root `LICENSE` file. Check future license files and release notes for the project's terms. Reused assets and reference implementations retain their own notices and licenses; see [asset attribution](docs/assets/NOTICE.md).
+Original project code is licensed under the [MIT License](LICENSE). Third-party code, assets, and trademarks retain their own terms and notices; see [asset attribution](docs/assets/NOTICE.md).
+
+A free Windows code-signing application is being prepared. SignPath approval and a signing certificate have not been obtained; see [application preparation](docs/windows-signing.md).

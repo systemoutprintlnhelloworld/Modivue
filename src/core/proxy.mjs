@@ -130,6 +130,16 @@ export async function proxyStream({ request, response, upstreamUrl, baseUrl = up
       .filter(Boolean).flatMap(value => [value, value.replace(/^Bearer\s+/i, "")]);
   }).filter(Boolean);
   const redactError = (value) => requestSecrets.reduce((text, secret) => text.replaceAll(secret, "[redacted]"), String(value));
+  const captureUpstreamError = (detail) => {
+    if (typeof detail === "string") {
+      upstreamError = { type: null, code: null, param: null, message: redactError(detail).slice(0, 500) };
+      return;
+    }
+    if (detail && typeof detail === "object") {
+      upstreamError = { type: detail.type || null, code: detail.code || null, param: detail.param || null,
+        message: typeof detail.message === "string" ? redactError(detail.message).slice(0, 500) : null };
+    }
+  };
   const requestParameters = Object.fromEntries(["temperature", "top_p", "max_tokens", "max_completion_tokens", "max_output_tokens", "reasoning", "reasoning_effort", "thinking", "output_config", "service_tier", "generationConfig"].filter((key) => key in parsedBody).map((key) => [key, parsedBody[key]]));
   const measurement = { version: 2, wireApi, source,
     conditionsId: observationConditionsId(source, wireApi, requestParameters, conditionsId || requestConditionsId),
@@ -164,10 +174,7 @@ export async function proxyStream({ request, response, upstreamUrl, baseUrl = up
       status = "error";
       error = event.type || "upstream_error";
       const detail = event.error || event.response?.error || event.response?.last_error;
-      if (detail && typeof detail === "object") {
-        upstreamError = { type: detail.type || null, code: detail.code || null, param: detail.param || null,
-          message: typeof detail.message === "string" ? redactError(detail.message).slice(0, 500) : null };
-      }
+      captureUpstreamError(detail);
       terminal = true;
       streamEnded = true;
     }
@@ -218,6 +225,12 @@ export async function proxyStream({ request, response, upstreamUrl, baseUrl = up
         const payload = JSON.parse(Buffer.concat(chunks).toString("utf8"));
         apiCost = reportedRequestCost(payload) || apiCost;
         mergeUsage(payload.usageMetadata || payload.usage); measurement.reportedModel = payload.modelVersion || payload.model || null;
+        const detail = payload.error || payload.response?.error || payload.response?.last_error;
+        if (detail) {
+          status = "error";
+          captureUpstreamError(detail);
+          error = upstreamError?.code || upstreamError?.type || error || "upstream_error";
+        }
         const output = payload.candidates?.[0]?.content?.parts?.filter(part => !part.thought).map(part => part.text || "").join("") || payload.output_text || payload.choices?.[0]?.message?.content
           || (payload.content || payload.output?.flatMap((item) => item.content || []) || []).map((part) => part.text || "").join("");
         if (typeof output === "string") onText?.(output);

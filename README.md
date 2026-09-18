@@ -16,8 +16,8 @@
 [![Release](https://img.shields.io/github/v/release/systemoutprintlnhelloworld/Modivue?include_prereleases&sort=semver&style=flat-square&color=7AA2F7)](https://github.com/systemoutprintlnhelloworld/Modivue/releases)
 [![Downloads](https://img.shields.io/github/downloads/systemoutprintlnhelloworld/Modivue/total?style=flat-square&color=4FD1B0&label=downloads)](https://github.com/systemoutprintlnhelloworld/Modivue/releases)
 
-[![下载 macOS 版](docs/assets/download-macos.svg)](https://github.com/systemoutprintlnhelloworld/Modivue/releases/download/v0.4.7/Modivue-macos-arm64.zip)
-[![下载 Windows 版](docs/assets/download-windows.svg)](https://github.com/systemoutprintlnhelloworld/Modivue/releases/download/v0.4.7/Modivue-windows-x64-setup.exe)
+[![下载 macOS 版](docs/assets/download-macos.svg)](https://github.com/systemoutprintlnhelloworld/Modivue/releases/latest/download/Modivue-macos-arm64.zip)
+[![下载 Windows 版](docs/assets/download-windows.svg)](https://github.com/systemoutprintlnhelloworld/Modivue/releases/latest/download/Modivue-windows-x64-setup.exe)
 
 [简体中文](README.md) · [English](README.en.md)
 
@@ -110,7 +110,7 @@
 | 平台 | 下载包 | 安装 |
 |---|---|---|
 | macOS Apple Silicon | `Modivue-macos-arm64.zip` | 解压，把 `Modivue.app` 拖进"应用程序"。暂无 Intel 版 |
-| Windows 10/11 x64（预览） | `Modivue-windows-x64-setup.exe` | 运行安装器。另提供便携 ZIP；需要 Microsoft Edge WebView2 Runtime |
+| Windows 10/11 x64（预览） | `Modivue-windows-x64-setup.exe` | 运行安装器。Release 同时提供 portable ZIP；需要 Microsoft Edge WebView2 Runtime |
 | 命令行 | 源码 `cli/` | Node.js 22.5+，读取桌面端共享的本地数据库 |
 
 ### 首次打开前请读
@@ -126,9 +126,9 @@ xattr -cr /Applications/Modivue.app
 
 首次打开遇到系统拦截时，使用系统设置中的“仍要打开”；命令行清除隔离标记仅适用于你信任的本地包。
 
-**Windows：** 未签名的程序首次运行时可能出现 SmartScreen 提示。确认来源可信后，点"更多信息 → 仍要运行"。
+**Windows：** 当前发布包未签名，可能触发 SmartScreen。确认下载来源与文件后，可使用系统提供的“更多信息 → 仍要运行”；不需要关闭系统防护。
 
-Windows 未签名安装器已随预览版发布；签名和 macOS 公证仍需证书配置，详见 [构建与发布](docs/development.md)。
+发布流程会生成 macOS ZIP 与 Windows ZIP / 安装器。当前尚未配置可信 Windows 签名与 macOS 公证凭据；安装器存在不代表已签名。详见 [构建与发布](docs/development.md)。
 
 ---
 
@@ -214,13 +214,31 @@ Windows 未签名安装器已随预览版发布；签名和 macOS 公证仍需�
 
 ---
 
+## API Provider 框架
+
+目前有 **3 类框架接入**，能力不同，不代表都支持余额或所有版本已实机验收：
+
+<p align="center">
+<a href="#api-provider-框架"><img src="docs/assets/badges/provider-new-api.svg" alt="New API：账户与 Key 余额"></a>
+<a href="#api-provider-框架"><img src="docs/assets/badges/provider-sub2api.svg" alt="Sub API / Sub2API：usage 余额适配"></a>
+<a href="#api-provider-框架"><img src="docs/assets/badges/provider-cpa.svg" alt="CLIProxyAPI：已识别，暂不接入余额"></a>
+</p>
+
+| 框架 | 识别 / 选择 | 余额 | Cache / TTFT | 模型核验 |
+| --- | --- | --- | --- | --- |
+| New API | 设置中选择账户余额或 Key 额度 | `/api/user/self` 账户余额；`/api/usage/token/` Key 额度，原始 quota 不冒充货币 | 共用协议采集，需实际 usage / 首个有效输出事件 | 共用核验器，受模型、协议和基准限制 |
+| Sub API / Sub2API | 设置中选择 usage 适配器 | `/v1/usage`；仅支持返回可解析额度字段的部署 | 同上 | 同上 |
+| [CLIProxyAPI（CPA）](https://github.com/router-for-me/CLIProxyAPI) | 本机部署通过服务根路径的公开标识检测 | **暂不显示**，不把 usage / token 统计当作钱包余额 | 流式或非流式请求经 Modivue 代理时共用采集链路；只记录响应明确返回的 usage 和首个有效内容 | 可用方法取决于模型与基准；本机地址不能直接供远程核验服务访问 |
+
+直接读取 Agent 配置不会自动接管它的请求。Cache 可以来自 Codex 本地 usage；真实 TTFT 需要请求经过 Modivue 本地代理，或主动发起一次性能采样。主动采样和核验可能消耗渠道额度。CPA 当前不接入管理 API，也不索取管理密钥。
+
 ## 支持的工具
 
 <!-- TODO: 请按当前实测结果核对下表分级 -->
 
 | 支持程度 | 工具 |
 |---|---|
-| 实时读取会话状态 | Claude Code（statusline / hook 心跳）、Codex（本机会话状态；Windows 上不适用文件锁采集） |
+| 实时读取会话状态 | Claude Code（statusline / hook 心跳）、Codex（本机持锁进程与未结束会话证据） |
 | 本机安装并启动验证 | Gemini CLI、Qwen Code、Pi、OpenCode |
 | 可解析 provider 配置，尚未实机验收 | Goose、Continue、Grok Build、Hermes、DeepSeek Harness、OpenClaw、GPTMe、Cline、Roo Code、Aider |
 
@@ -259,7 +277,7 @@ Windows 未签名安装器已随预览版发布；签名和 macOS 公证仍需�
 目前没有。当前构建产物为 Apple Silicon。
 
 **Windows 上 Agent 状态和 macOS 一样准确吗？**
-不完全一样。Windows 通过进程发现和配置解析识别 Agent，进程存在不代表它正在工作；Codex 在 macOS 上的文件锁采集方式不适用于 Windows。
+不完全一样。Windows 通过进程发现和配置解析识别 Agent，进程存在不代表它正在工作；Codex 使用 Windows Restart Manager 读取持锁进程，并结合本机未结束的 turn 判断工作状态。macOS 使用 `lsof` 读取持锁进程。
 
 ---
 
@@ -300,8 +318,9 @@ npm run windows:build    # Windows，需要 .NET SDK 8
 
 ## 许可证
 
-<!-- TODO（发布前必须完成）：选定许可证并添加 LICENSE 文件。没有许可证时，他人在法律上无权使用这些代码 -->
-仓库尚未选定开源许可证，请以根目录的 LICENSE 文件和 Release 说明为准。
+项目原创代码采用 [MIT License](LICENSE)。第三方代码、素材与商标保留各自许可和声明，见 [素材归属](docs/assets/NOTICE.md)。
+
+Windows 免费代码签名正在准备申请，尚未获得 SignPath 批准或签名证书，见 [申请准备](docs/windows-signing.md)。
 
 ## 友情链接
 
