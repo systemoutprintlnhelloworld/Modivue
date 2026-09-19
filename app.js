@@ -119,6 +119,7 @@ const state = {
   questionError: null,
   refreshing: false,
   lastUpdatedAt: null,
+  update: { status: "idle", currentVersion: null, latestVersion: null, updateAvailable: false, url: null, checkedAt: null, notifiedVersion: null, error: null },
   dataError: null,
   notifiedEventIds: new Set()
   ,balanceAlerted: new Set()
@@ -2337,7 +2338,8 @@ function settingsView() {
 }
 
 function aboutView() {
-  return `<article class="panel" data-settings-group="about">${viewHeader("关于 Modivue", "版本与本地运行信息")}<div class="setting-row"><strong>版本</strong><span>Modivue ${escapeHtml(state.config?.version || "0.4.1")}</span></div><div class="setting-row"><strong>运行模式</strong><span>本地模式</span></div><div class="setting-row"><strong>待开发</strong><span>TODO · 四元组上下文情况检测环</span></div><div class="setting-row"><strong>待开发</strong><span>TODO · 指标定时播报</span></div></article>`;
+  const version = state.config?.version || "0.4.1";
+  return `<article class="panel" data-settings-group="about">${viewHeader("关于 Modivue", "版本与本地运行信息")}<div class="setting-row"><strong>版本</strong><span>Modivue ${escapeHtml(version)}</span></div><div class="setting-row"><div><strong>${translate("应用内更新提示")}</strong><small id="update-status">${translate("尚未检查")}</small></div><div class="setting-actions"><button type="button" class="text-button" data-action="check-updates">${translate("检查更新")}</button><a id="update-link" class="text-button" target="_blank" rel="noreferrer" hidden>${translate("查看 Release")}</a></div></div><div class="setting-row"><strong>运行模式</strong><span>本地模式</span></div><div class="setting-row"><strong>待开发</strong><span>TODO · 四元组上下文情况检测环</span></div><div class="setting-row"><strong>待开发</strong><span>TODO · 指标定时播报</span></div></article>`;
 }
 
 function appearancePreview(key, value) {
@@ -2766,6 +2768,53 @@ async function loadSettings({ applyDefaultRange = true } = {}) {
 }
 
 async function loadConfig() { try { const [config, pricing] = await Promise.all([fetchJson("/api/config"), fetchJson("/api/pricing")]); state.config = config; state.channelPricing = pricing.pricing || {}; } catch { state.config = null; } }
+
+let updateCheckPromise;
+const updateCheckIntervalMs = 6 * 60 * 60 * 1000;
+function renderUpdateStatus() {
+  const status = $("#update-status");
+  const link = $("#update-link");
+  if (!status) return;
+  const update = state.update;
+  status.textContent = update.status === "checking" ? translate("正在检查更新…")
+    : update.updateAvailable ? translate("发现新版本 {version}").replace("{version}", `v${update.latestVersion}`)
+    : update.error ? translate("暂时无法检查更新")
+    : update.checkedAt ? translate("已是最新版本") : translate("尚未检查");
+  status.dataset.tone = update.updateAvailable ? "warning" : update.error ? "error" : "success";
+  const islandSettings = $("#island-settings");
+  if (islandSettings) {
+    islandSettings.classList.toggle("update-available", Boolean(update.updateAvailable));
+    islandSettings.title = update.updateAvailable ? translate("有新版本可用") : translate("打开设置");
+    islandSettings.setAttribute("aria-label", islandSettings.title);
+  }
+  if (link) {
+    link.hidden = !update.updateAvailable || !update.url;
+    link.href = update.url || "#";
+  }
+}
+async function checkForUpdates({ force = false, notify = true } = {}) {
+  if (!force && state.update.checkedAt && Date.now() - state.update.checkedAt < updateCheckIntervalMs) return state.update;
+  if (updateCheckPromise) return updateCheckPromise;
+  state.update = { ...state.update, status: "checking", error: null };
+  renderUpdateStatus();
+  updateCheckPromise = fetchJson("/api/update").then(payload => {
+    state.update = { ...state.update, ...payload, status: payload.error ? "error" : "ready", checkedAt: Date.now() };
+    renderUpdateStatus();
+    if (notify && payload.updateAvailable && state.update.notifiedVersion !== payload.latestVersion) {
+      state.update.notifiedVersion = payload.latestVersion;
+      const title = translate("Modivue 有新版本");
+      const body = translate("可更新到 {version}").replace("{version}", `v${payload.latestVersion}`);
+      if (desktopMode !== "island") showToast(`${title} · ${body}`, "warning");
+      else if (state.settings.notifications || state.settings.alertSound) void deliverAlert({ title, body, id: `update-${payload.latestVersion}`, type: "update", tone: "warning", test: true });
+    }
+    return state.update;
+  }).catch(error => {
+    state.update = { ...state.update, status: "error", checkedAt: Date.now(), error: error.message };
+    renderUpdateStatus();
+    return state.update;
+  }).finally(() => { updateCheckPromise = null; });
+  return updateCheckPromise;
+}
 async function loadCalibration() {
   try {
     const [archive, providers] = await Promise.all([fetchJson("/api/iq/calibration"), fetchJson("/api/iq/providers")]);
@@ -3052,6 +3101,17 @@ function bindEvents() {
     if (methodButton) {
       try { await persistSettingsPatch({ evaluatorId: methodButton.dataset.useMethod }); state.customizationTab = "verification"; setView("settings"); showToast("所有更改已保存", "success"); }
       catch (error) { showToast(error.message, "error"); }
+      return;
+    }
+    if (action === "check-updates") {
+      const button = event.target.closest("[data-action=check-updates]");
+      if (button) button.disabled = true;
+      try {
+        const result = await checkForUpdates({ force: true, notify: false });
+        showToast(result.updateAvailable ? translate("发现新版本 {version}").replace("{version}", `v${result.latestVersion}`) : result.error ? translate("暂时无法检查更新") : translate("已是最新版本"), result.updateAvailable ? "warning" : result.error ? "warning" : "success");
+      } finally {
+        if (button) button.disabled = false;
+      }
       return;
     }
     if (action === "test-notification") {
@@ -3516,6 +3576,7 @@ async function bootstrap() {
     });
   }
   await loadSettings(); applyAppearance(); await Promise.all([syncCatalog(), loadAgents(), loadConfig(), loadEvaluators(), loadZtest().catch(() => {}), loadCalibration(), loadBalances().catch(() => {}), loadQuestions()]); await refreshObservations();
+  void checkForUpdates();
   if (desktopMode === "island" && (!state.settings.islandTourSeen || new URLSearchParams(location.search).get("tour") === "1")) startTour();
   if (desktopMode === "island" && state.settings.islandTourSeen && !state.settings.mainTourSeen && new URLSearchParams(location.search).get("tour") !== "1") desktopMessage({ type: "request-main-tour" });
   if (desktopMode === "main") desktopMessage({ type: "main-ready" });
@@ -3526,6 +3587,7 @@ async function bootstrap() {
     await refreshObservations({ quiet: true });
   } }, 15000);
   window.setInterval(() => { if (document.visibilityState === "visible" || desktopMode === "island") void loadBalances().catch(() => {}); }, 15000);
+  window.setInterval(() => { if (document.visibilityState === "visible" || desktopMode === "island") void checkForUpdates(); }, updateCheckIntervalMs);
   window.addEventListener("focus", () => { void loadBalances().catch(() => {}); });
   let pollingVerification = false;
   window.setInterval(async () => {

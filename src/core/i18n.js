@@ -326,7 +326,7 @@ const english = {
   "跳过": "Skip", "下一步": "Next", "完成": "Done", "打开设置": "Open settings", "打开详细窗口": "Open dashboard", "返回全部 Agent": "Show all agents",
   "个余额快照": "balance snapshots", "{n} 个余额快照": "{n} balance snapshots", "{n} 个调用样本": "{n} call samples",
   "关于": "About", "关于 Modivue": "About Modivue", "版本与本地运行信息": "Version and local runtime information",
-  "版本": "Version", "运行模式": "Runtime mode", "待开发": "Planned",
+  "版本": "Version", "运行模式": "Runtime mode", "待开发": "Planned", "应用内更新提示": "In-app update notice", "有新版本可用": "A new version is available", "Modivue 有新版本": "A new Modivue version is available", "检查更新": "Check for updates", "正在检查更新…": "Checking for updates…", "发现新版本 {version}": "New version {version} available", "可更新到 {version}": "Update to {version}", "暂时无法检查更新": "Unable to check for updates", "已是最新版本": "Up to date", "尚未检查": "Not checked yet", "查看 Release": "View release",
   "无分组": "No key group", "默认档位": "Default effort", "当前模型": "Current model",
   "四元组上下文情况检测环": "Tuple context status ring", "指标定时播报": "Scheduled metric announcements",
   "当前四元组范围内没有告警。": "No alerts for this tuple in the current range.",

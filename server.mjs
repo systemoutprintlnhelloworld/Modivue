@@ -29,12 +29,50 @@ import { listChannelPricing, saveChannelPricing } from "./src/core/storage.mjs";
 
 const root = fileURLToPath(new URL(".", import.meta.url));
 const appVersion = JSON.parse(await readFile(join(root, "package.json"), "utf8")).version;
+const githubRepository = process.env.MODIVUE_GITHUB_REPO || "systemoutprintlnhelloworld/Modivue";
 const port = Number(process.env.MODIVUE_PORT || 4173);
 const types = { ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".json": "application/json; charset=utf-8", ".png": "image/png", ".svg": "image/svg+xml" };
 async function readJsonBody(request, maxBytes = 1024 * 1024) {
   const chunks = []; let size = 0;
   for await (const chunk of request) { size += chunk.length; if (size > maxBytes) throw new TypeError("请求体过大"); chunks.push(chunk); }
   try { return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"); } catch { throw new TypeError("请求体必须为 JSON"); }
+}
+
+let latestReleaseCache = { expiresAt: 0, payload: null };
+function compareVersions(left, right) {
+  const parse = value => String(value || "0").replace(/^v/i, "").split(".").map(part => Number.parseInt(part, 10) || 0);
+  const a = parse(left), b = parse(right);
+  for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
+    if ((a[index] || 0) !== (b[index] || 0)) return (a[index] || 0) - (b[index] || 0);
+  }
+  return 0;
+}
+async function latestRelease() {
+  if (latestReleaseCache.payload && latestReleaseCache.expiresAt > Date.now()) return latestReleaseCache.payload;
+  try {
+    const response = await fetch(`https://api.github.com/repos/${githubRepository}/releases/latest`, {
+      headers: { Accept: "application/vnd.github+json", "User-Agent": "Modivue-update-check" },
+      signal: AbortSignal.timeout(10000)
+    });
+    if (!response.ok) throw new Error(`GitHub 返回 HTTP ${response.status}`);
+    const release = await response.json();
+    const latestVersion = String(release.tag_name || "").replace(/^v/i, "");
+    if (!latestVersion) throw new Error("GitHub Release 缺少版本号");
+    latestReleaseCache = { expiresAt: Date.now() + 10 * 60 * 1000, payload: {
+      currentVersion: appVersion,
+      latestVersion,
+      updateAvailable: compareVersions(latestVersion, appVersion) > 0,
+      url: release.html_url || `https://github.com/${githubRepository}/releases`,
+      publishedAt: release.published_at || null,
+      assets: Array.isArray(release.assets) ? release.assets.map(asset => ({ name: asset.name, url: asset.browser_download_url })) : []
+    }};
+    return latestReleaseCache.payload;
+  } catch (error) {
+    const payload = { currentVersion: appVersion, latestVersion: null, updateAvailable: false,
+      url: `https://github.com/${githubRepository}/releases`, error: error.message };
+    latestReleaseCache = { expiresAt: Date.now() + 60 * 1000, payload };
+    return payload;
+  }
 }
 
 async function trustedApiRequest(input) {
@@ -340,6 +378,10 @@ async function routeRequest(request, response) {
     response.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" }).end(JSON.stringify({
       host: "127.0.0.1", port, version: appVersion, database: databasePath, upstreams: upstreamRoutes()
     }));
+    return;
+  }
+  if (url.pathname === "/api/update" && request.method === "GET") {
+    response.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" }).end(JSON.stringify(await latestRelease()));
     return;
   }
   if (request.method === "GET" && url.pathname === "/api/model-catalog") {
