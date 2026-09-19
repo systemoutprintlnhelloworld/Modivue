@@ -332,7 +332,7 @@ npm run windows:build    # Windows，需要 .NET SDK 8
 
 项目原创代码采用 [MIT License](LICENSE)。第三方代码、素材与商标保留各自许可和声明，见 [素材归属](docs/assets/NOTICE.md)。
 
-Windows 免费代码签名正在准备申请，尚未获得 SignPath 批准或签名证书，见 [申请准备](docs/windows-signing.md)。macOS 的临时签名、Developer ID 和公证流程见 [macOS 签名与公证教程](docs/macos-signing.md)。
+Windows 免费代码签名正在准备申请，尚未获得 SignPath 批准或签名证书，见 [Code signing policy 与申请准备](docs/windows-signing.md#code-signing-policy)。macOS 的临时签名、Developer ID 和公证流程见 [macOS 签名与公证教程](docs/macos-signing.md)。
 
 ## 友情链接
 

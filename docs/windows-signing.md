@@ -1,6 +1,6 @@
 # Windows 代码签名申请准备
 
-状态（2026-09-17）：维护者已同意项目原创代码采用 MIT。尚未向 SignPath 提交申请，尚未取得批准、账户、证书或签名产物。维护者已要求恢复 Windows 下载入口；在签名完成前，发布包必须明确标记为未签名。
+状态（2026-09-18）：维护者已同意项目原创代码采用 MIT。尚未向 SignPath 提交申请，尚未取得批准、账户、证书或签名产物。维护者已要求恢复 Windows 下载入口；在签名完成前，发布包必须明确标记为未签名。
 
 ## 申请表草稿
 
@@ -53,8 +53,20 @@
 
 签名证明发布者与文件完整性，不保证立即消除所有 SmartScreen 信誉提示。微软 Artifact Signing 的个人 Public Trust 申请当前只面向美国、加拿大；若维护者不在支持地区，不应填写虚假地区信息。
 
-资料读取日期：2026-09-17。
+资料读取日期：2026-09-18。
 - [SignPath 申请表](https://signpath.org/apply)
 - [SignPath 条件与代码签名政策](https://signpath.org/terms)
 - [Microsoft Artifact Signing 前提](https://learn.microsoft.com/en-us/azure/artifact-signing/quickstart#prerequisites)
 - [Microsoft Artifact Signing FAQ](https://learn.microsoft.com/en-us/azure/artifact-signing/faq)
+
+## Code signing policy
+
+**Current status:** SignPath Foundation approval is pending. Current Windows release artifacts are unsigned.
+
+After approval, releases will state: **Free code signing provided by [SignPath.io](https://signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).**
+
+- Committer and reviewer: [systemoutprintlnhelloworld](https://github.com/systemoutprintlnhelloworld)
+- Release signing approver: [systemoutprintlnhelloworld](https://github.com/systemoutprintlnhelloworld)
+- Every release-signing request requires manual approval.
+- Only artifacts built from this public repository by GitHub-hosted Actions may be submitted. The project certificate signs Modivue-owned binaries only; bundled third-party binaries keep their upstream signatures.
+- Privacy policy: see [README · 隐私与数据边界](../README.md#隐私与数据边界). Modivue does not send telemetry. Network access occurs only for documented catalog updates, configured provider queries, explicitly enabled model requests, and user-started third-party verification.

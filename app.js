@@ -156,7 +156,12 @@ function sameIdentity(record, model) {
 }
 
 function sameModelRoute(record, model) {
-  return sameIdentity(record, model);
+  if (sameIdentity(record, model)) return true;
+  if (routeIdentity(record) !== routeIdentity(model)) return false;
+  const recordCanonical = canonicalModelId(record), modelCanonical = canonicalModelId(model);
+  if (recordCanonical && modelCanonical) return recordCanonical === modelCanonical;
+  return (record.observedModel ?? record.observed_model ?? record.model ?? null)
+    === (model.observedModel ?? model.observed_model ?? model.model ?? null);
 }
 
 function selectedModel() {
@@ -421,6 +426,29 @@ function formatPercent(value, digits = 0) {
   return Number.isFinite(value) ? `${(value * 100).toFixed(digits)}%` : translate("未提供");
 }
 
+function quotaWindowLabel(minutes) {
+  if (minutes === 300) return translate("5 小时");
+  if (minutes === 10080) return translate("7 天");
+  if (minutes % 1440 === 0) return translate("{n} 天").replace("{n}", String(minutes / 1440));
+  if (minutes % 60 === 0) return translate("{n} 小时").replace("{n}", String(minutes / 60));
+  return translate("{n} 分钟").replace("{n}", String(minutes));
+}
+
+function fresherQuota(current, candidate) {
+  if (!candidate?.windows?.length) return current || null;
+  const currentAt = Date.parse(current?.observedAt || ""), candidateAt = Date.parse(candidate.observedAt || "");
+  if (!current?.windows?.length || !Number.isFinite(currentAt)
+    || (Number.isFinite(candidateAt) && candidateAt >= currentAt)) return candidate;
+  return current;
+}
+
+function modelQuota(model) {
+  if (!model?.quota?.windows?.length) return null;
+  const now = Date.now();
+  const windows = model.quota.windows.filter((window) => Date.parse(window.resetsAt) > now);
+  return windows.length ? { ...model.quota, windows } : null;
+}
+
 function formatCost(value) {
   return Number.isFinite(value) ? `$${value.toFixed(6)}` : translate("待计费");
 }
@@ -534,7 +562,7 @@ function qualityValue(model) {
 
 function verificationActivity(model) {
   const job = state.probe?.verification?.find(job => job.targetId === model?.id && job.evaluatorId === state.settings.evaluatorId);
-  const target = state.probe?.targets?.find(target => target.id === model?.id);
+  const target = state.probe?.targets?.find(target => sameModelRoute(target, model));
   if (["paused", "stopped"].includes(job?.phase)) return { busy: false, label: job.phase === "paused" ? "核验已暂停" : "核验已终止", detail: "已保留采样记录", job, target };
   if (job && job.phase !== "queued") {
     const label = job.phase === "retrying" ? "重试等待中" : "正在核验";
@@ -545,7 +573,13 @@ function verificationActivity(model) {
   if (job) return { busy: true, label: "已排队", detail: target?.pauseReason || "等待当前核验结束", job };
   if (target?.pauseReason) return { busy: false, label: "等待空闲", detail: target.pauseReason, target };
   if (!model?.sessions?.length) return { busy: false, label: "未核验", detail: "当前没有运行会话" };
-  if (!target) return { busy: false, label: "接入待完善", detail: model.sessions.find(session => session.error)?.error || "当前模型或渠道凭据尚未确定", target };
+  if (!target) {
+    const error = model.sessions.find(session => session.error)?.error;
+    if (error) return { busy: false, label: "接入待完善", detail: error, target };
+    if (model.sessions.some(session => session.probeReady)) return { busy: false, label: "等待渠道匹配", detail: "运行会话与当前渠道配置不一致；现有被动指标仍会继续采集", target };
+    if (model.sessions.some(session => session.credentialAvailable === false)) return { busy: false, label: "仅被动监测", detail: "当前会话未向 Modivue 提供主动核验凭据；现有被动指标仍会继续采集", target };
+    return { busy: false, label: "接入待完善", detail: "当前模型或渠道凭据尚未确定", target };
+  }
   if (!target.automaticEligible) return { busy: false, label: "待命", detail: "自动核验仅在 Agent 工作时进行；可手动开始", target };
   if (!state.probe?.enabled) return { busy: false, label: "自动核验关闭", detail: "可以手动核验当前会话", target };
   const lastRun = model?.verification?.selected;
@@ -772,6 +806,7 @@ function updateModels(groups) {
       existing.agents = [...new Set([...existing.agents, agent.label || agent.id])];
       if (agent.sessionId && !existing.sessions.some(session => session.sessionId === agent.sessionId)) existing.sessions.push(agent);
       const passive = agent.passiveMetrics;
+      existing.quota = fresherQuota(existing.quota, passive?.quota);
       const passiveObservedAt = Date.parse(passive?.observedAt || "");
       const passiveFallback = Number.isFinite(passive?.cacheHitRate) && inSelectedRange(passive.observedAt)
         && (existing.cacheRate == null || existing.passiveMetrics);
@@ -808,7 +843,8 @@ function updateModels(groups) {
       rangeStart: null, rangeEnd: null, match, standardLabel: match.model?.label || match.candidate?.label || "未归一化",
       status: passiveCache == null ? "unsampled" : "online", color: agent.protocol === "anthropic" ? "mint" : "blue", quality: null,
       qualityStats: {}, evaluator: null, configured: true, agents: [agent.label || agent.id], sessions: agent.sessionId ? [agent] : [], passiveMetrics: passiveCache == null ? null : passive,
-      passiveObservedAt: passiveCache == null ? null : passiveObservedAt, cacheSource: passiveCache == null ? null : "codex-rollout"
+      passiveObservedAt: passiveCache == null ? null : passiveObservedAt, cacheSource: passiveCache == null ? null : "codex-rollout",
+      quota: passive?.quota || null
     });
   });
   state.models = [...models.values()];
@@ -889,8 +925,10 @@ function metricSymbol(kind) {
     cache: '<ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 4 16 4 16 0V5M4 12c0 4 16 4 16 0"/>',
     ttft: '<path d="m13 2-9 12h7l-1 8 10-13h-7z"/>'
     ,balance: '<path d="M4 6V4h14v3M3 7h18v14H3z"/><path d="M21 11h-6v6h6"/><circle cx="17" cy="14" r=".8"/>'
+    ,quota: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>'
   };
-  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[kind] || paths.quality}</svg>`;
+  const symbol = kind.startsWith("quota") ? "quota" : kind;
+  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[symbol] || paths.quality}</svg>`;
 }
 
 function metricRing(radius, progress, color, label, value, range, minimum, maximum, kind = "quality") {
@@ -989,7 +1027,9 @@ function renderModelSelectors() {
   stage.style.setProperty("--island-visible-height", `${normalHeight}px`);
   stage.style.setProperty("--island-list-height", `${normalHeight}px`);
   $("#quick-island").style.setProperty("--island-visible-height", `${normalHeight}px`);
-  const focusCount = ["Quality", "Cache", "Ttft", "Balance"].filter(kind => state.settings[`focusShow${kind}`]).length;
+  const focusedModel = liveModels.find((model) => model.id === islandState.modelId);
+  const focusCount = focusedModel ? focusedMetrics(focusedModel).length
+    : ["Quality", "Cache", "Ttft", "Balance"].filter(kind => state.settings[`focusShow${kind}`]).length;
   $("#quick-island").style.setProperty("--focus-count", String(focusCount));
   $("#quick-island").style.setProperty("--island-envelope-height", `${Math.max(230, focusCount * 79, normalHeight) + 90}px`);
   stage.dataset.overflow = String(liveModels.length > maxAgents);
@@ -1165,7 +1205,7 @@ function modelMetrics(model, includeBalance = false) {
     { kind: "cache", name: "Cache", value: formatPercent(model?.cacheRate), progress: Number.isFinite(model?.cacheRate) ? model.cacheRate * 100 : null, health: metricHealth("cache", Number.isFinite(model?.cacheRate) ? model.cacheRate * 100 : null), range: metricRange(model, "cache"), min: Number.isFinite(model?.cacheStats?.min) ? model.cacheStats.min * 100 : null, max: Number.isFinite(model?.cacheStats?.max) ? model.cacheStats.max * 100 : null },
     { kind: "ttft", name: "TTFT", value: formatDuration(model?.ttftMs), progress: ttftScore(model?.ttftMs), health: metricHealth("ttft", model?.ttftMs), range: metricRange(model, "ttft"), min: ttftScore(model?.ttftStats?.min), max: ttftScore(model?.ttftStats?.max) }
   ];
-  if (includeBalance && balance?.balanceSupported !== false) {
+  if (includeBalance && !modelQuota(model) && balance?.balanceSupported !== false) {
     const health = metricHealth("cache", balance?.status === "ok" && balance.ratio != null ? balance.ratio * 100 : null);
     metrics.push({ kind: "balance", name: "余额", value: balanceText(balance), progress: balance?.status === "ok" && balance.ratio != null ? balance.ratio * 100 : null,
       health: { ...health, label: `${translate("余额健康")}：${translate(health.label)}` },
@@ -1174,13 +1214,30 @@ function modelMetrics(model, includeBalance = false) {
   return metrics;
 }
 
+function quotaMetrics(model) {
+  return (modelQuota(model)?.windows || []).map((window) => {
+    const health = metricHealth("cache", window.remainingPercent);
+    const label = quotaWindowLabel(window.windowMinutes);
+    return { kind: `quota${window.windowMinutes}`, name: translate("{window}额度").replace("{window}", label), value: `${window.remainingPercent.toFixed(0)}%`,
+      progress: window.remainingPercent, health: { ...health, label: `${translate("剩余额度")} · ${translate(health.label)}` },
+      range: `${translate("已用")} ${window.usedPercent.toFixed(0)}% · ${translate("重置时间")} ${formatTimestamp(window.resetsAt, true)}`,
+      min: null, max: null };
+  });
+}
+
+function focusedMetrics(model) {
+  return [...modelMetrics(model, true), ...quotaMetrics(model)]
+    .filter(metric => metric.kind.startsWith("quota")
+      || state.settings[`focusShow${metric.kind[0].toUpperCase()}${metric.kind.slice(1)}`] !== false);
+}
+
 function renderFocusedMetrics() {
   const focus = $("#island-focus");
   const focused = islandState.mode === "focus";
   focus.inert = !focused;
   $("#island-models").inert = focused;
   const model = state.models.find((item) => item.id === islandState.modelId);
-  const metrics = modelMetrics(model, true).filter(metric => state.settings[`focusShow${metric.kind[0].toUpperCase()}${metric.kind.slice(1)}`] !== false).map((metric) => ({ ...metric, radius: 27 }));
+  const metrics = focusedMetrics(model).map((metric) => ({ ...metric, radius: 27 }));
   const metricKey = metrics.map(metric => metric.kind).join(",");
   if (focus.dataset.metricKinds !== metricKey) {
     focus.dataset.metricKinds = metricKey;
@@ -1229,6 +1286,7 @@ function updateIslandAttention() {
 async function openMetric(model, view) {
   if (!model) return;
   if (view === "balance") view = "cost";
+  if (view.startsWith("quota")) view = "overview";
   if (desktopMode === "island") desktopMessage({ type: "open-main", modelId: model.id, view });
   else { await selectModelById(model.id); setView(view); }
 }
@@ -1357,7 +1415,7 @@ function showModelHistoryPopover(event, model) {
     ${popoverTrend("模型核验", qualityValue(model), health[0].label, quality, health[0].color, { unavailable: "等待采样", maximum: qualityChartOptions(model).maximum })}
     ${popoverTrend("Cache", formatPercent(model.cacheRate), health[1].label, cache, health[1].color, { unavailable: "无缓存字段" })}
     ${popoverTrend("TTFT", formatDuration(model.ttftMs), health[2].label, ttft, health[2].color, { unavailable: "等待有效响应", rawTtft: true })}
-  </div>${verificationStatusMarkup(model)}<div class="popover-foot">${balanceForModel(model)?.balanceSupported === false ? "" : `<span class="popover-finance-balance"><small>${translate("渠道余额")}</small>${balanceBadge(model)}</span>`}<span class="popover-finance-samples"><small>${translate("性能样本")}</small>${model.sampleCount}</span><span class="popover-finance-cost" title="已知费用请求 ${cost.known}/${cost.requests}"><small>${translate("核验费用")}</small>${cost.known ? formatCost(cost.total) : "--"}</span></div>`;
+  </div>${verificationStatusMarkup(model)}<div class="popover-foot">${modelQuota(model) || balanceForModel(model)?.balanceSupported === false ? "" : `<span class="popover-finance-balance"><small>${translate("渠道余额")}</small>${balanceBadge(model)}</span>`}<span class="popover-finance-samples"><small>${translate("性能样本")}</small>${model.sampleCount}</span><span class="popover-finance-cost" title="已知费用请求 ${cost.known}/${cost.requests}"><small>${translate("核验费用")}</small>${cost.known ? formatCost(cost.total) : "--"}</span></div>`;
   $$("[data-popover-metric]", popover).forEach(button => { button.onclick = () => openMetric(model, button.dataset.popoverMetric); });
   }
   positionPopover(event);
@@ -1417,6 +1475,22 @@ function balanceBadge(model) {
   const item = balanceForModel(model);
   if (item?.balanceSupported === false) return "";
   return `<button type="button" class="balance-badge" data-balance-cost-open title="${escapeHtml(translate(item?.message || "余额 / 余量查询"))}">${walletIcon()}<span>${escapeHtml(balanceText(item))}</span></button>`;
+}
+function renderQuotaSummary(model) {
+  const section = $("#quota-summary"), quota = modelQuota(model);
+  section.hidden = state.view === "settings" || !quota;
+  if (!quota) { section.innerHTML = ""; return; }
+  const framework = balanceForModel(model)?.framework;
+  const source = framework === "cliproxyapi" ? translate("CLIProxyAPI 转发 · 最近一次上游额度")
+    : quota.routeProvider === "openai" ? `${translate("OpenAI 官方 OAuth")}${quota.planType ? ` · ${quota.planType}` : ""}`
+      : translate("自定义渠道转发 · 最近一次上游额度");
+  const observed = Number.isFinite(Date.parse(quota.observedAt))
+    ? ` · ${translate("观测于")} ${formatTimestamp(quota.observedAt, true)}` : "";
+  section.innerHTML = `<div class="quota-heading"><div><strong>${escapeHtml(translate("订阅额度"))}</strong><small>${escapeHtml(source)}</small></div><small>${escapeHtml(`${translate("Codex 本地记录 · 无额外请求")}${observed}`)}</small></div><div class="quota-grid">${quota.windows.map((window) => {
+    const label = quotaWindowLabel(window.windowMinutes), remaining = window.remainingPercent.toFixed(0), used = window.usedPercent.toFixed(0);
+    const aria = translate("{window}额度，剩余 {percent}%").replace("{window}", label).replace("{percent}", remaining);
+    return `<article class="quota-item" aria-label="${escapeHtml(aria)}"><span class="quota-ring" style="--quota:${window.remainingPercent}%"><i></i><b>${remaining}%</b></span><div><strong>${escapeHtml(label)}<small>${escapeHtml(translate("剩余额度"))}</small></strong><span>${escapeHtml(translate("已用"))} ${used}%</span><time datetime="${escapeHtml(window.resetsAt)}">${escapeHtml(translate("重置时间"))} ${escapeHtml(formatTimestamp(window.resetsAt, true))}</time></div></article>`;
+  }).join("")}</div>`;
 }
 function renderBalances() {
   const section = $("#balance-summary");
@@ -1509,8 +1583,9 @@ function renderMetrics() {
     mountCostSummary();
     $("#cost-summary").innerHTML = `<div class="cost-heading"><span>核验费用</span><small>${escapeHtml(model?.label || "未选择对象")}</small></div><div class="cost-cell"><span>总花费</span><strong>${formatCost(cost.total)}</strong></div><div class="cost-cell"><span>平均单次</span><strong>${formatCost(cost.average)}</strong></div><div class="cost-cell"><span>最近单次</span><strong>${formatCost(cost.latest)}</strong></div><button type="button" class="cost-info" data-pricing-open title="${escapeHtml(costNote)} · ${escapeHtml(translate("配置渠道单价"))}" aria-label="${escapeHtml(translate("配置渠道单价"))}">ⓘ</button>`;
   }
-  $("#current-balance").hidden = state.view === "settings" || !model || balanceForModel(model)?.balanceSupported === false;
+  $("#current-balance").hidden = state.view === "settings" || !model || Boolean(modelQuota(model)) || balanceForModel(model)?.balanceSupported === false;
   $("#current-balance").innerHTML = `<span>${escapeHtml(translate("当前渠道余额"))}</span>${balanceBadge(model)}`;
+  renderQuotaSummary(model);
   renderBalances();
   const cache = model?.cacheRate;
   const ttft = model?.ttftMs;
@@ -2745,7 +2820,8 @@ function setView(view) {
   if (state.view === "settings" && view !== "settings") void flushSettingsDraft();
   state.view = view;
   mountCostSummary();
-  $("#current-balance").hidden = view === "settings" || !selectedModel() || balanceForModel(selectedModel())?.balanceSupported === false;
+  $("#current-balance").hidden = view === "settings" || !selectedModel() || Boolean(modelQuota(selectedModel())) || balanceForModel(selectedModel())?.balanceSupported === false;
+  $("#quota-summary").hidden = view === "settings" || !modelQuota(selectedModel());
   renderGlobalFilters();
   const titles = { overview: "概览", models: "模型", routes: "路由", cache: "Cache", ttft: "TTFT", quality: "模型核验", cost: "花费统计", alerts: "告警", logs: "日志", settings: "设置" };
   $("#page-title").textContent = titles[view] || "概览";
