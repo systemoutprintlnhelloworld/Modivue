@@ -8,6 +8,7 @@
 - Roo Code badge 来自 Roo Code 3.54.0 扩展的 SVG 标识，上游 [RooCodeInc/Roo-Code](https://github.com/RooCodeInc/Roo-Code)，Apache-2.0。
 - GPTMe badge 来自 gptme 0.33.0 包内 `gptme/server/webui-dist/logo.png`，上游 [gptme/gptme](https://github.com/gptme/gptme)，MIT。
 - Hermes 与 Aider 图标于 2026-09-17 下载到 `agents/`，两个 badge 都内嵌本地 PNG，不依赖远程图片请求。
+- Provider badge 使用本地发布的黑白 SVG 标识，按 New API、Sub2API 和 CLIProxyAPI 的项目视觉符号重绘；不使用 SVG 内嵌 `data:` 图片或 README 远程图片请求，避免 GitHub Markdown 将 badge 渲染为破图。
 
 | Agent | 本地原始素材与来源 | badge 处理 | 许可记录 |
 |---|---|---|---|

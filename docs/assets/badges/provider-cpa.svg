@@ -1,1 +1,11 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="172" height="46" viewBox="0 0 172 46" role="img" aria-labelledby="title"><title id="title">CLIProxyAPI — detected; balance deferred</title><rect x=".5" y=".5" width="171" height="45" rx="8" fill="#20252c" stroke="#424b57"/><rect x="10" y="11" width="24" height="24" rx="6" fill="#40334b"/><path d="m16 19 4 4-4 4m7 0h6" fill="none" stroke="#c4a1ff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><text x="44" y="21" font-family="Arial,sans-serif" font-size="13" font-weight="600" fill="#f5f7fa">CLIProxyAPI</text><text x="44" y="35" font-family="Arial,sans-serif" font-size="10" fill="#c4a1ff">DETECTED · NO BALANCE</text></svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72" role="img" aria-labelledby="title desc">
+  <title id="title">CLIProxyAPI provider icon</title>
+  <desc id="desc">Monochrome CLIProxyAPI routing mark.</desc>
+  <rect x="1" y="1" width="70" height="70" rx="14" fill="#111" stroke="#333" stroke-width="2"/>
+  <g fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round" stroke-width="3">
+    <path d="M36 12 58 25 36 38 14 25 36 12Z"/>
+    <path d="M14 35 36 48 58 35"/>
+    <path d="M14 46 36 59 58 46"/>
+    <path d="M29 29c2.2-3.4 5.2-5.1 9-5.1 4.2 0 7.4 2.2 9.3 6.1M43 43c-2.2 3.4-5.2 5.1-9 5.1-4.2 0-7.4-2.2-9.3-6.1" stroke-width="2"/>
+  </g>
+</svg>

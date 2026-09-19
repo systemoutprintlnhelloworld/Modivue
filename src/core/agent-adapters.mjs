@@ -1,5 +1,5 @@
 import { basename, join } from "node:path";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { parse as parseToml } from "smol-toml";
 import { parse as parseYaml } from "yaml";
 import JSON5 from "json5";
@@ -90,6 +90,39 @@ export function adapterForProcess(argv) {
 
 function joinHome(path, root) {
   return join(root, path);
+}
+
+// Pi stores the selected route in the session JSONL, not in settings.json or
+// models.json. Read only the latest model_change for the current workspace;
+// this keeps multiple configured providers from becoming duplicate model rows.
+async function readPiSessionSelection(agentDirectory, cwd) {
+  const sessionsRoot = join(agentDirectory, "sessions");
+  const entries = await readdir(sessionsRoot, { withFileTypes: true }).catch(() => []);
+  const normalizedCwd = String(cwd || "").replaceAll("\\", "/");
+  const slug = normalizedCwd ? `--${normalizedCwd.replace(/^\/+/, "").replaceAll("/", "-")}--` : null;
+  if (!normalizedCwd) return null;
+  const directories = entries.filter(entry => entry.isDirectory() && entry.name === slug);
+  let latest = null;
+  for (const directory of directories) {
+    const files = await readdir(join(sessionsRoot, directory.name), { withFileTypes: true }).catch(() => []);
+    for (const file of files.filter(entry => entry.isFile() && entry.name.endsWith(".jsonl"))) {
+      let records;
+      try {
+        records = (await readFile(join(sessionsRoot, directory.name, file.name), "utf8"))
+          .split(/\r?\n/).map(line => { try { return JSON.parse(line); } catch { return null; } }).filter(Boolean);
+      } catch { continue; }
+      const session = records.find(record => record.type === "session");
+      if (normalizedCwd && String(session?.cwd || "").replaceAll("\\", "/") !== normalizedCwd) continue;
+      for (const record of records.filter(item => item.type === "model_change")) {
+        const provider = text(record.provider);
+        const model = text(record.modelId || record.model);
+        if (!provider || !model) continue;
+        const timestamp = String(record.timestamp || session?.timestamp || file.name);
+        if (!latest || timestamp > latest.timestamp) latest = { provider, model, timestamp };
+      }
+    }
+  }
+  return latest;
 }
 
 const text = value => typeof value === "string" && value.trim() ? value.trim() : null;
@@ -254,6 +287,14 @@ export async function readAdapterConnection(adapter, env, home, cwd, argv = []) 
     } catch (cause) { if (cause.code !== "ENOENT") error = "凭据配置无法读取或格式无效"; }
   }
   const runtimeEnv = { ...fileEnv, ...config.env, ...env };
+  if (adapter.id === "pi") {
+    const agentDirectory = env.PI_CODING_AGENT_DIR || join(home, ".pi", "agent");
+    const selected = await readPiSessionSelection(agentDirectory, cwd);
+    if (selected) {
+      config.defaultProvider = selected.provider;
+      config.defaultModel = selected.model;
+    }
+  }
   const optionValue = (names) => {
     const index = argv.findIndex(value => names.includes(value));
     return index >= 0 ? argv[index + 1] : argv.find(value => names.some(name => value.startsWith(`${name}=`)))?.split("=", 2)[1];

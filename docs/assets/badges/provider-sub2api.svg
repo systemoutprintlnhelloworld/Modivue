@@ -1,1 +1,9 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="172" height="46" viewBox="0 0 172 46" role="img" aria-labelledby="title"><title id="title">Sub API / Sub2API — usage balance adapter</title><rect x=".5" y=".5" width="171" height="45" rx="8" fill="#20252c" stroke="#424b57"/><rect x="10" y="11" width="24" height="24" rx="6" fill="#24334f"/><path d="M28 18h-9a3 3 0 000 6h6a3 3 0 010 6h-9" fill="none" stroke="#7aa2f7" stroke-width="2" stroke-linecap="round"/><text x="44" y="21" font-family="Arial,sans-serif" font-size="13" font-weight="600" fill="#f5f7fa">Sub API / Sub2API</text><text x="44" y="35" font-family="Arial,sans-serif" font-size="10" fill="#7aa2f7">USAGE BALANCE</text></svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72" role="img" aria-labelledby="title desc">
+  <title id="title">Sub2API provider icon</title>
+  <desc id="desc">Monochrome interlocking Sub2API mark.</desc>
+  <rect x="1" y="1" width="70" height="70" rx="14" fill="#111" stroke="#333" stroke-width="2"/>
+  <g transform="translate(14 14) scale(1.83)" fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.7">
+    <path d="m19.25 7.65-2.55-3.2a1.33 1.33 0 0 0-1.03-.5H8.58c-.34 0-.67.13-.91.37L4.15 7.65c-.93.88-.6 1.52.65 2.3l9.55 5.97"/>
+    <path d="m4.75 16.35 2.55 3.2c.25.31.63.5 1.03.5h7.09c.34 0 .67-.13.91-.37l3.52-3.33c.93-.88.6-1.52-.65-2.3L9.65 8.08"/>
+  </g>
+</svg>

@@ -8,8 +8,14 @@ export function normalizeAgentStatus(session = {}) {
 
 // Herdr's explicit activity overrides a stale host turn state.
 export function isAgentWorking(session) {
-  if (normalizeAgentStatus(session) === "running" && session.source === "process" && session.statusSource !== "herdr") return false;
-  return ["active", "working", "running", "planning", "tool"].includes(normalizeAgentStatus(session));
+  const status = normalizeAgentStatus(session);
+  if (status === "running" && session.source === "process" && session.statusSource !== "herdr") {
+    // Codex and Claude Code have richer session evidence; a bare process row is
+    // presence only. Generic CLI agents expose no equivalent turn state, so a
+    // running process is the only reliable live-activity signal we have.
+    return !["codex", "claude-code"].includes(session.host);
+  }
+  return ["active", "working", "running", "planning", "tool"].includes(status);
 }
 
 export function claudeTranscriptStatus(records = []) {

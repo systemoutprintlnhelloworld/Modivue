@@ -35,6 +35,7 @@ open dist/Modivue.app
 - 构建脚本会封装当前 Node.js 可执行文件及其动态依赖，目标机器不需要安装 Node.js 或 Homebrew。
 - 数据目录：`~/Library/Application Support/Modivue`。
 - 当前使用临时签名，尚未配置 Apple Developer ID 证书与公证。
+- macOS 签名与公证：见 [macOS 签名与公证](macos-signing.md)。
 
 ## Windows 应用
 

@@ -20,6 +20,12 @@
 
 凭据只在本机使用。
 
+### Codex 官方 OAuth 额度
+
+Codex 使用官方 ChatGPT OAuth 登录时，Codex rollout 可能写入 `rate_limits`。Modivue 被动读取仍未过期的 5 小时（`300` 分钟）和 7 天（`10080` 分钟）窗口，按 `100% - used_percent` 显示剩余额度，并保留 Codex 提供的重置时间。
+
+这不是 Provider 钱包余额，也不会发起额外请求。只有本地会话实际写入这些字段时才显示；自定义 API Key、旧记录和未转发 `rate_limits` 的中转服务显示“未提供”。额度语义以 [OpenAI Codex 使用限制文档](https://developers.openai.com/codex/cli/usage-limits) 为准。
+
 ### 在界面上怎么看
 
 - **灵动岛：** 余额显示为环的外圈。首次读到的有效余额作为满环基准；充值后超过基准时环保持满格；可以在设置中重置基准。

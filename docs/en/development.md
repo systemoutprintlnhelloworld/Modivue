@@ -32,7 +32,8 @@ open "dist/Modivue.app"
 
 AppKit hosts the windows and WKWebView displays the interface. A child Node service listens on loopback. The build bundles Node and its dynamic dependencies, so the destination machine does not need Node or Homebrew.
 
-Data is stored in `~/Library/Application Support/Modivue`. Existing preview packages use ad-hoc signing and are not Apple-notarized. A successful build or signature check does not prove successful native interaction.
+Data is stored in `~/Library/Application Support/Modivue`. Existing preview packages use ad-hoc signing and are not Apple-notarized.
+- macOS signing and notarization: see [macOS signing and notarization](macos-signing.md). A successful build or signature check does not prove successful native interaction.
 
 ## Windows
 

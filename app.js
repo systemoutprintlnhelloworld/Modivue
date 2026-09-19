@@ -925,7 +925,7 @@ function agentTag(session) {
     windsurf: "windsurf", "github-copilot": "copilot", trae: "trae" }[session.host || session.id] || "terminal";
   const label = `${session.label || session.host} · ${labels[known] || "状态待同步"}`;
   const hostLabel = session.host === "claude-code" ? "Claude Code" : session.host === "codex" ? "Codex" : (session.label || session.host || "Agent").split(/\s+/)[0];
-  return `<b class="agent-tag" role="img" data-agent-host="${escapeHtml(slug)}" data-status="${known}" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}"><img class="agent-icon" src="/src/data/agent-icons/${slug}.svg" alt=""><small>${escapeHtml(hostLabel)}</small><span class="agent-status-text">${escapeHtml(session.source === "process" && known === "running" && session.statusSource !== "herdr" ? "已打开" : labels[known] || "状态待同步")}</span></b>`;
+  return `<b class="agent-tag" role="img" data-agent-host="${escapeHtml(slug)}" data-status="${known}" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}"><img class="agent-icon" src="/src/data/agent-icons/${slug}.svg" alt=""><small>${escapeHtml(hostLabel)}</small><span class="agent-status-text">${escapeHtml(labels[known] || "状态待同步")}</span></b>`;
 }
 
 function agentStatusLabel(session) {
@@ -1001,9 +1001,17 @@ function renderModelSelectors() {
     const compactVisible = working.some((item) => item.id === model.id);
     const availableMetrics = modelMetrics(model, true);
     const balanceMetric = availableMetrics.find(item => item.kind === "balance");
+    const showMetric = item => state.settings[`normalShow${item.kind[0].toUpperCase()}${item.kind.slice(1)}`];
     let metrics = availableMetrics.filter(item => islandState.mode === "normal"
-      ? state.settings[`normalShow${item.kind[0].toUpperCase()}${item.kind.slice(1)}`]
+      ? showMetric(item)
       : item.kind === state.settings.compactMetric);
+    // A live route must keep a visible ring even when the selected compact
+    // metric is unavailable. The fallback is an explicit empty quality ring,
+    // not a fabricated value; sampled Cache/TTFT still win when present.
+    if (islandState.mode === "compact" && !metrics.length) {
+      metrics = availableMetrics.filter(item => Number.isFinite(item.progress)).slice(0, 1);
+      if (!metrics.length) metrics = availableMetrics.filter(item => item.kind === "quality").slice(0, 1);
+    }
     return `<button class="island-model ${model.id === selected?.id ? "active" : ""} ${compactVisible ? "compact-visible" : ""}" data-model-index="${index}" data-island-model aria-label="${escapeHtml(model.label)}：核验 ${qualityDisplay}，Cache ${cacheDisplay}，TTFT ${ttftDisplay}" aria-pressed="${model.id === selected?.id}">
       <span class="metric-rings">
         <svg class="ring-svg" viewBox="0 0 60 60">
@@ -1408,14 +1416,14 @@ function walletIcon() {
 function balanceBadge(model) {
   const item = balanceForModel(model);
   if (item?.balanceSupported === false) return "";
-  return `<button type="button" class="balance-badge" data-balance-cost-open title="${escapeHtml(translate(item?.message || "供应商余额"))}">${walletIcon()}<span>${escapeHtml(balanceText(item))}</span></button>`;
+  return `<button type="button" class="balance-badge" data-balance-cost-open title="${escapeHtml(translate(item?.message || "余额 / 余量查询"))}">${walletIcon()}<span>${escapeHtml(balanceText(item))}</span></button>`;
 }
 function renderBalances() {
   const section = $("#balance-summary");
   if (!section || layoutDragging()) return;
   const balances = state.balances.filter(item => item.balanceSupported !== false);
   section.hidden = state.balances.length > 0 && balances.length === 0;
-  section.innerHTML = `<div class="balance-heading"><span>${escapeHtml(translate("供应商余额"))}</span><span><button class="text-button" type="button" data-balance-open>${escapeHtml(translate("配置余额"))}</button><button class="text-button" type="button" data-action="refresh-balances" ${state.balanceRefreshing ? "disabled" : ""}>${escapeHtml(translate(state.balanceRefreshing ? "刷新中" : "刷新"))}</button></span></div>${balances.length ? `<div class="balance-grid">${balances.map(item => `<div class="balance-item"><span class="balance-ring" style="--balance:${item.status === "ok" ? (item.ratio ?? 0) * 100 : 0}%"><i></i></span><div><strong>${escapeHtml(item.label)} <small>${escapeHtml(item.keyGroup)}</small></strong><small>${escapeHtml(item.status === "ok" ? balanceText(item) : translate(item.status === "disabled" ? "未启用余额查询" : item.message || "余额不可用"))}</small></div></div>`).join("")}</div>` : `<p class="balance-empty">${escapeHtml(translate("尚未保存可查询余额的渠道"))}</p>`}`;
+  section.innerHTML = `<div class="balance-heading"><span>${escapeHtml(translate("Provider 余额 / 余量"))}</span><span><button class="text-button" type="button" data-balance-open>${escapeHtml(translate("配置余额"))}</button><button class="text-button" type="button" data-action="refresh-balances" ${state.balanceRefreshing ? "disabled" : ""}>${escapeHtml(translate(state.balanceRefreshing ? "刷新中" : "刷新"))}</button></span></div>${balances.length ? `<div class="balance-grid">${balances.map(item => `<div class="balance-item"><span class="balance-ring" style="--balance:${item.status === "ok" ? (item.ratio ?? 0) * 100 : 0}%"><i></i></span><div><strong>${escapeHtml(item.label)} <small>${escapeHtml(item.keyGroup)}</small></strong><small>${escapeHtml(item.status === "ok" ? balanceText(item) : translate(item.status === "disabled" ? "未启用余额查询" : item.message || "余额不可用"))}</small></div></div>`).join("")}</div>` : `<p class="balance-empty">${escapeHtml(translate("尚未保存可查询余额的渠道"))}</p>`}`;
   mountLayouts(document, "overview");
 }
 async function loadBalances(refresh = false) {
@@ -1440,7 +1448,7 @@ async function loadBalances(refresh = false) {
   } finally { state.balanceRefreshing = false; renderBalances(); }
 }
 function balanceSettingsView() {
-    return `<section class="panel balance-settings" data-settings-group="connection">${viewHeader("供应商余额", "满环基准使用总额度或已观测最高余额；充值后自动更新。余额每 15 秒自动刷新，也可手动刷新。")}${state.balances.map(item => {
+    return `<section class="panel balance-settings" data-settings-group="connection">${viewHeader("余额查询适配的 Provider", "余额查询适配读取余额或余量字段；CLIProxyAPI 只显示余量查询适配状态，不读取钱包余额。满环基准使用总额度或已观测最高余额；查询每 15 秒自动刷新，也可手动刷新。")}${state.balances.map(item => {
     if (item.balanceSupported === false) return `<p>${escapeHtml(item.label)} · ${escapeHtml(translate(item.message))}</p>`;
     const config = item.config || {};
     return `<details data-detail-key="balance-${escapeHtml(item.providerId)}"><summary>${escapeHtml(item.label)} · ${escapeHtml(item.keyGroup)} · ${escapeHtml(balanceStatsText(item))}</summary><form class="balance-config-form" data-target-id="${escapeHtml(item.providerId)}"><input type="hidden" name="providerId" value="${escapeHtml(item.providerId)}"><p>${escapeHtml(item.baseUrl)} · ${escapeHtml(item.source)}${item.initial > 0 ? ` · ${escapeHtml(translate("初始基准"))} ${escapeHtml(balanceText({ status: "ok", remaining: item.initial, unit: item.unit }))}` : ""}</p><div class="trusted-fields"><label>${escapeHtml(translate("余额接口"))}<select name="adapter">${Object.entries(state.balanceAdapters).map(([id,label]) => `<option value="${id}" ${config.adapter === id ? "selected" : ""}>${escapeHtml(translate(label))}</option>`).join("")}</select></label><label><input name="enabled" type="checkbox" ${config.enabled ? "checked" : ""}>${escapeHtml(translate("启用余额查询"))}</label><label>${escapeHtml(translate("查询专用 Key"))}<input name="queryKey" type="password" autocomplete="off" placeholder="${escapeHtml(translate(config.queryKeyConfigured ? "已保存；留空继续使用" : "留空使用渠道 Key"))}"></label><label data-balance-field="new-api">${escapeHtml(translate("账户令牌"))}<input name="accessToken" type="password" autocomplete="off" placeholder="${escapeHtml(translate(config.accessTokenConfigured ? "已保存；留空继续使用" : "New API 账户令牌"))}"></label><label data-balance-field="new-api">${escapeHtml(translate("用户 ID"))}<input name="userId" value="${escapeHtml(config.userId || "")}"></label>${[["endpointPath","同站接口路径","/v1/usage"],["remainingPath","余额字段","data.balance"],["totalPath","总额度字段",""],["usedPath","已用额度字段",""],["unit","单位","USD"],["divisor","换算除数","1"]].map(([key,label,hint]) => `<label data-balance-field="custom">${escapeHtml(translate(label))}<input name="${key}" value="${escapeHtml(config[key] ?? "")}" placeholder="${hint}" ${key === "divisor" ? 'type="number" min="0.000001" step="any"' : ""}></label>`).join("")}</div><p class="balance-config-hint" title="${escapeHtml(translate("New API 账户余额需要在站点个人设置创建账户令牌，并填写用户 ID；Key 额度使用渠道 Key，原始 quota 不冒充货币。"))}">${escapeHtml(translate("New API 账户余额需要账户令牌和用户 ID"))}</p><label class="balance-reset"><input name="resetInitial" type="checkbox">${escapeHtml(translate("重新以本次余额作为满环基准"))}</label><button class="primary-button" type="submit">${escapeHtml(translate("保存并查询余额"))}</button><span role="status" class="balance-config-status"></span></form></details>`;

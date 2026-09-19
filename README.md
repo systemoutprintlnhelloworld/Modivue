@@ -78,7 +78,7 @@
 <!-- 交互总览是设计概念图，图中旧标签不作为产品指标定义；产品以四项指标和下文说明为准。 -->
 <img src="docs/assets/interaction-overview.jpg" width="100%" alt="Modivue 交互总览：默认状态、悬停各环、完整面板、气泡形态、多模型切换、主题与终端状态栏">
 <br>
-<sub>交互总览。实际界面以各功能文档中的截图为准。</sub>
+<sub>交互总览。</sub>
 </div>
 
 <br>
@@ -121,14 +121,14 @@
 **macOS：** 第一次打开会被系统拦截。只对你信任的下载，到"系统设置 → 隐私与安全性"中点"仍要打开"，或者在终端执行一次：
 
 ```bash
-xattr -cr /Applications/Modivue.app
+xattr -dr com.apple.quarantine /Applications/Modivue.app
 ```
 
 首次打开遇到系统拦截时，使用系统设置中的“仍要打开”；命令行清除隔离标记仅适用于你信任的本地包。
 
 **Windows：** 当前发布包未签名，可能触发 SmartScreen。确认下载来源与文件后，可使用系统提供的“更多信息 → 仍要运行”；不需要关闭系统防护。
 
-发布流程会生成 macOS ZIP 与 Windows ZIP / 安装器。当前尚未配置可信 Windows 签名与 macOS 公证凭据；安装器存在不代表已签名。详见 [构建与发布](docs/development.md)。
+发布流程会生成 macOS ZIP 与 Windows ZIP / 安装器。当前尚未配置可信 Windows 签名与 macOS 公证凭据；安装器存在不代表已签名。详见 [构建与发布](docs/development.md) 和 [macOS 签名与公证教程](docs/macos-signing.md)。
 
 ---
 
@@ -214,23 +214,34 @@ xattr -cr /Applications/Modivue.app
 
 ---
 
-## API Provider 框架
+## 余额查询适配的 Provider
 
-目前有 **3 类框架接入**，能力不同，不代表都支持余额或所有版本已实机验收：
+目前有 **3 类余额查询适配**，能力不同；不代表所有部署都支持同一种余额或余量字段，也不代表所有版本都已实机验收：
 
 <p align="center">
-<a href="#api-provider-框架"><img src="docs/assets/badges/provider-new-api.svg" alt="New API：账户与 Key 余额"></a>
-<a href="#api-provider-框架"><img src="docs/assets/badges/provider-sub2api.svg" alt="Sub API / Sub2API：usage 余额适配"></a>
-<a href="#api-provider-框架"><img src="docs/assets/badges/provider-cpa.svg" alt="CLIProxyAPI：已识别，暂不接入余额"></a>
+<a href="#余额查询适配的-provider"><img src="docs/assets/badges/provider-new-api.svg" alt="New API：余额查询适配"></a>
+<a href="#余额查询适配的-provider"><img src="docs/assets/badges/provider-sub2api.svg" alt="Sub2API：余额查询适配"></a>
+<a href="#余额查询适配的-provider"><img src="docs/assets/badges/provider-cpa.svg" alt="CLIProxyAPI：余量查询适配，当前未接入管理 API"></a>
 </p>
 
-| 框架 | 识别 / 选择 | 余额 | Cache / TTFT | 模型核验 |
+| Provider | 识别 / 选择 | 查询结果 | Cache / TTFT | 模型核验 |
 | --- | --- | --- | --- | --- |
 | New API | 设置中选择账户余额或 Key 额度 | `/api/user/self` 账户余额；`/api/usage/token/` Key 额度，原始 quota 不冒充货币 | 共用协议采集，需实际 usage / 首个有效输出事件 | 共用核验器，受模型、协议和基准限制 |
 | Sub API / Sub2API | 设置中选择 usage 适配器 | `/v1/usage`；仅支持返回可解析额度字段的部署 | 同上 | 同上 |
-| [CLIProxyAPI（CPA）](https://github.com/router-for-me/CLIProxyAPI) | 本机部署通过服务根路径的公开标识检测 | **暂不显示**，不把 usage / token 统计当作钱包余额 | 流式或非流式请求经 Modivue 代理时共用采集链路；只记录响应明确返回的 usage 和首个有效内容 | 可用方法取决于模型与基准；本机地址不能直接供远程核验服务访问 |
+| [CLIProxyAPI（CPA）](https://github.com/router-for-me/CLIProxyAPI) | 本机部署通过服务根路径的公开标识检测 | **暂不显示钱包余额**；当前未接入管理 API 的余量查询，不把 usage / token 统计当作钱包余额 | 流式或非流式请求经 Modivue 代理时共用采集链路；只记录响应明确返回的 usage 和首个有效内容 | 可用方法取决于模型与基准；本机地址不能直接供远程核验服务访问 |
 
-直接读取 Agent 配置不会自动接管它的请求。Cache 可以来自 Codex 本地 usage；真实 TTFT 需要请求经过 Modivue 本地代理，或主动发起一次性能采样。主动采样和核验可能消耗渠道额度。CPA 当前不接入管理 API，也不索取管理密钥。
+直接读取 Agent 配置不会自动接管它的请求。Cache 可以来自 Codex 本地 usage；真实 TTFT 需要请求经过 Modivue 本地代理，或主动发起一次性能采样。主动采样和核验可能消耗渠道额度。CPA 当前只做本机部署识别，余量查询尚未接入管理 API；Modivue 不索取 CPA 管理密钥，也不把 usage / token 统计当作钱包余额。
+
+### Codex 官方 OAuth 订阅额度
+
+如果 Codex 使用官方 ChatGPT OAuth 登录，Codex 本机会在 rollout 中记录可用的订阅额度窗口。Modivue 被动读取这些记录，并把仍未过期的窗口显示为额度环和重置时间：
+
+- **5 小时**窗口（`300` 分钟）；
+- **7 天**窗口（`10080` 分钟）；
+- 剩余额度按 `100% - used_percent` 计算，重置时间沿用 Codex 记录；
+- 读取不发起额外模型请求，也不把额度转换为 Provider 钱包余额。
+
+这项显示只适用于 Codex 已写入 `rate_limits` 的本地会话。自定义 API Key、仅有磁盘配置、旧版本 Codex、或中转服务没有转发该字段时，界面会显示“未提供”。通过 CPA 等自定义渠道时，窗口只代表最近一次 Codex 上游记录，不代表整个渠道账户池的余量。额度字段和使用限制以 [OpenAI Codex 使用限制文档](https://developers.openai.com/codex/cli/usage-limits) 为准；Modivue 不猜测未记录的额度，也不会把缺失值显示为 0。
 
 ## 支持的工具
 
@@ -290,6 +301,7 @@ xattr -cr /Applications/Modivue.app
 | 配置多渠道路由或调用本地 API | [docs/proxy.md](docs/proxy.md) |
 | 在终端或状态栏读取数据 | [CLI 与状态栏](docs/features/cli.md) |
 | 构建、测试与发布 | [docs/development.md](docs/development.md) |
+| 配置 macOS 临时签名、Developer ID 与公证 | [macOS 签名与公证教程](docs/macos-signing.md) |
 | 替换截图与录屏 | [素材清单](docs/media.md) |
 | 了解后续计划 | [ROADMAP.md](ROADMAP.md) |
 
@@ -320,7 +332,7 @@ npm run windows:build    # Windows，需要 .NET SDK 8
 
 项目原创代码采用 [MIT License](LICENSE)。第三方代码、素材与商标保留各自许可和声明，见 [素材归属](docs/assets/NOTICE.md)。
 
-Windows 免费代码签名正在准备申请，尚未获得 SignPath 批准或签名证书，见 [申请准备](docs/windows-signing.md)。
+Windows 免费代码签名正在准备申请，尚未获得 SignPath 批准或签名证书，见 [申请准备](docs/windows-signing.md)。macOS 的临时签名、Developer ID 和公证流程见 [macOS 签名与公证教程](docs/macos-signing.md)。
 
 ## 友情链接
 

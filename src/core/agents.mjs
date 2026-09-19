@@ -243,7 +243,18 @@ async function detectAgentsFresh(actualEnv, actualHome, actualCwd, cacheKey) {
     ...await claudeTranscriptSessions(actualHome, claudeConnection),
     ...await codexRuntimeSessions(byHost.get("codex")?.runtimeDirectory || actualEnv.CODEX_HOME || join(actualHome, ".codex"), byHost.get("codex")),
     ...await genericRuntimeSessions(actualEnv, actualHome, actualCwd)
-  ];
+  ].map((session) => {
+    // Process-specific config reads can fail when the host cannot expose the
+    // process working directory (notably packaged macOS/Windows hosts). Keep
+    // the live session, but enrich it from the already parsed host connection;
+    // never invent a model when the static adapter has none.
+    if (session.model && session.baseUrl) return session;
+    const connection = byHost.get(session.host);
+    if (!connection?.model || !connection.baseUrl) return session;
+    return enrichRuntimeSession({ ...session, model: session.model || connection.model,
+      baseUrl: session.baseUrl || connection.baseUrl, protocol: session.protocol || connection.protocol,
+      keyGroup: session.keyGroup || connection.keyGroup }, connection);
+  });
   const unique = new Map();
   live.forEach((session) => {
     const key = `${session.host}:${session.sessionId}`;

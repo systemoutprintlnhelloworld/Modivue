@@ -118,14 +118,14 @@ Metrics are separated by **model × channel × key group × reasoning effort**. 
 **macOS:** If Gatekeeper blocks the first launch, verify that you trust the download, then use **System Settings → Privacy & Security → Open Anyway**. For a trusted local copy only, you can alternatively clear its quarantine attributes:
 
 ```bash
-xattr -cr /Applications/Modivue.app
+xattr -dr com.apple.quarantine /Applications/Modivue.app
 ```
 
 Do not clear quarantine for an untrusted download.
 
 **Windows:** Current release packages are unsigned and may trigger SmartScreen. After verifying the source and file, use the system-provided **More info → Run anyway** option if required; do not disable system protection.
 
-The release workflow produces a macOS ZIP and Windows ZIP/installer. Trusted Windows signing and macOS notarization credentials are not configured yet; the existence of an installer does not mean it is signed. See [Build, test, and release](docs/en/development.md).
+The release workflow produces a macOS ZIP and Windows ZIP/installer. Trusted Windows signing and macOS notarization credentials are not configured yet; the existence of an installer does not mean it is signed. See [Build, test, and release](docs/en/development.md) and the [macOS signing guide](docs/en/macos-signing.md).
 
 ---
 
@@ -211,23 +211,34 @@ Request counts describe planned samples, not a guarantee of the final bill. Retr
 
 ---
 
-## API provider frameworks
+## Balance-query provider adapters
 
-**3 framework integrations**, with different capabilities—not a claim that all support balances or that every release has been tested:
+**Three balance-query adapters** are available, with different capabilities. This does not mean every deployment exposes the same balance or allowance fields, or that every release has been tested:
 
 <p align="center">
-<a href="#api-provider-frameworks"><img src="docs/assets/badges/provider-new-api.svg" alt="New API: account and token balance"></a>
-<a href="#api-provider-frameworks"><img src="docs/assets/badges/provider-sub2api.svg" alt="Sub API / Sub2API: usage balance adapter"></a>
-<a href="#api-provider-frameworks"><img src="docs/assets/badges/provider-cpa.svg" alt="CLIProxyAPI: detected; balance deferred"></a>
+<a href="#balance-query-provider-adapters"><img src="docs/assets/badges/provider-new-api.svg" alt="New API: balance-query adapter"></a>
+<a href="#balance-query-provider-adapters"><img src="docs/assets/badges/provider-sub2api.svg" alt="Sub2API: balance-query adapter"></a>
+<a href="#balance-query-provider-adapters"><img src="docs/assets/badges/provider-cpa.svg" alt="CLIProxyAPI: allowance query; management API not connected"></a>
 </p>
 
-| Framework | Detection / selection | Balance | Cache / TTFT | Model verification |
+| Provider | Detection / selection | Query result | Cache / TTFT | Model verification |
 | --- | --- | --- | --- | --- |
 | New API | Select account balance or token quota in settings | `/api/user/self` for accounts; `/api/usage/token/` for keys. Raw quota is not presented as currency. | Shared protocol collection; requires actual usage / first-content events | Shared evaluators, subject to model, protocol, and reference support |
 | Sub API / Sub2API | Select the usage adapter in settings | `/v1/usage`, only for deployments returning supported balance fields | Same as above | Same as above |
-| [CLIProxyAPI (CPA)](https://github.com/router-for-me/CLIProxyAPI) | Detects a local deployment through the public identifier at its service root | **Hidden for now**; usage / token counters are not wallet balances | Streaming or non-streaming requests share the collection path when routed through Modivue; only explicit usage and first valid content are recorded | Depends on model and references; remote evaluators cannot access a loopback address |
+| [CLIProxyAPI (CPA)](https://github.com/router-for-me/CLIProxyAPI) | Detects a local deployment through the public identifier at its service root | **No wallet balance shown**; management-API allowance queries are not connected, and usage / token counters are not wallet balances | Streaming or non-streaming requests share the collection path when routed through Modivue; only explicit usage and first valid content are recorded | Depends on model and references; remote evaluators cannot access a loopback address |
 
-Reading Agent configuration does not intercept its requests. Cache usage can come from local Codex records; real TTFT requires traffic through Modivue's proxy or an active performance sample. Active samples and verification may consume provider credits. CPA management APIs and management keys are not used.
+Reading Agent configuration does not intercept its requests. Cache usage can come from local Codex records; real TTFT requires traffic through Modivue's proxy or an active performance sample. Active samples and verification may consume provider credits. CPA is currently detected locally only; its management API and management keys are not used.
+
+### Codex subscription OAuth quotas
+
+When Codex uses the official ChatGPT OAuth sign-in, Codex can write subscription quota windows into its local rollout records. Modivue passively reads those records and shows unexpired windows as quota rings with their reset times:
+
+- **5-hour** window (`300` minutes);
+- **7-day** window (`10080` minutes);
+- remaining allowance is `100% - used_percent`, with the reset timestamp preserved from Codex;
+- reading the record sends no extra model request and does not turn the quota into a provider wallet balance.
+
+This display requires a Codex session that writes `rate_limits`. It is unavailable for a custom API key, a disk-only configuration, older Codex records, or a relay that does not forward the field; the UI shows “not provided” rather than zero. With a custom relay such as CPA, the window describes the latest Codex upstream observation, not the relay's whole account pool. See the [OpenAI Codex usage-limits documentation](https://developers.openai.com/codex/cli/usage-limits) for the upstream quota semantics. Modivue does not infer missing quota values.
 
 ## Supported agents
 
@@ -285,6 +296,7 @@ No. Windows uses process discovery and configuration parsing together with proxy
 | Configure multiple channels or call the local API | [Local proxy and API](docs/en/proxy.md) |
 | Read metrics in a terminal or status line | [CLI and status line](docs/en/features/cli.md) |
 | Build, test, and release | [Development guide](docs/en/development.md) |
+| Configure macOS ad-hoc signing, Developer ID, and notarization | [macOS signing guide](docs/en/macos-signing.md) |
 | Replace screenshots and recordings | [Media checklist](docs/en/media.md) |
 | Review planned work | [ROADMAP.md](ROADMAP.md) in Chinese |
 
@@ -317,4 +329,4 @@ When reporting an issue, include your OS version, agent, protocol such as Chat C
 
 Original project code is licensed under the [MIT License](LICENSE). Third-party code, assets, and trademarks retain their own terms and notices; see [asset attribution](docs/assets/NOTICE.md).
 
-A free Windows code-signing application is being prepared. SignPath approval and a signing certificate have not been obtained; see [application preparation](docs/windows-signing.md).
+A free Windows code-signing application is being prepared. SignPath approval and a signing certificate have not been obtained; see [application preparation](docs/windows-signing.md). For macOS ad-hoc signing, Developer ID, and notarization, see the [macOS signing guide](docs/en/macos-signing.md).

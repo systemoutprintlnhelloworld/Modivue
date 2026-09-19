@@ -1,6 +1,11 @@
 // Source-language keys keep existing Chinese UI copy readable during migration.
 const english = {
   "CLIProxyAPI 暂不提供余额": "CLIProxyAPI balance integration is not available yet",
+  "CLIProxyAPI 余量查询尚未接入管理 API": "CLIProxyAPI allowance queries are not connected to its management API yet",
+  "余额 / 余量查询": "Balance / allowance query",
+  "Provider 余额 / 余量": "Provider balance / allowance",
+  "余额查询适配的 Provider": "Balance-query provider adapters",
+  "余额查询适配读取余额或余量字段；CLIProxyAPI 只显示余量查询适配状态，不读取钱包余额。满环基准使用总额度或已观测最高余额；查询每 15 秒自动刷新，也可手动刷新。": "Balance-query adapters read balance or allowance fields. CLIProxyAPI only reports allowance-adapter status and does not read wallet balances. The full-ring reference uses total credit or the highest observed balance; queries refresh every 15 seconds and can also be refreshed manually.",
   "标准界面显示环": "Dashboard: visible rings",
   "暂无活动 Agent": "No active agents",
   "花费统计": "Cost statistics",

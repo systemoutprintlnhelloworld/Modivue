@@ -14,6 +14,12 @@ Provider configurations can come from CC Switch, saved trusted channels, or agen
 
 Modivue uses the configured credentials to query the selected provider. It does not execute CC Switch user scripts. Invalid current CCS configurations are skipped for balance queries rather than replaced with an old provider.
 
+### Codex official OAuth quotas
+
+When Codex uses the official ChatGPT OAuth sign-in, its rollout may contain `rate_limits`. Modivue passively reads unexpired 5-hour (`300` minutes) and 7-day (`10080` minutes) windows, displays `100% - used_percent` as remaining allowance, and preserves the reset timestamp from Codex.
+
+This is not a provider wallet balance and does not send an extra request. It appears only when the local session writes these fields; custom API keys, older records, and relays that do not forward `rate_limits` show “not provided”. See the [OpenAI Codex usage-limits documentation](https://developers.openai.com/codex/cli/usage-limits) for upstream semantics.
+
 ### In the interface
 
 - **Dynamic Island:** a selected balance ring uses the first valid balance as its full-ring reference. A top-up above the reference keeps the ring full; Settings can reset the baseline.
