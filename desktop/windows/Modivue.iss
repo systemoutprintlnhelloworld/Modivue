@@ -31,7 +31,6 @@ SetupIconFile=Modivue.ico
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
-Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
 
 [CustomMessages]
 english.ShortcutTasks=Shortcuts and background operation:
@@ -39,11 +38,6 @@ english.StartMenuTask=Add Modivue to the Start menu
 english.DesktopTask=Create a desktop shortcut
 english.StartupTask=Start Modivue when I sign in to Windows
 english.InstallingWebView2=Installing Microsoft Edge WebView2 Runtime...
-chinesesimplified.ShortcutTasks=快捷方式与常驻运行：
-chinesesimplified.StartMenuTask=将 Modivue 添加到开始菜单
-chinesesimplified.DesktopTask=创建桌面快捷方式
-chinesesimplified.StartupTask=登录 Windows 时自动启动 Modivue
-chinesesimplified.InstallingWebView2=正在安装 Microsoft Edge WebView2 Runtime...
 
 [Files]
 Source: "{#AppSource}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
