@@ -6,7 +6,7 @@
 
 | Target | Requirements |
 |---|---|
-| Development server / CLI | Node.js 22.5+ for built-in `node:sqlite`; CI uses Node.js 24. |
+| Development server / CLI | Node.js 24+ for built-in `node:sqlite`; CI uses Node.js 24. |
 | macOS app | Apple Silicon Mac and Xcode command-line tools. The build architecture follows the host. |
 | Windows app | Node.js and .NET SDK 8; CI uses Node.js 24. Inno Setup 6 produces the installer. |
 
@@ -42,7 +42,7 @@ npm ci
 npm run windows:build
 ```
 
-Packages include .NET 8 and Node; Microsoft Edge WebView2 Runtime is required. Data is stored in `%LOCALAPPDATA%/Modivue`. The Inno Setup installer installs for the current user. Portable ZIPs are also produced. Native mouse interaction and multi-DPI validation remain separate from build success. An installer can still be unsigned.
+Builds require Node.js 24 or later and package .NET 8 and Node. When WebView2 is missing, setup runs Microsoft's official bootstrapper; the portable app asks before running it. The portable root contains only `Modivue.exe` and `resources/`. Inno Setup offers Start menu, desktop, and sign-in startup options and installs for the current user. Data is stored in `%LOCALAPPDATA%/Modivue`. Native mouse interaction and multi-DPI validation remain separate from build success. An installer can still be unsigned.
 
 ## UI checks
 

@@ -1,12 +1,12 @@
-# Cost and balance
+# Cost, balance, and quota
 
 ![Cost and balance](../../assets/features/cost.png)
 
-This page separates remaining provider balance from the cost of Modivue's own detection requests.
+This page separates gateway balance, Codex subscription quota, and the cost of Modivue's own detection requests.
 
 [中文](../../features/cost.md) · [Back to README](../../../README.en.md#features) · [Feature index](README.md)
 
-## Balance
+## Balance and quota
 
 ### Sources
 
@@ -20,10 +20,12 @@ When Codex uses the official ChatGPT OAuth sign-in, its rollout may contain `rat
 
 This is not a provider wallet balance and does not send an extra request. It appears only when the local session writes these fields; custom API keys, older records, and relays that do not forward `rate_limits` show “not provided”. See the [OpenAI Codex usage-limits documentation](https://developers.openai.com/codex/cli/usage-limits) for upstream semantics.
 
+CPA account-pool quotas are available through a Management API that requires a management key. Modivue does not currently connect to that API or read, request, or store the key. A Codex session routed through CPA can only show the latest upstream quota written to its rollout, not the whole pool.
+
 ### In the interface
 
-- **Dynamic Island:** a selected balance ring uses the first valid balance as its full-ring reference. A top-up above the reference keeps the ring full; Settings can reset the baseline.
-- **Overview:** displays current balance and provider entries with manual refresh and endpoint configuration. Failed queries display errors, not a zero balance.
+- **Dynamic Island:** a balance ring uses the first valid balance as its full-ring reference. A quota ring uses the window's remaining percentage. A top-up above the balance reference keeps that ring full; Settings can reset the baseline.
+- **Overview:** displays the current balance or quota. Balance entries support manual refresh and endpoint configuration. Failed queries display errors, not zero.
 - **Cost:** creates balance-history panels for individual providers. Balance snapshots have their own timestamps, units, and sample counts; they are not request samples.
 
 ## Detection cost

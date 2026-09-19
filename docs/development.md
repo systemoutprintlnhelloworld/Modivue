@@ -8,7 +8,7 @@
 
 | 目标 | 要求 |
 |---|---|
-| 浏览器开发模式 / CLI | Node.js 22.5+（使用内置 `node:sqlite`） |
+| 浏览器开发模式 / CLI | Node.js 24+（使用内置 `node:sqlite`） |
 | macOS 应用 | 在 Apple Silicon Mac 上构建；产物架构与构建机器一致 |
 | Windows 应用 | Node.js 24、.NET SDK 8 |
 
@@ -44,7 +44,8 @@ npm ci
 npm run windows:build
 ```
 
-- 发布包内含 .NET 8 与 Node，运行时需要 Microsoft Edge WebView2 Runtime。
+- 构建使用 Node.js 24+，发布包内含 .NET 8 与 Node。安装器会在缺少 WebView2 时运行 Microsoft 官方 bootstrapper；portable 版会先征求用户同意。
+- portable 根目录只保留 `Modivue.exe` 与 `resources/`；安装器可选开始菜单、桌面快捷方式和登录时自动启动。
 - 数据目录：`%LOCALAPPDATA%/Modivue`。
 - 宿主已交叉编译通过；原生鼠标交互与多 DPI 实机验收尚未完成；尚未配置代码签名。
 

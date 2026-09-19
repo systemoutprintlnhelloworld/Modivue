@@ -8,7 +8,10 @@
 - Roo Code badge 来自 Roo Code 3.54.0 扩展的 SVG 标识，上游 [RooCodeInc/Roo-Code](https://github.com/RooCodeInc/Roo-Code)，Apache-2.0。
 - GPTMe badge 来自 gptme 0.33.0 包内 `gptme/server/webui-dist/logo.png`，上游 [gptme/gptme](https://github.com/gptme/gptme)，MIT。
 - Hermes 与 Aider 图标于 2026-09-17 下载到 `agents/`，两个 badge 都内嵌本地 PNG，不依赖远程图片请求。
-- Provider badge 使用本地发布的黑白 SVG 标识，按 New API、Sub2API 和 CLIProxyAPI 的项目视觉符号重绘；不使用 SVG 内嵌 `data:` 图片或 README 远程图片请求，避免 GitHub Markdown 将 badge 渲染为破图。
+- New API provider badge 内嵌上游 [`web/public/logo.png`](https://github.com/QuantumNous/new-api/blob/main/web/public/logo.png)；上游主仓库为 AGPL-3.0，未发现该 logo 的单独许可声明。
+- Sub2API provider badge 内嵌上游 README 使用的 [`assets/logo.svg`](https://github.com/Wei-Shaw/sub2api/blob/main/assets/logo.svg)，不是部署模板的 `frontend/public/logo.png`；上游仓库为 LGPL-3.0-or-later。
+- CPA provider badge 使用官方管理中心仓库的 [`logo.jpg`](https://github.com/router-for-me/Cli-Proxy-API-Management-Center/blob/main/logo.jpg) 缩略图；未发现该 logo 的单独许可声明。
+- `scripts/make-provider-badges.mjs` 将上述素材以 `data:` 图片写入本地 SVG，README 不在渲染时请求远程图片。品牌名称和标识仍归各自权利人所有。
 
 | Agent | 本地原始素材与来源 | badge 处理 | 许可记录 |
 |---|---|---|---|

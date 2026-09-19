@@ -16,8 +16,8 @@ Before publishing screenshots or recordings, check for credentials, private prov
 | Optional static banner | `docs/assets/hero-banner.png` | Not supplied; create it before enabling a reduced-motion image source. |
 | Main demonstration | `docs/assets/main-demo.gif` | Panel expansion, focus, and collapse |
 | Interaction overview | `docs/assets/interaction-overview.jpg` | Design concept; legacy IQ labels and ring counts are not the current product definition. |
-| Dynamic Island section | `docs/assets/灵动岛.png` | Island image |
-| Verification section | `docs/assets/模型核验-main.png` | Main verification image |
+| Dynamic Island section | `docs/assets/island-main.png` | Island image |
+| Verification section | `docs/assets/model-verification-main.png` | Main verification image |
 
 ## Feature grid
 
@@ -27,7 +27,7 @@ Before publishing screenshots or recordings, check for credentials, private prov
 | `island.png` | Island details | [Island](features/island.md) |
 | `agents.png` | Agent status | [Agents](features/agents.md) |
 | `verification.png` | Verification | [Verification](features/verification.md) |
-| `cost.png` | Cost and provider balance | [Cost](features/cost.md) |
+| `cost.png` | Cost, gateway balance, and subscription quota | [Cost](features/cost.md) |
 | `calibration.png` | References | [Calibration](features/calibration.md) |
 | `settings.png` | Settings and alerts | [Settings](features/settings.md) |
 | `layout.png` | Layout image, not an animated recording | [Layout](features/overview.md#layout) |

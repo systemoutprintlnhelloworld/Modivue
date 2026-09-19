@@ -9,7 +9,7 @@
 <h1><img src="docs/assets/app-icon.svg" width="48" height="48" align="absmiddle" alt=""> Modivue</h1>
 
 **Your Vibe Coding Dynamic Island**<br>
-Gateway balance · cache hits · time to first token · model verification, visible at a glance with records kept on your machine
+Balance or subscription quota · cache hits · time to first token · model verification, visible at a glance with records kept on your machine
 
 [![Build](https://img.shields.io/github/actions/workflow/status/systemoutprintlnhelloworld/Modivue/build.yml?branch=main&style=flat-square&label=build)](https://github.com/systemoutprintlnhelloworld/Modivue/actions)
 [![Release](https://img.shields.io/github/v/release/systemoutprintlnhelloworld/Modivue?include_prereleases&sort=semver&style=flat-square&color=7AA2F7)](https://github.com/systemoutprintlnhelloworld/Modivue/releases)
@@ -49,7 +49,7 @@ Gateway balance · cache hits · time to first token · model verification, visi
 
 ---
 
-**Modivue** is a local floating monitor for macOS and Windows, built for developers who use Claude Code, Codex, and other coding agents through API gateways. It reads provider balances, records cache usage and time to first token, and runs model verification on demand. Verification preserves evidence of whether a channel's responses match reference behavior. Request measurements and verification reports use local SQLite; balances and supporting configuration use local files.
+**Modivue** is a local monitor for macOS and Windows, built for developers who use Claude Code, Codex, and other coding agents through API gateways. It reads gateway balances and Codex subscription quotas, records cache usage and time to first token, and runs model verification on demand. Verification preserves evidence of whether a channel's responses match reference behavior. Request measurements and verification reports use local SQLite; balances, quotas, and supporting configuration use local files.
 
 <div align="center">
 <img src="docs/assets/main-demo.gif" width="860" alt="The Modivue Dynamic Island expanding and collapsing">
@@ -57,11 +57,12 @@ Gateway balance · cache hits · time to first token · model verification, visi
 <sub>Move the pointer onto the panel to expand it, hover a model ring for details, and move away to collapse it.</sub>
 </div>
 
-## Four questions it answers
+## Five questions it answers
 
 | What you want to know | How Modivue answers it |
 |---|---|
-| How much gateway balance remains? | Reads balance endpoints for providers discovered through CC Switch, saved channels, or agent configuration. Supports OpenRouter, New API / Sub API, and custom JSON mappings, with a balance ring and history. |
+| How much gateway balance remains? | Reads OpenRouter, New API / Sub2API, CC Switch, or custom JSON balance mappings, with a balance ring and history. |
+| How much Codex subscription quota remains? | Passively reads the 5-hour and 7-day windows recorded by an official OAuth session, then shows the remaining percentage and reset time. |
 | Is prompt caching actually working? | Calculates cache hit rate only from explicit provider cache fields. Missing fields stay missing, rather than becoming zero. |
 | Why is the first token slow today? | Measures the time from request start to the first valid output text or tool event, with separate trends for each channel. |
 | Does this "model" behave like its claimed reference? | Offers 11 verification methods and keeps raw answers and decision evidence. These are behavioral observations, not identity authentication. |
@@ -73,7 +74,7 @@ Metrics are separated by **model × channel × key group × reasoning effort**. 
 ## Features
 
 <div align="center">
-<img src="docs/assets/interaction-overview.jpg" width="100%" alt="Modivue interaction concept: compact state, ring hover, expanded panel, multiple models, themes, and terminal status line">
+<img src="docs/assets/interaction-overview.jpg" width="100%" alt="Modivue interaction concept: minimal, normal, and focus states, multiple models, themes, and terminal status line">
 <br>
 <sub>Interaction concept illustration. Older labels in this illustration do not define the current metrics; see the feature guides and screenshots below. Shared screenshots currently show the Chinese interface.</sub>
 </div>
@@ -84,13 +85,13 @@ Metrics are separated by **model × channel × key group × reasoning effort**. 
 
 <table>
 <tr>
-<td width="33%" valign="top"><a href="docs/en/features/overview.md"><img src="docs/assets/features/overview.png" alt="Overview and metric trends" width="100%"></a><br><b><a href="docs/en/features/overview.md">Overview and metric trends</a></b><br>Filter by model, channel, key group, and reasoning effort. View verification, cache, TTFT, and balance trends.</td>
+<td width="33%" valign="top"><a href="docs/en/features/overview.md"><img src="docs/assets/features/overview.png" alt="Overview and metric trends" width="100%"></a><br><b><a href="docs/en/features/overview.md">Overview and metric trends</a></b><br>Filter by model, channel, key group, and reasoning effort. View verification, cache, TTFT, balance, or quota trends.</td>
 <td width="33%" valign="top"><a href="docs/en/features/island.md"><img src="docs/assets/features/island.png" alt="Dynamic Island panel" width="100%"></a><br><b><a href="docs/en/features/island.md">Dynamic Island panel</a></b><br>A screen-edge panel with minimal, normal, and focus states. Hover a model ring to inspect metrics and recent trends.</td>
 <td width="33%" valign="top"><a href="docs/en/features/agents.md"><img src="docs/assets/features/agents.png" alt="Agent status" width="100%"></a><br><b><a href="docs/en/features/agents.md">Agent status</a></b><br>Discover local Claude Code, Codex, and other sessions, distinguishing an existing configuration from a running agent.</td>
 </tr>
 <tr>
 <td valign="top"><a href="docs/en/features/verification.md"><img src="docs/assets/features/verification.png" alt="Model verification" width="100%"></a><br><b><a href="docs/en/features/verification.md">Model verification</a></b><br>Run any of 11 methods on demand. Keep each method's raw responses and decision evidence.</td>
-<td valign="top"><a href="docs/en/features/cost.md"><img src="docs/assets/features/cost.png" alt="Cost and balance" width="100%"></a><br><b><a href="docs/en/features/cost.md">Cost and balance</a></b><br>Track each provider's balance history and each verification request's cost. Unknown costs are never counted as zero.</td>
+<td valign="top"><a href="docs/en/features/cost.md"><img src="docs/assets/features/cost.png" alt="Cost, balance, and quota" width="100%"></a><br><b><a href="docs/en/features/cost.md">Cost, balance, and quota</a></b><br>View gateway balances, Codex subscription quotas, and verification costs. Missing values are never counted as zero.</td>
 <td valign="top"><a href="docs/en/features/calibration.md"><img src="docs/assets/features/calibration.png" alt="Trusted references and calibration" width="100%"></a><br><b><a href="docs/en/features/calibration.md">Trusted references and calibration</a></b><br>Collect reference distributions on a trusted channel and export archives for comparison with other channels.</td>
 </tr>
 <tr>
@@ -107,13 +108,13 @@ Metrics are separated by **model × channel × key group × reasoning effort**. 
 | Platform | Package | Installation |
 |---|---|---|
 | macOS Apple Silicon | `Modivue-macos-arm64.zip` | Unzip and move `Modivue.app` to Applications. No Intel package is currently provided. |
-| Windows 10/11 x64, preview | `Modivue-windows-x64-setup.exe` | Run the installer. The release also includes a portable ZIP. Microsoft Edge WebView2 Runtime is required. |
-| CLI | Source files in `cli/` | Node.js 22.5 or later. Reads the desktop app's shared local database. |
+| Windows 10/11 x64, preview | `Modivue-windows-x64-setup.exe` | Run the installer. A portable ZIP is also provided. Setup installs WebView2 from Microsoft when missing; the portable app asks first. |
+| CLI | Source files in `cli/` | Node.js 24 or later. Reads the desktop app's shared local database. |
 
 ### Before opening for the first time
 
 > [!WARNING]
-> These are preview builds. The macOS package is ad-hoc signed, not Apple-notarized. The Windows package is unsigned; native multi-DPI acceptance testing is still incomplete.
+> These are preview builds. The macOS package is ad-hoc signed, not Apple-notarized. The Windows package is unsigned; native multi-DPI acceptance testing is still incomplete. See [Windows signing](docs/windows-signing.md) and [macOS signing and notarization](docs/en/macos-signing.md) for current status and setup.
 
 **macOS:** If Gatekeeper blocks the first launch, verify that you trust the download, then use **System Settings → Privacy & Security → Open Anyway**. For a trusted local copy only, you can alternatively clear its quarantine attributes:
 
@@ -123,9 +124,7 @@ xattr -dr com.apple.quarantine /Applications/Modivue.app
 
 Do not clear quarantine for an untrusted download.
 
-**Windows:** Current release packages are unsigned and may trigger SmartScreen. After verifying the source and file, use the system-provided **More info → Run anyway** option if required; do not disable system protection.
-
-The release workflow produces a macOS ZIP and Windows ZIP/installer. Trusted Windows signing and macOS notarization credentials are not configured yet; the existence of an installer does not mean it is signed. See [Build, test, and release](docs/en/development.md) and the [macOS signing guide](docs/en/macos-signing.md).
+**Windows:** If SmartScreen blocks a preview package, verify the source and file before using the system-provided **More info → Run anyway** option. Do not disable system protection.
 
 ---
 
@@ -153,14 +152,14 @@ The desktop panel uses the following states.
 
 | State | How to enter | What it shows |
 |---|---|---|
-| Minimal | Default | A compact ring for each active model; the metric is configurable. Drag grips and Settings are hidden. |
+| Minimal | Default | A compact ring for each active model. It can show balance, quota, or another configured metric. Drag grips and Settings are hidden. |
 | Normal | Move the pointer onto the panel | Working and recently active targets, with drag grips and Settings available. |
-| Focus | Hover a model ring | Selected verification, cache, TTFT, and balance rings, plus a detail card and recent trends. |
+| Focus | Hover a model ring | Verification, cache, TTFT, and any available balance or quota, plus a detail card and recent trends. |
 | Main window | Click a model | Statistics, trends, alerts, logs, verification reports, and settings. |
 
 Drag the panel and release to snap it to the nearest left or right screen edge. Use `⌘K` / `Ctrl+K` in the main window to search for a feature. See [Dynamic Island panel](docs/en/features/island.md) for display options and platform differences.
 
-<div align="center"><img src="docs/assets/灵动岛.png" width="860" alt="Modivue Dynamic Island, Chinese interface"></div>
+<div align="center"><img src="docs/assets/island-main.png" width="860" alt="Modivue Dynamic Island, Chinese interface"></div>
 
 ---
 
@@ -168,7 +167,7 @@ Drag the panel and release to snap it to the nearest left or right screen edge. 
 
 Verification produces **behavioral evidence** by comparing responses with a reference distribution or answer. Results are not human IQ, and a similarity value is not model-identity confidence. See [MODEL-VERIFICATION.md](MODEL-VERIFICATION.md) for implementation details and limitations in Chinese, and [Model verification](docs/en/features/verification.md) for the English guide.
 
-<div align="center"><img src="docs/assets/模型核验-main.png" width="860" alt="Model verification, Chinese interface"></div>
+<div align="center"><img src="docs/assets/model-verification-main.png" width="860" alt="Model verification, Chinese interface"></div>
 
 ### Choose a method for your situation
 
@@ -211,34 +210,48 @@ Request counts describe planned samples, not a guarantee of the final bill. Retr
 
 ---
 
-## Balance-query provider adapters
+## Balance and quota
 
-**Three balance-query adapters** are available, with different capabilities. This does not mean every deployment exposes the same balance or allowance fields, or that every release has been tested:
+Modivue uses two different values to answer “how much remains”. Both appear as rings in the interface:
+
+- **Balance** is money or points remaining in a gateway account, returned by the gateway's own API.
+- **Quota** is the percentage of a subscription window still available, together with its reset time.
+
+### Balance queries
 
 <p align="center">
-<a href="#balance-query-provider-adapters"><img src="docs/assets/badges/provider-new-api.svg" alt="New API: balance-query adapter"></a>
-<a href="#balance-query-provider-adapters"><img src="docs/assets/badges/provider-sub2api.svg" alt="Sub2API: balance-query adapter"></a>
-<a href="#balance-query-provider-adapters"><img src="docs/assets/badges/provider-cpa.svg" alt="CLIProxyAPI: allowance query; management API not connected"></a>
+<a href="https://github.com/QuantumNous/new-api"><img src="docs/assets/badges/provider-new-api.svg" alt="New API"></a>
+<a href="https://github.com/Wei-Shaw/sub2api"><img src="docs/assets/badges/provider-sub2api.svg" alt="Sub2API"></a>
 </p>
 
-| Provider | Detection / selection | Query result | Cache / TTFT | Model verification |
-| --- | --- | --- | --- | --- |
-| New API | Select account balance or token quota in settings | `/api/user/self` for accounts; `/api/usage/token/` for keys. Raw quota is not presented as currency. | Shared protocol collection; requires actual usage / first-content events | Shared evaluators, subject to model, protocol, and reference support |
-| Sub API / Sub2API | Select the usage adapter in settings | `/v1/usage`, only for deployments returning supported balance fields | Same as above | Same as above |
-| [CLIProxyAPI (CPA)](https://github.com/router-for-me/CLIProxyAPI) | Detects a local deployment through the public identifier at its service root | **No wallet balance shown**; management-API allowance queries are not connected, and usage / token counters are not wallet balances | Streaming or non-streaming requests share the collection path when routed through Modivue; only explicit usage and first valid content are recorded | Depends on model and references; remote evaluators cannot access a loopback address |
+| Gateway | Settings choice | Endpoint | Note |
+| --- | --- | --- | --- |
+| New API | Account balance or key quota | `/api/user/self` for an account; `/api/usage/token/` for a key | Raw quota points remain points and are not presented as currency. |
+| Sub2API | Usage adapter | `/v1/usage` | The deployment must return a supported quota field. |
 
-Reading Agent configuration does not intercept its requests. Cache usage can come from local Codex records; real TTFT requires traffic through Modivue's proxy or an active performance sample. Active samples and verification may consume provider credits. CPA is currently detected locally only; its management API and management keys are not used.
+Modivue can also query OpenRouter, channels saved by CC Switch, and custom JSON field mappings. The first valid balance sets the full-ring baseline. A top-up above it keeps the ring full, and Settings can reset it. See [Balance ring baseline](docs/en/features/island.md#balance-ring-baseline).
 
-### Codex subscription OAuth quotas
+### Quota queries
 
-When Codex uses the official ChatGPT OAuth sign-in, Codex can write subscription quota windows into its local rollout records. Modivue passively reads those records and shows unexpired windows as quota rings with their reset times:
+<p align="center">
+<a href="https://developers.openai.com/codex/cli/usage-limits"><img src="docs/assets/badges/codex.svg" alt="Codex"></a>
+<a href="https://github.com/router-for-me/CLIProxyAPI"><img src="docs/assets/badges/provider-cpa.svg" alt="CLIProxyAPI"></a>
+</p>
 
-- **5-hour** window (`300` minutes);
-- **7-day** window (`10080` minutes);
-- remaining allowance is `100% - used_percent`, with the reset timestamp preserved from Codex;
-- reading the record sends no extra model request and does not turn the quota into a provider wallet balance.
+**Official Codex OAuth.** When Codex signs in with a ChatGPT account, it writes subscription windows into local rollout records. Modivue only reads those records and sends no extra model request:
 
-This display requires a Codex session that writes `rate_limits`. It is unavailable for a custom API key, a disk-only configuration, older Codex records, or a relay that does not forward the field; the UI shows “not provided” rather than zero. With a custom relay such as CPA, the window describes the latest Codex upstream observation, not the relay's whole account pool. See the [OpenAI Codex usage-limits documentation](https://developers.openai.com/codex/cli/usage-limits) for the upstream quota semantics. Modivue does not infer missing quota values.
+- it shows unexpired 5-hour (`300` minutes) and 7-day (`10080` minutes) windows;
+- remaining quota is `100% - used_percent`, and the reset time comes from the Codex record.
+
+A custom API key, a disk-only configuration, an old Codex record, or a relay that omits `rate_limits` produces “not provided”, not zero. When Codex uses CPA or another custom route, the window is the latest Codex upstream observation, not the quota of the whole account pool.
+
+**CLIProxyAPI (CPA).** CPA exposes subscription-account quota windows through its Management API, not as a wallet balance. Modivue currently identifies a local CPA service through the public marker at its root and can show the latest upstream quota recorded in a Codex rollout. It does not connect to the CPA Management API or read, request, or store a management key, so it cannot show the account pool's 5-hour or 7-day quota.
+
+### Notes
+
+- Deployments return different fields. Modivue only reads known fields, and not every release has passed a live deployment check.
+- Cache, TTFT, and model verification are independent of these balance adapters and work across channels. TTFT requires traffic through the Modivue local proxy, described in [Getting started](#getting-started), or one active performance sample. Active sampling and verification may consume provider credits.
+- CPA commonly runs on loopback. Remote verification services such as BazaarLink cannot reach a local CPA endpoint.
 
 ## Supported agents
 
@@ -255,7 +268,7 @@ These levels do not claim that every adapter has passed a real upstream request 
 ## Privacy and data boundaries
 
 - The local service listens only on `127.0.0.1`.
-- Request measurements and verification reports are stored in local SQLite. Balance snapshots and history, model catalog caches, and supporting configuration are stored in local files.
+- Request measurements and verification reports are stored in local SQLite. Balance and quota snapshots, model catalog caches, and supporting configuration are stored in local files.
 - Measurement records identify API keys by short irreversible fingerprints, not the key itself. Trusted-provider keys you explicitly save, and configured balance-query credentials, are stored as plaintext in local configuration files written with owner-only permissions where supported. Protect those files under your local security policy.
 - Active probes and verification send requests to configured upstreams and may cost money. Disable them, reduce their frequency, or set a daily request limit in Settings.
 - Model catalog sync, public references, and update checks contact remote sources. Official BazaarLink and Ztest detection also involve their respective services. Local storage does not mean fully offline operation.
@@ -263,6 +276,15 @@ These levels do not claim that every adapter has passed a real upstream request 
 ---
 
 ## FAQ
+
+**What if my gateway is not New API or Sub2API?**
+Try a general balance adapter in Settings. If the response shape differs, use a custom JSON mapping and specify the endpoint, balance field, total or used field, and unit.
+
+**Why does balance, quota, cache, or TTFT say “not provided”?**
+Modivue never turns missing measurements into zero. The upstream may omit the required field, the request may bypass Modivue's local proxy, or the Codex rollout may not contain `rate_limits`. The detail card keeps the most specific state that can be determined.
+
+**Why does CPA show no balance or account-pool quota?**
+CPA manages subscription-account quotas rather than the wallet balance Modivue expects. Reading the account pool's 5-hour and 7-day windows requires a CPA management key. Modivue does not currently connect to that API or request or store the key. Any CPA quota shown in the interface comes from the latest Codex upstream record.
 
 **Will Modivue send my API key anywhere?**
 Measurement records use key fingerprints. Proxy requests and active verification authenticate to your configured upstream. Balance checks authenticate to their configured endpoints. BazaarLink Probe requires consent for each target before sending that target's key to the service.
@@ -297,7 +319,6 @@ No. Windows uses process discovery and configuration parsing together with proxy
 | Read metrics in a terminal or status line | [CLI and status line](docs/en/features/cli.md) |
 | Build, test, and release | [Development guide](docs/en/development.md) |
 | Configure macOS ad-hoc signing, Developer ID, and notarization | [macOS signing guide](docs/en/macos-signing.md) |
-| Replace screenshots and recordings | [Media checklist](docs/en/media.md) |
 | Review planned work | [ROADMAP.md](ROADMAP.md) in Chinese |
 
 ---
@@ -317,7 +338,7 @@ For environment requirements and existing checks, see [Build, test, and release]
 
 ## Contributing
 
-When reporting an issue, include your OS version, agent, protocol such as Chat Completions / Responses / Messages, gateway type, relevant redacted logs, and reproduction steps. Contributions can add provider balance adapters, verification methods, or translations. Do not include keys or private conversation content in public reports.
+When reporting an issue, include your OS version, agent, protocol such as Chat Completions / Responses / Messages, gateway type, relevant redacted logs, and reproduction steps. Balance adapters live in [`src/core/balance.mjs`](src/core/balance.mjs); maintainers replacing README media should use the [media checklist](docs/en/media.md). Contributions can add balance adapters, verification methods, or translations. Do not include keys or private conversation content in public reports.
 
 [![Star History Chart](https://api.star-history.com/svg?repos=systemoutprintlnhelloworld/Modivue&type=Date)](https://star-history.com/#systemoutprintlnhelloworld/Modivue&Date)
 
@@ -328,5 +349,3 @@ When reporting an issue, include your OS version, agent, protocol such as Chat C
 ## License
 
 Original project code is licensed under the [MIT License](LICENSE). Third-party code, assets, and trademarks retain their own terms and notices; see [asset attribution](docs/assets/NOTICE.md).
-
-A free Windows code-signing application is being prepared. SignPath approval and a signing certificate have not been obtained; see the [Code signing policy and application preparation](docs/windows-signing.md#code-signing-policy). For macOS ad-hoc signing, Developer ID, and notarization, see the [macOS signing guide](docs/en/macos-signing.md).

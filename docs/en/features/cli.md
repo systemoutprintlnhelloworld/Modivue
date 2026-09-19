@@ -8,7 +8,7 @@ The CLI and status-line script read the measurements shared with the desktop app
 
 ## Commands
 
-Requires Node.js 22.5 or later. By default the CLI reads the local SQLite database, so the desktop service's dynamic port is not needed.
+Requires Node.js 24 or later. By default the CLI reads the local SQLite database, so the desktop service's dynamic port is not needed.
 
 ```bash
 node cli/modivue.mjs status

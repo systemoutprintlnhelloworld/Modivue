@@ -3,6 +3,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using Microsoft.Win32;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
 
@@ -14,7 +15,7 @@ internal static class Program
     static void Main()
     {
         ApplicationConfiguration.Initialize();
-        try { Application.Run(new MonitorContext()); }
+        try { Application.Run(new MonitorContext(Environment.GetCommandLineArgs().Contains("--background"))); }
         catch (Exception error) { MessageBox.Show(error.Message, "Modivue", MessageBoxButtons.OK, MessageBoxIcon.Error); }
     }
 }
@@ -64,17 +65,22 @@ internal sealed class IslandForm : Form
 
 internal sealed class MonitorContext : ApplicationContext
 {
+    private const string StartupRegistryPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
+    private const string AppRegistryPath = @"Software\Modivue";
     private readonly Process service;
     private readonly Form main = new() { Text = "Modivue", Width = 1240, Height = 860, MinimumSize = new(820, 620) };
     private readonly IslandForm island = new() { Text = "Modivue Island", Width = 112, Height = 420, FormBorderStyle = FormBorderStyle.None,
         ShowInTaskbar = false, TopMost = true, BackColor = Color.Black, TransparencyKey = Color.Black };
     private readonly WebView2 mainWeb = new() { Dock = DockStyle.Fill };
     private readonly WebView2 islandWeb = new() { Dock = DockStyle.Fill, DefaultBackgroundColor = Color.Transparent };
-    private readonly NotifyIcon tray = new() { Text = "Modivue", Icon = SystemIcons.Application, Visible = true };
+    private readonly NotifyIcon tray = new() { Text = "Modivue", Visible = true };
     private readonly ContextMenuStrip trayMenu = new();
     private readonly ToolStripItem menuOpen, menuIsland, menuExit;
+    private readonly ToolStripMenuItem menuStartup;
     private readonly System.Windows.Forms.Timer pointer = new() { Interval = 16 };
     private readonly Uri origin;
+    private readonly string payloadRoot;
+    private readonly Icon appIcon;
     private bool mainReady;
     private string? pendingNavigation;
     private RectangleF rail = new(6, 18, 100, 220), buffer;
@@ -89,15 +95,18 @@ internal sealed class MonitorContext : ApplicationContext
     [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")] private static extern nint GetWindowLongPtr(nint window, int index);
     [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")] private static extern nint SetWindowLongPtr(nint window, int index, nint value);
 
-    public MonitorContext()
+    public MonitorContext(bool background)
     {
+        appIcon = Icon.ExtractAssociatedIcon(Application.ExecutablePath) ?? (Icon)SystemIcons.Application.Clone();
+        main.Icon = appIcon; island.Icon = appIcon; tray.Icon = appIcon;
         // Node binds loopback only. The short reservation avoids choosing a fixed user port.
         var listener = new TcpListener(IPAddress.Loopback, 0); listener.Start();
         var port = ((IPEndPoint)listener.LocalEndpoint).Port; listener.Stop();
         origin = new($"http://127.0.0.1:{port}");
-        var root = AppContext.BaseDirectory;
-        var start = new ProcessStartInfo(Path.Combine(root, "runtime", "node.exe")) { WorkingDirectory = Path.Combine(root, "app"), UseShellExecute = false, CreateNoWindow = true, RedirectStandardInput = true };
-        start.ArgumentList.Add(Path.Combine(root, "app", "server.mjs"));
+        payloadRoot = Path.Combine(AppContext.BaseDirectory, "resources");
+        var start = new ProcessStartInfo(Path.Combine(payloadRoot, "runtime", "node.exe")) { WorkingDirectory = Path.Combine(payloadRoot, "app"),
+            UseShellExecute = false, CreateNoWindow = true, RedirectStandardInput = true, RedirectStandardError = true };
+        start.ArgumentList.Add(Path.Combine(payloadRoot, "app", "server.mjs"));
         start.ArgumentList.Add("--desktop-parent");
         start.Environment["MODIVUE_PORT"] = port.ToString();
         start.Environment["MODIVUE_DATA_DIR"] = Environment.GetEnvironmentVariable("MODIVUE_DATA_DIR")
@@ -109,11 +118,15 @@ internal sealed class MonitorContext : ApplicationContext
         island.FormClosing += (_, e) => { if (!exiting) { e.Cancel = true; island.Hide(); } };
         menuOpen = trayMenu.Items.Add("Modivue", null, (_, _) => { main.Show(); main.Activate(); });
         menuIsland = trayMenu.Items.Add("", null, (_, _) => island.Show());
+        menuStartup = new ToolStripMenuItem();
+        menuStartup.Click += (_, _) => SetStartupEnabled(!StartupEnabled());
+        trayMenu.Items.Add(menuStartup);
         menuExit = trayMenu.Items.Add("", null, (_, _) => ExitThread());
         tray.ContextMenuStrip = trayMenu; UpdateTrayMenu(System.Globalization.CultureInfo.CurrentUICulture.Name);
         tray.DoubleClick += (_, _) => { main.Show(); main.Activate(); };
         pointer.Tick += async (_, _) => await TickPointer();
-        main.Show(); island.Show();
+        if (!background) main.Show();
+        island.Show();
         var area = Screen.PrimaryScreen!.WorkingArea; island.Location = new(area.Right - island.Width, area.Top + 120);
         _ = Initialize();
     }
@@ -128,13 +141,42 @@ internal sealed class MonitorContext : ApplicationContext
                 if (ready) break;
                 await Task.Delay(250);
             }
-            if (!ready) throw new InvalidOperationException(Localized("本地服务未能启动。", "Local service failed to start."));
+            if (!ready) {
+                var details = service.HasExited ? (await service.StandardError.ReadToEndAsync()).Trim() : "";
+                if (details.Length > 1000) details = details[..1000];
+                throw new InvalidOperationException($"{Localized("本地服务未能启动。", "Local service failed to start.")}{(details.Length > 0 ? $"\n\n{details}" : "")}");
+            }
             var profile = Path.Combine(service.StartInfo.Environment["MODIVUE_DATA_DIR"]!, "WebView2");
-            var environment = await CoreWebView2Environment.CreateAsync(null, profile);
+            var environment = await CreateWebViewEnvironment(profile);
+            if (environment is null) { ExitThread(); return; }
             await Prepare(mainWeb, environment, "main"); await Prepare(islandWeb, environment, "island");
             pointer.Start();
+            PromptForStartup();
         } catch (Exception error) {
-            MessageBox.Show($"{error.Message}\n{Localized("Windows 需要 Microsoft Edge WebView2 Runtime。", "Windows requires Microsoft Edge WebView2 Runtime.")}", "Modivue"); ExitThread();
+            MessageBox.Show(error.Message, "Modivue", MessageBoxButtons.OK, MessageBoxIcon.Error); ExitThread();
+        }
+    }
+
+    private async Task<CoreWebView2Environment?> CreateWebViewEnvironment(string profile)
+    {
+        try { return await CoreWebView2Environment.CreateAsync(null, profile); }
+        catch (WebView2RuntimeNotFoundException) {
+            var bootstrapper = Path.Combine(payloadRoot, "prerequisites", "MicrosoftEdgeWebview2Setup.exe");
+            if (!File.Exists(bootstrapper)) throw new InvalidOperationException(Localized(
+                "缺少 Microsoft Edge WebView2 Runtime，安装组件也未随程序提供。请重新安装 Modivue。",
+                "Microsoft Edge WebView2 Runtime is missing, and its installer was not packaged. Reinstall Modivue."));
+            var install = MessageBox.Show(Localized(
+                "Modivue 需要 Microsoft Edge WebView2 Runtime。是否现在从 Microsoft 下载并安装？",
+                "Modivue requires Microsoft Edge WebView2 Runtime. Download and install it from Microsoft now?"),
+                "Modivue", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+            if (install != DialogResult.Yes) return null;
+            using var process = Process.Start(new ProcessStartInfo(bootstrapper) { UseShellExecute = false, CreateNoWindow = true,
+                ArgumentList = { "/silent", "/install" } }) ?? throw new InvalidOperationException(Localized(
+                    "无法启动 WebView2 安装程序。", "Could not start the WebView2 installer."));
+            await process.WaitForExitAsync();
+            if (process.ExitCode != 0) throw new InvalidOperationException(Localized(
+                $"WebView2 安装失败，退出码 {process.ExitCode}。", $"WebView2 installation failed with exit code {process.ExitCode}."));
+            return await CoreWebView2Environment.CreateAsync(null, profile);
         }
     }
 
@@ -246,11 +288,50 @@ internal sealed class MonitorContext : ApplicationContext
         return web.ExecuteScriptAsync($"window.modivueNativeReply?.({JsonSerializer.Serialize(payload)})");
     }
 
+    private static string StartupCommand => $"\"{Application.ExecutablePath}\" --background";
+
+    private static bool StartupEnabled()
+    {
+        try {
+            using var key = Registry.CurrentUser.OpenSubKey(StartupRegistryPath);
+            return string.Equals(key?.GetValue("Modivue") as string, StartupCommand, StringComparison.OrdinalIgnoreCase);
+        } catch { return false; }
+    }
+
+    private void SetStartupEnabled(bool enabled)
+    {
+        try {
+            using var key = Registry.CurrentUser.CreateSubKey(StartupRegistryPath);
+            if (enabled) key.SetValue("Modivue", StartupCommand, RegistryValueKind.String);
+            else key.DeleteValue("Modivue", false);
+            menuStartup.Checked = enabled;
+        } catch (Exception error) {
+            MessageBox.Show(error.Message, "Modivue", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private void PromptForStartup()
+    {
+        try {
+            using var key = Registry.CurrentUser.CreateSubKey(AppRegistryPath);
+            if (key is null || Convert.ToInt32(key.GetValue("StartupPrompted", 0)) == 1) return;
+            key.SetValue("StartupPrompted", 1, RegistryValueKind.DWord);
+            if (StartupEnabled()) return;
+            var enable = MessageBox.Show(main, Localized(
+                "是否在登录 Windows 时自动启动 Modivue？自动启动只显示灵动岛，不打开分析窗口。",
+                "Start Modivue automatically when you sign in to Windows? Automatic startup shows only the island."),
+                "Modivue", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+            if (enable == DialogResult.Yes) SetStartupEnabled(true);
+        } catch {}
+    }
+
     private void UpdateTrayMenu(string locale)
     {
         interfaceEnglish = !locale.StartsWith("zh", StringComparison.OrdinalIgnoreCase);
         menuOpen.Text = Localized("打开分析窗口", "Open Dashboard");
         menuIsland.Text = Localized("显示灵动岛", "Show Island");
+        menuStartup.Text = Localized("登录时自动启动", "Start at sign-in");
+        menuStartup.Checked = StartupEnabled();
         menuExit.Text = Localized("退出 Modivue", "Quit Modivue");
     }
 
@@ -297,6 +378,6 @@ internal sealed class MonitorContext : ApplicationContext
         exiting = true; pointer.Stop(); pointer.Dispose(); tray.Visible = false; tray.Dispose();
         main.Dispose(); island.Dispose();
         if (!service.HasExited) service.Kill(entireProcessTree: true);
-        service.Dispose(); base.ExitThreadCore();
+        service.Dispose(); appIcon.Dispose(); base.ExitThreadCore();
     }
 }
