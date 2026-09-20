@@ -234,9 +234,6 @@ body.light { color-scheme: light; --bg: #f2f4f7; --bg-deep: #e9edf2; --panel: rg
 .wallet-icon { width:18px; height:18px; flex:none; }
 .balance-badge:hover .wallet-flap { animation:wallet-tap .75s ease-in-out infinite alternate; transform-origin:21px 14px; }
 @keyframes wallet-tap { to { transform:translateX(1px) rotate(-8deg); } }
-.compact-balance-ring { display:none; position:absolute; inset:-6px; width:calc(100% + 12px); height:calc(100% + 12px); fill:none; stroke:var(--line-bright); stroke-width:1.7; pointer-events:none; }
-body[data-island-mode="compact"] .compact-balance-ring { display:block; }
-.compact-balance-ring .balance-arc { stroke:var(--accent,var(--blue)); stroke-linecap:round; transition:stroke-dasharray .65s ease; }
 .balance-settings { padding:18px; }
 .balance-settings details { border-top:1px solid var(--line); padding:12px 0; }
 .balance-settings summary { cursor:pointer; font-size:calc(12px * var(--font-scale,1)); }
@@ -628,7 +625,7 @@ body.desktop-island .hover-popover {
   position: absolute;
   display: block;
   visibility: hidden;
-  width: min(414px, calc(100vw - 126px));
+  width: min(414px, calc(100vw - var(--island-width, 112px) - 42px));
   min-height: 252px;
   /* Native host resizes from the measured popover envelope; keep the full
      detail card visible instead of introducing a second scroll surface. */
@@ -814,7 +811,7 @@ body[data-island-mode="focus"] #island-focus .focus-model:is(:hover, .is-hovered
 
 
 
-body.desktop-island[data-island-side="left"] #island-buffer { left: auto; right: 0; }
+body.desktop-island[data-island-side="left"] #island-buffer { left: auto; right: 3px; }
 
 
 /* The attended rail is a neutral boundary affordance; its label is exposed
@@ -832,7 +829,7 @@ body.desktop-island #island-models {
   scrollbar-width: none;
   transition: opacity var(--island-duration, 420ms) ease, max-height var(--island-duration, 420ms) cubic-bezier(.22,.8,.24,1);
 }
-body.desktop-island .island { top: max(16px, calc((100vh - var(--island-envelope-height, 320px)) / 2)); transform: none; }
+body.desktop-island .island { top: max(0px, calc((100vh - var(--island-envelope-height, 320px)) / 2)); transform: none; }
 body.desktop-island[data-island-mode="focus"] .island-stage { height: max(230px, calc(var(--focus-count, 3) * 79px)); max-height: max(230px, calc(var(--focus-count, 3) * 79px)); }
 body.desktop-island[data-island-mode="focus"] #island-models { max-height: max(230px, calc(var(--focus-count, 3) * 79px)); }
 body.reduced-motion .island-stage, body.reduced-motion #island-models { transition: none !important; }
@@ -849,7 +846,8 @@ body[data-theme-preset="glass"] .sidebar, body[data-theme-preset="glass"] .panel
 .customization-actions { padding: 12px 0; }
 body.desktop-island.island-attended .island { background: color-mix(in srgb, var(--rail-bg) calc(var(--island-opacity, .94) * 100%), transparent); }
 body.desktop-island.island-attended[data-island-mode="focus"] .island { background: color-mix(in srgb, var(--focus-bg) calc(var(--island-opacity, .94) * 100%), transparent); }
-body.desktop-island:not(.island-attended) .ring-track { stroke: rgba(222,231,250,.34); }
+body.desktop-island:not(.island-attended) .ring-track { stroke: rgba(222,231,250,.26); }
+body.light.desktop-island:not(.island-attended) .ring-track { stroke: rgba(50,70,100,.13); }
 body.desktop-island:not(.island-attended) .island-model-logo .model-logo { filter: drop-shadow(0 0 2px rgba(255,255,255,.75)) invert(1); opacity: .96; }
 
 body.desktop-island .hover-popover, body.light.desktop-island .hover-popover { background: var(--popover-bg, #101217); }
@@ -911,12 +909,13 @@ body.desktop-island .hover-popover, body.light.desktop-island .hover-popover { b
 body.desktop-island #island-bridge path { fill: color-mix(in srgb, var(--popover-bg, #101217) calc(var(--popover-opacity, .98) * 100%), transparent); }
 body.desktop-island .metric-rings b.island-model-logo { inset: 11px; border-radius: 50%; background: rgba(18, 20, 24, var(--compact-backing-opacity, .88)); box-shadow: 0 0 0 1px rgba(255,255,255,.28); }
 body.desktop-island .island-model-logo .model-logo { filter: invert(1); opacity: 1; width: 26px; height: 26px; }
-body.desktop-island:not(.island-attended) .ring-track { stroke: rgba(226, 233, 240, var(--compact-ring-opacity, .72)); filter: drop-shadow(0 0 1px #101217); }
+body.desktop-island:not(.island-attended) .ring-track { stroke: rgba(222,231,250,.26); opacity: 1; filter: drop-shadow(0 0 1px #101217); }
 body.desktop-island .ring-value { filter: drop-shadow(0 0 1px #101217); }
-body.desktop-island .island-grip, body.desktop-island #island-buffer { cursor: grab; }
+body.desktop-island .island-grip, body.desktop-island #island-buffer { cursor: grab; touch-action: none; }
+body.desktop-island.island-resizing .island-grip { cursor: ns-resize; }
+body.desktop-island.island-resizing #island-buffer { cursor: ew-resize; }
 body.desktop-island .island-grip { width: 30px; height: 12px; background: transparent; position: relative; margin-bottom: 0; }
-body.desktop-island[data-island-side="right"] .island-grip { left: -7px; }
-body.desktop-island[data-island-side="left"] .island-grip { left: 7px; }
+body.desktop-island .island-grip { left: auto; justify-self: center; }
 body.desktop-island .island-grip::after { content: ""; position: absolute; inset: 4px 0; border-radius: 99px; background: #8e96a0; }
 body.desktop-island .island-command { margin-top: 4px; border: 1px solid rgba(125,181,236,.18); border-radius: 10px; background: rgba(55,83,112,.16); color: #a8c8e8; box-shadow: 0 0 0 1px rgba(255,255,255,.03) inset; transition: background .2s ease, border-color .2s ease, transform .2s ease; }
 body.desktop-island .island-command:hover { background: rgba(71,128,180,.32); border-color: rgba(125,181,236,.5); transform: translateY(-1px); }
@@ -927,6 +926,14 @@ body.desktop-island #island-buffer:hover::after, body.desktop-island .island-gri
 body.desktop-island #island-buffer:active::after, body.desktop-island .island-grip:active::after,
 body.desktop-island #island-buffer.pressed::after, body.desktop-island .island-grip.pressed::after { background: #fff; box-shadow: 0 0 0 2px rgba(220,226,232,.24); }
 body.island-dragging #quick-island { cursor: grabbing; }
+body.desktop-island.island-resize-mode #quick-island { outline: 1px solid rgba(139, 199, 255, .62); outline-offset: 5px; }
+body.desktop-island.island-resize-mode .island-grip,
+body.desktop-island.island-resize-mode #island-buffer { opacity: 1 !important; }
+body.desktop-island.island-resize-mode .island-grip::after,
+body.desktop-island.island-resize-mode #island-buffer::after { background: #c4e3ff; box-shadow: 0 0 8px #8bc7ff90; }
+body.desktop-island.island-resizing #quick-island { cursor: nwse-resize; }
+body.desktop-island.island-resizing .island-grip::after,
+body.desktop-island.island-resizing #island-buffer::after { background: #fff; box-shadow: 0 0 0 3px #b6ddff50; }
 body.hide-detail-quality .quality-card, body.hide-detail-cache .cache-card, body.hide-detail-ttft .ttft-card { display: none; }
 body.hide-popover-quality [data-popover-metric="quality"], body.hide-popover-cache [data-popover-metric="cache"], body.hide-popover-ttft [data-popover-metric="ttft"],
 body.hide-info-endpoint [data-info="endpoint"], body.hide-info-keygroup [data-info="keygroup"], body.hide-info-reasoning [data-info="reasoning"], body.hide-info-agents [data-info="agents"] { display: none; }
@@ -983,6 +990,8 @@ body.desktop-island #island-settings, body.desktop-island #island-buffer, body.d
 body.desktop-island[data-island-mode="compact"] #island-settings,
 body.desktop-island[data-island-mode="compact"] #island-buffer,
 body.desktop-island[data-island-mode="compact"] .island-grip { opacity: 0; }
+body.desktop-island.island-resize-mode[data-island-mode="compact"] #island-buffer,
+body.desktop-island.island-resize-mode[data-island-mode="compact"] .island-grip { opacity: 1; }
 #island-settings svg { width: 18px; height: 18px; }
 body.desktop-island .island-model .ring-value, body.desktop-island .island-model .ring-track { transition: stroke .4s ease, stroke-dasharray .6s ease, filter .35s ease; }
 body.desktop-island .ring-metric.is-hovered .ring-value, body.desktop-island .ring-metric.is-hovered .ring-track { filter: drop-shadow(0 0 3px var(--ring-color)); }
@@ -1222,3 +1231,126 @@ body.layout-dragging, body.layout-dragging * { cursor: grabbing !important; -web
 body.desktop-island #quick-island { width: var(--island-width, 100px); padding-inline: 8px; }
 body.desktop-island .island-stage, body.desktop-island #island-models, body.desktop-island #island-focus { justify-items: center; }
 body.desktop-island .island-command { justify-self: center; }
+
+.island-size-editor { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin: 12px 0 16px; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: color-mix(in srgb, var(--panel) 78%, transparent); }
+.island-size-editor > div { display: grid; gap: 5px; min-width: 0; }
+.island-size-editor small { color: var(--muted); line-height: 1.5; }
+.island-size-editor > .text-button { flex: 0 0 auto; }
+@media (max-width: 760px) { .island-size-editor { align-items: stretch; flex-direction: column; } }
+
+/* Operation rods float over the rail instead of taking a grid row. This keeps
+   the model rings and command control optically centered at every height. */
+body.desktop-island .island-grip {
+  position: absolute;
+  top: 6px;
+  left: 50%;
+  z-index: 7;
+  margin: 0;
+  transform: translateX(-50%);
+}
+body.desktop-island .island-stage,
+body.desktop-island #island-models,
+body.desktop-island #island-focus,
+body.desktop-island #island-settings { justify-self: center; }
+body.desktop-island[data-resize-axis="vertical"].island-resizing #quick-island { cursor: ns-resize; }
+body.desktop-island[data-resize-axis="horizontal"].island-resizing #quick-island { cursor: ew-resize; }
+
+/* Keep the operation rods overlaid on the rail. They must not participate in
+   the content grid, otherwise the ring stack shifts away from the optical
+   center as the host window changes height. */
+body.desktop-island .island-model,
+body.desktop-island #island-settings { margin-inline: auto; }
+body.desktop-island .island-stage { width: 100%; }
+/* Metric identity remains visible even when a ring has no sampled value.
+   Silent and normal states use the same faint, metric-coloured track. */
+body.desktop-island .island-model .ring-track,
+body.desktop-island #island-focus .ring-track {
+  stroke: color-mix(in srgb, var(--ring-color) 32%, rgba(222, 231, 250, .16));
+}
+body.light.desktop-island .island-model .ring-track,
+body.light.desktop-island #island-focus .ring-track {
+  stroke: color-mix(in srgb, var(--ring-color) 32%, rgba(50, 70, 100, .11));
+}
+
+/* Native resize setup dims the dashboard while the real island is centred by
+   the host. This is not the old approximate settings-page preview. */
+body.desktop-main.island-resize-overlay::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  background: rgba(4, 7, 12, .68);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+  pointer-events: auto;
+}
+/* One natural layout, scaled as a whole. Hidden Silent controls do not move
+   model slots; Focus grows by the number of enabled metrics. */
+body.desktop-island #quick-island {
+  transform: scale(var(--island-scale, 1));
+  transform-origin: top right;
+  top: 0;
+  width: 112px;
+  height: calc(var(--island-rows, 1) * 79px + 70px);
+  min-height: 0;
+  max-height: none;
+  box-sizing: border-box;
+  padding: 12px 8px;
+  gap: 8px;
+  align-content: start;
+  grid-template-rows: calc(var(--island-rows, 1) * 79px + 2px) 38px;
+  transition: height var(--island-duration, 420ms) ease, background-color var(--island-duration, 420ms) ease;
+}
+body.desktop-island[data-island-mode="compact"] #quick-island {
+  height: calc(var(--island-rows, 1) * 79px + 28px);
+  grid-template-rows: calc(var(--island-rows, 1) * 79px + 2px) 0;
+  gap: 0;
+}
+body.desktop-island #quick-island .island-stage {
+  width: 100%;
+  height: calc(var(--island-rows, 1) * 79px + 2px);
+  min-height: 0;
+  max-height: none;
+}
+body.desktop-island #quick-island #island-models {
+  max-height: 100%;
+  align-content: start;
+}
+body.desktop-island[data-island-mode="compact"] #island-models .island-model:not(.compact-visible) { display: none; }
+body.desktop-island #quick-island #island-focus { align-content: start; padding-top: 1px; }
+body.desktop-island #quick-island #island-settings { margin: 0 auto; }
+body.desktop-island[data-island-mode="compact"] #quick-island #island-settings {
+  height: 0; min-height: 0; padding: 0; margin: 0; border: 0; overflow: hidden; pointer-events: none;
+}
+body.desktop-island .island-stage > .island-empty { top: 2px; left: 50%; right: auto; transform: translateX(-50%); }
+body.desktop-island #quick-island .island-grip { width: 30px; top: 4px; }
+body.desktop-island #quick-island #island-buffer { height: calc(100% - 30px); top: 50%; }
+body.desktop-island.island-resize-mode #quick-island { outline-offset: -1px; transition: none; }
+body.desktop-island.island-resize-mode #quick-island .island-stage,
+body.desktop-island.island-resize-mode #quick-island #island-buffer { transition: none; }
+body.desktop-island.island-resize-mode .island-grip { cursor: ns-resize; }
+body.desktop-island.island-resize-mode #island-buffer { cursor: ew-resize; }
+
+body.desktop-island[data-island-side="left"] #quick-island { transform-origin: top left; }
+
+/* Keep native drag hit rectangles intact; only shorten and fade the visible bars. */
+body.desktop-island #quick-island .island-grip,
+body.desktop-island #quick-island #island-buffer { opacity: 0; transition: opacity .18s ease; }
+body.desktop-island.island-rail-hover #quick-island .island-grip,
+body.desktop-island.island-rail-hover #quick-island #island-buffer,
+body.desktop-island #quick-island:hover .island-grip,
+body.desktop-island #quick-island:hover #island-buffer,
+body.desktop-island #quick-island .island-grip:focus-visible,
+body.desktop-island #quick-island #island-buffer:focus-visible,
+body.desktop-island #quick-island .pressed,
+body.desktop-island.island-dragging #quick-island .island-grip,
+body.desktop-island.island-dragging #quick-island #island-buffer,
+body.desktop-island.island-resizing #quick-island .island-grip,
+body.desktop-island.island-resizing #quick-island #island-buffer,
+body.desktop-island.island-resize-mode #quick-island .island-grip,
+body.desktop-island.island-resize-mode #quick-island #island-buffer { opacity: 1; }
+body.desktop-island #quick-island .island-grip::after { left: 4px; right: 4px; }
+body.desktop-island #quick-island #island-buffer::after { top: 50%; bottom: auto; height: min(65%, 96px); translate: 0 -50%; }
+.island-model-logo.island-agent-logos[data-multiple="true"] { grid-template-columns: repeat(2, 1fr); gap: 1px; padding: 4px; }
+.island-model-logo.island-agent-logos[data-multiple="true"] .model-logo { width: 13px; height: 13px; }
+.island-agent-overflow { font-size: 10px; line-height: 13px; color: #fff; }

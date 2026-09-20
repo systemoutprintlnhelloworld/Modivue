@@ -7,7 +7,7 @@ import { setTimeout as delay } from "node:timers/promises";
 
 const exec = promisify(execFile);
 const root = fileURLToPath(new URL("../", import.meta.url));
-const tasks = new Set(["inspect", "ui", "hover", "drag", "menu", "runtime", "web", "cli"]);
+const tasks = new Set(["inspect", "ui", "hover", "drag", "menu", "runtime", "web", "cli", "island-web", "island-native"]);
 const [task = "ui", mode, jobDirectory] = process.argv.slice(2);
 if (!tasks.has(task)) throw new Error("Unknown host test task");
 const run = async (file, args, options = {}) => (await exec(file, args, { cwd: root, maxBuffer: 4 * 1024 * 1024, ...options })).stdout;
@@ -17,7 +17,7 @@ const quote = (value) => `'${value.replaceAll("'", "'\\''")}'`;
 if (mode !== "--worker") {
   if (process.env.HERDR_ENV !== "1") throw new Error("Run this entrypoint inside Herdr");
   const panes = (await herdr("pane", "list")).result.panes;
-  const label = ["runtime", "web", "cli"].includes(task) ? "runtime" : "ui-runner";
+  const label = ["runtime", "web", "cli", "island-web"].includes(task) ? "runtime" : "ui-runner";
   await mkdir(join(root, ".ui-artifacts"), { recursive: true });
   const lockPath = join(root, ".ui-artifacts", `${label}.lock`);
   const lock = await open(lockPath, "wx").catch(error => {
@@ -63,7 +63,10 @@ if (mode !== "--worker") {
   const driver = async (...args) => JSON.parse(await run(join(root, "dist/ui-driver"), args.map(String), { timeout: 45000 }));
   const check = (name, ok, evidence) => { checks.push({ name, status: ok ? "PASS" : "FAIL", evidence }); if (!ok) throw new Error(name); };
   try {
-    if (task === "cli") {
+    if (task === "island-web") {
+      const { runIslandTest } = await import("../tools/ui-driver/island.mjs");
+      checks.push(...await runIslandTest(jobDirectory));
+    } else if (task === "cli") {
       const { runCliTest } = await import("../tools/ui-driver/cli.mjs");
       checks.push(...await runCliTest(jobDirectory));
     } else if (["runtime", "web"].includes(task)) {
@@ -79,7 +82,13 @@ if (mode !== "--worker") {
       if (permissions.screenLocked) throw new Error("UNTESTED: macOS is locked; unlock the desktop before native pointer tests");
       if (!permissions.accessibility || !permissions.screenCapture || !permissions.postEvents) throw new Error("UNTESTED: host requires Accessibility, event posting and Screen Recording permissions");
       await driver("move", 100, 100);
-      const launched = await driver("launch", join(root, "dist/Modivue.app"), jobDirectory); pid = launched.pid; ownsApp = true;
+      const isolatedDb = task === "island-native" ? join(jobDirectory, "native.sqlite") : null;
+      if (isolatedDb) {
+        process.env.MODIVUE_DB = isolatedDb;
+        const { updateSettings } = await import("../src/core/storage.mjs");
+        updateSettings({ probeEnabled: false, islandTourSeen: true, mainTourSeen: true, locale: "zh-CN", focusShowBalance: true });
+      }
+      const launched = await driver("launch", join(root, "dist/Modivue.app"), jobDirectory, ...(isolatedDb ? [isolatedDb] : [])); pid = launched.pid; ownsApp = true;
       await save("launch.json", launched);
       const windows = () => driver("windows", pid);
       let initial = [];
@@ -111,6 +120,10 @@ if (mode !== "--worker") {
           await save(endpoint.replaceAll("/", "-")+".json", await response.json());
         }
         await save("runtime.json", { pid, childPid: Number(child[0]), base });
+      }
+      if (task === "island-native") {
+        const { runNativeIslandChecks } = await import("../tools/ui-driver/island-native.mjs");
+        await runNativeIslandChecks({ driver, pid, directory: jobDirectory, check });
       }
       const center = row => [row.position.x + row.size.width/2, row.position.y + row.size.height/2];
       if (task === "drag") {

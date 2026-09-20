@@ -18,9 +18,8 @@ export const preferenceFields = [
   { key: "islandShape", label: "灵动岛轮廓", group: "appearance", options: { pill: "椭圆胶囊", rounded: "圆角矩形", square: "小圆角" }, value: "pill" },
   { key: "islandMaxAgents", label: "普通形态最多显示目标", hint: "按模型、渠道、Key、推理档位去重；超过上限时悬停上下边界滚动", group: "interaction", min: 1, max: 12, unit: "个", value: 5 },
   { key: "islandScrollSpeed", label: "边界滚动速度", group: "interaction", min: 30, max: 360, unit: "px/s", value: 110 },
-  { key: "islandWidth", label: "灵动岛宽度", hint: "调整灵动岛内容轨道宽度；拖拽缓冲区不占用内容中心", group: "interaction", min: 80, max: 320, unit: "px", value: 112 },
+  { key: "islandScale", label: "灵动岛整体比例", hint: "环、间距、操作杆一起缩放，高度随内容自动适应", group: "interaction", min: 10, max: 200, unit: "%", value: 100 },
   { key: "islandExpandedWidth", label: "灵动岛展开宽度", hint: "调整展开详情的原生窗口宽度", group: "interaction", min: 320, max: 900, unit: "px", value: 570 },
-  { key: "islandHeight", label: "灵动岛高度", hint: "调整原生窗口的最小高度；内容不足时仍按实际内容收缩", group: "interaction", min: 160, max: 1200, unit: "px", value: 420 },
   { key: "animationDurationMs", label: "形态过渡时长", group: "interaction", min: 150, max: 900, unit: "ms", value: 420 },
   { key: "focusDwellMs", label: "普通到专注停留", hint: "首次进入至少保留 550ms 普通形态", group: "interaction", min: 150, max: 2000, unit: "ms", value: 350 },
   { key: "collapseDelayMs", label: "离开收起延迟", group: "interaction", min: 100, max: 1500, unit: "ms", value: 360 },
@@ -61,10 +60,12 @@ export const preferenceFields = [
     ["panelOpacity", "详细窗口面板不透明度", 94, 0], ["compactBackingOpacity", "极简图标底色不透明度", 88, 0],
     ["compactRingOpacity", "极简空环不透明度", 72, 0]
   ].map(([key, label, value, min]) => ({ key, label, group: "appearance", min, max: 100, unit: "%", value })),
+  { key: "islandCenterIcon", label: "灵动岛环中心图标", hint: "极简与普通形态使用模型或对应 Agent 图标；多个 Agent 并列显示，超过四种显示数量。专注形态保持指标图标。", group: "display", options: { model: "四元组对应的模型", agents: "四元组对应的 Agent" }, value: "model" },
   { key: "compactMetric", label: "极简形态环指标", group: "display",
     options: { quality: "模型核验", cache: "Cache", ttft: "TTFT", balance: "余额", none: "仅模型图标" }, value: "quality" },
   ...["quality", "cache", "ttft", "balance"].map(metric => ({ key: `normalShow${metric[0].toUpperCase()}${metric.slice(1)}`, label: `普通形态显示${{ quality: "模型核验", cache: "Cache", ttft: "TTFT", balance: "余额" }[metric]}环`, group: "display", type: "boolean", value: metric === "quality" })),
   ...["quality", "cache", "ttft", "balance"].map(metric => ({ key: `overviewShow${metric[0].toUpperCase()}${metric.slice(1)}`, label: `标准界面显示${{ quality: "模型核验", cache: "Cache", ttft: "TTFT", balance: "余额" }[metric]}环`, group: "display", type: "boolean", value: metric !== "balance" })),
+  { key: "islandColorMode", label: "灵动岛环配色", hint: "阈值配色使用下方各指标的低、中、高值颜色；缺失数值不视为零", group: "thresholds", options: { metric: "固定指标色", threshold: "按指标阈值变色" }, value: "metric" },
   { key: "ringStyle", label: "三环显示样式", hint: "深浅同色：深色表示范围最大值，浅色表示当前值；经典样式保留原有轨道", group: "display", options: { classic: "经典渐变环", depth: "深浅同色范围环" }, value: "classic" },
   { key: "bridgeStyle", label: "连接线动态风格", hint: "悬浮详情与灵动岛之间的连接线", group: "display", options: { ribbon: "柔和丝带", flow: "水流", pulse: "呼吸脉冲" }, value: "flow" },
   ...["focus", "detail", "popover"].flatMap(surface => ["quality", "cache", "ttft", ...(surface === "focus" ? ["balance"] : [])].map(metric => ({

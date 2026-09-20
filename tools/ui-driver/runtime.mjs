@@ -141,6 +141,7 @@ export async function runRuntimeTest(directory, { browser: withBrowser = false }
         await page.route("**/api/model-catalog*", route=>route.fulfill({status:503,json:{models:[]}}));
         await page.goto(base+"/?desktop=main");
         await page.waitForFunction(()=>document.querySelector("#model-strip")?.textContent.includes("integration-fixture"));
+        await page.evaluate(() => window.modivue.startTour());
         await page.locator(".spotlight-tour .tour-next").waitFor();
         await page.screenshot({ path: join(directory, "web-first-run-tour.png") });
         let tourSteps = 0;
@@ -148,10 +149,11 @@ export async function runRuntimeTest(directory, { browser: withBrowser = false }
         while (await page.locator(".spotlight-tour").count()) {
           const copy = await page.locator(".spotlight-card p").innerText();
           if (tourSteps === 0) assert.ok(copy.includes("主窗口"));
-          if (copy.includes("拓展窗口")) extensionStepSeen = true;
+          if (copy.includes("拓展窗口") || copy.includes("灵动岛")) extensionStepSeen = true;
           await page.locator(".tour-next").click();
+          await page.waitForTimeout(20);
           tourSteps++;
-          if (tourSteps > 8) throw new Error("main tutorial did not finish");
+          if (tourSteps > 20) throw new Error("main tutorial did not finish");
         }
         assert.ok(tourSteps >= 5, "Main tutorial must cover main and extension interactions");
         assert.equal(extensionStepSeen, true, "Main tutorial must introduce the extension window");
@@ -630,6 +632,7 @@ export async function runRuntimeTest(directory, { browser: withBrowser = false }
         await island.route("**/api/model-catalog*", route=>route.fulfill({status:503,json:{models:[]}}));
         await island.goto(base+"/?desktop=island");
         await island.locator("[data-island-model]").first().waitFor({state:"visible"});
+        if (await island.locator(".spotlight-tour").count()) await island.locator(".tour-skip").click();
         // Initial settings and live-agent discovery can start layout transitions.
         // Compare settled slots before/after hover, while keeping hover animations enabled.
         await island.waitForFunction(() => !document.querySelector('#quick-island').getAnimations({ subtree: true })

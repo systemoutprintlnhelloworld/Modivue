@@ -1,6 +1,6 @@
 import { mountLayouts, layoutDragging, cancelLayout } from "./src/core/dashboard-layout.js";
 import { summarizeBazaarlink } from "./src/core/bazaarlink-summary.js";
-import { bridgePaths } from "./src/core/island-bridge.js";
+import { bridgePaths, bridgePopoverLeft } from "./src/core/island-bridge.js";
 import { aggregate, ttftGauge } from "./src/core/metrics.js";
 import { requestCostLabel } from "./src/core/request-cost.js";
 import { fetchModelCatalog, matchModelName } from "./src/core/model-match.js";
@@ -51,6 +51,15 @@ async function exportText(filename, text, mime) {
 }
 
 const colors = { balance: "#ff9e64", mint: "#20d6b5", blue: "#4ba3ff", violet: "#b884ff", yellow: "#f3c969", red: "#ff7185" };
+
+// Island rings keep a stable identity color across compact/silent, normal, and
+// focus states. Health colors remain available in the detailed dashboard; the
+// narrow rail must not change the metric color when its value changes.
+function islandMetricColor(kind, health) {
+  if (state.settings.islandColorMode === "threshold") return health?.color || "var(--subtle)";
+  if (kind.startsWith("quota")) return colors.balance;
+  return { quality: colors.mint, cache: colors.blue, ttft: colors.violet, balance: colors.balance }[kind] || colors.mint;
+}
 const defaultSettings = {
   ...preferenceDefaults,
   probeEnabled: true,
@@ -298,9 +307,9 @@ function settingsSaveStatus(message, tone = "info") {
 }
 
 function scheduleSettingsSave(input) {
-  if (!input || !input.name || input.disabled || !input.closest("#settings-form, #customization-form")) return;
+  if (!input || !input.name || input.disabled || (!input.persistDirect && !input.closest("#settings-form, #customization-form"))) return;
   settingsDraft.set(input.name, { value: input.type === "checkbox" ? input.checked
-    : input.type === "number" || ["probeIntervalMinutes", "defaultHours"].includes(input.name) ? (input.value === "" ? null : Number(input.value)) : input.value,
+    : ["number", "range"].includes(input.type) || ["probeIntervalMinutes", "defaultHours"].includes(input.name) ? (input.value === "" ? null : Number(input.value)) : input.value,
     valid: input.checkValidity() && (input.type !== "number" || input.value !== "") });
   clearTimeout(settingsSaveTimer);
   settingsSaveStatus("有未保存的更改");
@@ -562,8 +571,9 @@ function qualityValue(model) {
 }
 
 function verificationActivity(model) {
-  const job = state.probe?.verification?.find(job => job.targetId === model?.id && job.evaluatorId === state.settings.evaluatorId);
-  const target = state.probe?.targets?.find(target => sameModelRoute(target, model));
+  if (!model) return { busy: false, label: "未核验", detail: "当前没有可用模型", target: null };
+  const job = state.probe?.verification?.find(job => job.targetId === model.id && job.evaluatorId === state.settings.evaluatorId);
+  const target = state.probe?.targets?.find(target => target && sameModelRoute(target, model));
   if (["paused", "stopped"].includes(job?.phase)) return { busy: false, label: job.phase === "paused" ? "核验已暂停" : "核验已终止", detail: "已保留采样记录", job, target };
   if (job && job.phase !== "queued") {
     const label = job.phase === "retrying" ? "重试等待中" : "正在核验";
@@ -601,7 +611,10 @@ function verificationPercent(model) {
 }
 
 function metricHealth(metric, value) {
-  if (!Number.isFinite(value)) return { label: "未测量", color: "var(--subtle)" };
+  if (!Number.isFinite(value)) {
+    const fallback = { quality: "var(--mint)", cache: "var(--blue)", ttft: "var(--violet)" }[metric] || "var(--subtle)";
+    return { label: "未测量", color: state.settings[`${metric}HighColor`] || fallback };
+  }
   const score = metric === "ttft" ? ttftScore(value) : value;
   const bands = [[0, "偏低", state.settings[`${metric}LowColor`]],
     [state.settings[`${metric}WarningScore`], "一般", state.settings[`${metric}MiddleColor`]],
@@ -630,7 +643,10 @@ function verificationScore(model) {
 function verificationHealth(model) {
   const verification = model?.verification;
   const score = verificationScore(model);
-  if (score === null) return { label: verification?.label || "待核验", color: "var(--subtle)" };
+  // An unmeasured quality ring still represents the quality metric. Keep its
+  // normal quality color so compact/normal single-ring states do not look like
+  // a disabled or unrelated metric; the missing value remains explicitly `--`.
+  if (score === null) return { label: verification?.label || "待核验", color: state.settings.qualityHighColor || "var(--mint)" };
   const threshold = verification?.measurement?.metadata?.candidateDistribution?.find((row) => row.model === verification.measurement.metadata.claimedModel)?.threshold;
   // Meow calibrates a model-specific strong-direction threshold, not an IQ scale.
   const adjusted = verification.numeric.method === "meow-fingerprint" && Number.isFinite(threshold) && threshold > 0
@@ -954,14 +970,29 @@ function sessionLabel(model) {
   return model.configured ? "已配置" : "已观测";
 }
 
+function agentIconSlug(session) {
+  return { codex: "codex", "claude-code": "claude-code", "gemini-cli": "gemini", "qwen-code": "qwen", opencode: "opencode",
+    pi: "pi", goose: "goose", cline: "cline", "grok-build": "grok", openclaw: "openclaw", "cursor-agent": "cursor",
+    windsurf: "windsurf", "github-copilot": "copilot", trae: "trae" }[session.host || session.id] || "terminal";
+}
+
+function islandCenterLogo(model) {
+  if (state.settings.islandCenterIcon !== "agents") {
+    return `<b class="island-model-logo" title="${escapeHtml(model.standardLabel || model.label)}">${modelLogo(model)}</b>`;
+  }
+  const agents = [...new Map(sessionsForModel(model).map(session => [session.host || session.id, session])).values()];
+  const label = agents.length ? agents.map(agent => agent.label || agent.host || agent.id).join(" / ") : "暂无活动 Agent";
+  const visible = agents.length > 4 ? agents.slice(0, 3) : agents;
+  const icons = visible.map(agent => `<img class="model-logo" src="/src/data/agent-icons/${agentIconSlug(agent)}.svg" alt="" decoding="async">`).join("");
+  return `<b class="island-model-logo island-agent-logos" data-multiple="${agents.length > 1}" role="img" aria-label="${escapeHtml(label)}" title="${escapeHtml(label)}">${icons || '<img class="model-logo" src="/src/data/agent-icons/terminal.svg" alt="">'}${agents.length > 4 ? `<span class="island-agent-overflow">+${agents.length - 3}</span>` : ""}</b>`;
+}
+
 function agentTag(session) {
   const rawStatus = normalizeAgentStatus(session);
   const status = rawStatus === "active" ? "working" : rawStatus;
   const labels = { working: "工作中", running: "运行中", planning: "规划中", tool: "调用工具", waiting: "等待中", idle: "待命", blocked: "待处理", done: "已完成", error: "出错" };
   const known = Object.hasOwn(labels, status) ? status : "unknown";
-  const slug = { codex: "codex", "claude-code": "claude-code", "gemini-cli": "gemini", "qwen-code": "qwen", opencode: "opencode",
-    pi: "pi", goose: "goose", cline: "cline", "grok-build": "grok", openclaw: "openclaw", "cursor-agent": "cursor",
-    windsurf: "windsurf", "github-copilot": "copilot", trae: "trae" }[session.host || session.id] || "terminal";
+  const slug = agentIconSlug(session);
   const label = `${session.label || session.host} · ${labels[known] || "状态待同步"}`;
   const hostLabel = session.host === "claude-code" ? "Claude Code" : session.host === "codex" ? "Codex" : (session.label || session.host || "Agent").split(/\s+/)[0];
   return `<b class="agent-tag" role="img" data-agent-host="${escapeHtml(slug)}" data-status="${known}" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}"><img class="agent-icon" src="/src/data/agent-icons/${slug}.svg" alt=""><small>${escapeHtml(hostLabel)}</small><span class="agent-status-text">${escapeHtml(labels[known] || "状态待同步")}</span></b>`;
@@ -974,7 +1005,8 @@ function agentStatusLabel(session) {
 }
 
 function sessionsForModel(model) {
-  if (model?.sessions?.length) return model.sessions;
+  if (!model) return [];
+  if (model.sessions?.length) return model.sessions;
   return state.agents.filter((agent) => agent?.sessionId && sameModelRoute(agent, model));
 }
 
@@ -1004,6 +1036,7 @@ function syncIslandActivity() {
 }
 
 function renderModelSelectors() {
+  if (document.body.classList.contains("island-resizing")) return;
   const selected = selectedModel();
   const strip = $("#model-strip");
   const visible = filteredModels();
@@ -1022,44 +1055,43 @@ function renderModelSelectors() {
   // Retain each session's node and slot across hover transitions. Compact
   // visibility does not remove idle sessions from the attended rail.
   const maxAgents = Math.max(1, Number(state.settings.islandMaxAgents) || 5);
-  const visibleIslandModels = liveModels;
-  const normalHeight = Math.min(Math.max(1, Math.min(liveModels.length || 1, maxAgents)) * 79, Math.max(180, (screen.availHeight || 900) - 180));
+  // Active targets keep their leading slots in both Silent and Normal.
+  const visibleIslandModels = [...working, ...liveModels.filter(model => !working.includes(model))];
+  const focusedModel = liveModels.find(model => model.id === islandState.modelId);
+  const focusCount = Math.max(1, focusedMetrics(focusedModel).length);
+  const normalCount = Math.max(1, Math.min(liveModels.length, maxAgents));
+  const compactCount = Math.max(1, Math.min(working.length, maxAgents));
+  const island = $("#quick-island");
+  island.style.setProperty("--focus-count", String(focusCount));
+  island.style.setProperty("--island-rows", String(islandState.mode === "focus" ? focusCount
+    : islandState.mode === "compact" ? compactCount : normalCount));
+  island.dataset.layoutRows = String(Math.max(normalCount, ...liveModels.map(model => focusedMetrics(model).length), focusCount));
+  if (!document.body.classList.contains("island-resizing")) applyIslandScale();
   const stage = $(".island-stage");
-  stage.style.setProperty("--island-visible-height", `${normalHeight}px`);
-  stage.style.setProperty("--island-list-height", `${normalHeight}px`);
-  $("#quick-island").style.setProperty("--island-visible-height", `${normalHeight}px`);
-  const focusedModel = liveModels.find((model) => model.id === islandState.modelId);
-  const focusCount = focusedModel ? focusedMetrics(focusedModel).length
-    : ["Quality", "Cache", "Ttft", "Balance"].filter(kind => state.settings[`focusShow${kind}`]).length;
-  $("#quick-island").style.setProperty("--focus-count", String(focusCount));
-  $("#quick-island").style.setProperty("--island-envelope-height", `${Math.max(230, focusCount * 79, normalHeight) + 90}px`);
-  stage.dataset.overflow = String(liveModels.length > maxAgents);
-  stage.dataset.visibleCount = String(Math.min(liveModels.length || 1, maxAgents));
+  stage.dataset.overflow = String(liveModels.length > normalCount);
+  stage.dataset.visibleCount = String(normalCount);
   const islandMarkup = visibleIslandModels.length ? visibleIslandModels.map((model, index) => {
     const qualityDisplay = qualityValue(model);
     const cacheDisplay = formatPercent(model.cacheRate);
     const ttftDisplay = formatDuration(model.ttftMs);
     const compactVisible = working.some((item) => item.id === model.id);
     const availableMetrics = modelMetrics(model, true);
-    const balanceMetric = availableMetrics.find(item => item.kind === "balance");
     const showMetric = item => state.settings[`normalShow${item.kind[0].toUpperCase()}${item.kind.slice(1)}`];
-    let metrics = availableMetrics.filter(item => islandState.mode === "normal"
-      ? showMetric(item)
-      : item.kind === state.settings.compactMetric);
-    // A live route must keep a visible ring even when the selected compact
-    // metric is unavailable. The fallback is an explicit empty quality ring,
-    // not a fabricated value; sampled Cache/TTFT still win when present.
-    if (islandState.mode === "compact" && !metrics.length) {
-      metrics = availableMetrics.filter(item => Number.isFinite(item.progress)).slice(0, 1);
-      if (!metrics.length) metrics = availableMetrics.filter(item => item.kind === "quality").slice(0, 1);
-    }
+    const normalMetrics = availableMetrics.filter(showMetric);
+    // Compact/silent mode is a compressed view of the same normal metric, not
+    // a fallback to whichever metric happens to have data. Keeping the exact
+    // metric kind preserves its normal color and avoids a silent mode color
+    // change when (for example) Cache is sampled but quality is not.
+    const compactMetric = state.settings.compactMetric;
+    const metrics = islandState.mode === "normal"
+      ? normalMetrics
+      : compactMetric === "none" ? [] : availableMetrics.filter(item => item.kind === compactMetric);
     return `<button class="island-model ${model.id === selected?.id ? "active" : ""} ${compactVisible ? "compact-visible" : ""}" data-model-index="${index}" data-island-model aria-label="${escapeHtml(model.label)}：核验 ${qualityDisplay}，Cache ${cacheDisplay}，TTFT ${ttftDisplay}" aria-pressed="${model.id === selected?.id}">
       <span class="metric-rings">
         <svg class="ring-svg" viewBox="0 0 60 60">
-          ${metrics.map((item, metricIndex) => metricRing(27 - metricIndex * 5, item.progress, item.health.color, item.name, item.value, item.range, item.min, item.max, item.kind)).join("")}
-          ${balanceMetric?.progress != null ? `<circle class="compact-balance-ring" cx="30" cy="30" r="29" pathLength="100" stroke-dasharray="${ringProgress(balanceMetric.progress)} 100" transform="rotate(-90 30 30)" aria-hidden="true"/>` : ""}
+          ${metrics.map((item, metricIndex) => metricRing(27 - metricIndex * 5, item.progress, islandMetricColor(item.kind, item.health), item.name, item.value, item.range, item.min, item.max, item.kind)).join("")}
         </svg>
-        <b class="island-model-logo" title="${escapeHtml(model.standardLabel || model.label)}">${modelLogo(model)}</b>
+        ${islandCenterLogo(model)}
       </span>
     </button>`;
   }).join("") : "";
@@ -1175,6 +1207,7 @@ let islandState = { mode: "compact", modelId: null };
 let renderingIslandState = false;
 let islandModeAnchor = null;
 function enterIslandState(event) {
+  if (document.body.classList.contains("island-resize-mode") && event.type !== "border") return;
   const next = transitionIsland(islandState, event);
   if (next.mode === islandState.mode && next.modelId === islandState.modelId) return;
   if (next.mode === "focus" && islandState.mode !== "focus") {
@@ -1242,15 +1275,15 @@ function renderFocusedMetrics() {
   const metricKey = metrics.map(metric => metric.kind).join(",");
   if (focus.dataset.metricKinds !== metricKey) {
     focus.dataset.metricKinds = metricKey;
-    focus.innerHTML = metrics.map((metric, index) => `<button class="focus-model" data-focus-metric="${metric.kind}" style="--slot-offset:${(index - (metrics.length - 1) / 2) * 79}px"><span class="metric-rings"><svg class="ring-svg" viewBox="0 0 60 60">${metricRing(27, metric.progress, metric.health.color, metric.name, metric.value, metric.range, metric.min, metric.max, metric.kind)}</svg><i class="focus-metric-icon">${metricSymbol(metric.kind)}</i></span></button>`).join("");
+    focus.innerHTML = metrics.map((metric, index) => `<button class="focus-model" data-focus-metric="${metric.kind}" style="--slot-offset:${(index - (metrics.length - 1) / 2) * 79}px"><span class="metric-rings"><svg class="ring-svg" viewBox="0 0 60 60">${metricRing(27, metric.progress, islandMetricColor(metric.kind, metric.health), metric.name, metric.value, metric.range, metric.min, metric.max, metric.kind)}</svg><i class="focus-metric-icon">${metricSymbol(metric.kind)}</i></span></button>`).join("");
   }
   if (!focused || !model) return;
   metrics.forEach((metric, index) => {
     const button = focus.children[index];
     button.hidden = false;
-    button.style.setProperty("--ring-color", metric.health.color);
+    button.style.setProperty("--ring-color", islandMetricColor(metric.kind, metric.health));
     button.setAttribute("aria-label", `${model.label} · ${metric.name} ${metric.value}`);
-    updateMetricRing($(".ring-metric", button), metric);
+    updateMetricRing($(".ring-metric", button), metric, islandMetricColor(metric.kind, metric.health));
     button.onclick = () => openMetric(model, metric.kind);
   });
 }
@@ -1274,11 +1307,10 @@ function updateIslandAttention() {
   const island = $("#quick-island");
   if (!island) return;
   const expanded = islandState.mode !== "compact";
-  const changed = island.classList.contains("expanded") !== expanded;
   document.body.classList.toggle("island-attended", expanded);
   island.classList.toggle("expanded", expanded);
   $("#island-expand").setAttribute("aria-expanded", String(expanded));
-  if (changed && desktopMode === "island") {
+  if (desktopMode === "island") {
     desktopMessage({ type: "island-hover", expanded: expanded || Boolean(tourCleanup) });
   }
   if (desktopMode === "island") requestAnimationFrame(reportIslandLayout);
@@ -1294,24 +1326,92 @@ async function openMetric(model, view) {
 
 function reportIslandLayout() {
   const island = $("#quick-island");
-  const { x, y, width, height } = island.getBoundingClientRect();
+  const islandRect = island.getBoundingClientRect();
+  const { x, y, width, height } = islandRect;
   const buffer = $("#island-buffer").getBoundingClientRect();
   const popover = $("#hover-popover");
   const popoverHeight = popover?.classList.contains("visible") ? popover.offsetHeight : 0;
-  const envelope = parseFloat(island.style.getPropertyValue("--island-envelope-height")) || height;
-  // Native island sizing must account for the expanded popover as well as the
-  // rail; otherwise the lower balance/cost rows are clipped until scrolling.
-  const preferredHeight = Number(state.settings.islandHeight);
-  const contentHeight = Math.max(envelope, popoverHeight + 32, Number.isFinite(preferredHeight) ? preferredHeight : 420);
-  const surfaceRect = element => ({ ...element.getBoundingClientRect().toJSON(), radius: parseFloat(getComputedStyle(element).borderTopLeftRadius) || 0 });
+  // Report the visible union, not its viewport-relative bottom coordinate.
+  // Using `bottom` made every host resize add the newly centred top offset,
+  // so Normal/Focus could grow into a large transparent window indefinitely.
+  const popoverRect = popoverHeight ? popover.getBoundingClientRect() : null;
+  const contentTop = Math.min(islandRect.top, popoverRect?.top ?? islandRect.top);
+  const contentBottom = Math.max(islandRect.bottom, popoverRect?.bottom ?? islandRect.bottom);
+  const contentHeight = Math.ceil(Math.max(height, contentBottom - contentTop));
+  const scale = Number(getComputedStyle(island).getPropertyValue("--island-scale")) || 1;
+  const surfaceRect = element => ({ ...element.getBoundingClientRect().toJSON(), radius: (parseFloat(getComputedStyle(element).borderTopLeftRadius) || 0) * (element === island ? scale : 1) });
   desktopMessage({ type: "island-layout", x, y, width,
-    height: contentHeight, glass: state.settings.themePreset === "glass" && islandState.mode !== "compact",
+    scale: scale * 100, grip: $("#island-expand").getBoundingClientRect().toJSON(),
+    height: contentHeight, visualHeight: height, glass: state.settings.themePreset === "glass" && islandState.mode !== "compact",
     surfaces: [surfaceRect(island), ...(popoverHeight ? [surfaceRect(popover)] : [])],
     buffer: buffer.toJSON() });
 }
 
+function nativeResizeOverlay(active) {
+  document.body.classList.toggle("island-resize-overlay", Boolean(active));
+}
+
+function nativeResizeMode(active) {
+  const enabled = Boolean(active);
+  document.body.classList.toggle("island-resize-mode", enabled);
+  if (!enabled) {
+    document.body.classList.remove("island-resizing");
+    delete document.body.dataset.resizeAxis;
+    $$("#island-expand, #island-buffer").forEach(handle => handle.classList.remove("pressed"));
+    updateIslandAttention();
+  }
+  if (desktopMode === "island" && enabled) {
+    clearTimeout(hoverExitTimer); clearTimeout(borderHoverTimer); clearTimeout(ringHoverTimer);
+    hidePopover();
+    enterIslandState({ type: "border" });
+    requestAnimationFrame(reportIslandLayout);
+  }
+}
+
+function nativeResize(phase, buffer) {
+  const active = phase !== "idle";
+  if (phase === "started") nativeResizeMode(true);
+  document.body.classList.toggle("island-resizing", active);
+  if (active) document.body.dataset.resizeAxis = buffer ? "horizontal" : "vertical";
+  const handle = $(buffer ? "#island-buffer" : "#island-expand");
+  handle?.classList.toggle("pressed", active);
+  if (!active) { nativeResizeMode(false); requestAnimationFrame(reportIslandLayout); }
+}
+
+// Scale the complete natural layout once, including padding and handles.
+// The same screen-fit scale applies to every mode so rings never change size
+// just because the user hovers them. Host viewport height is not a constraint.
+function applyIslandScale(value = state.settings.islandScale) {
+  const island = $("#quick-island");
+  const rows = Number(island.dataset.layoutRows) || 3;
+  const requested = clamp(Number(value) || 100, 10, 200) / 100;
+  const scale = Math.min(requested, Math.max(100, (screen.availHeight || 900) - 20) / (rows * 79 + 70));
+  island.style.setProperty("--island-scale", String(scale));
+  document.body.style.setProperty("--island-width", `${112 * scale}px`);
+}
+
+function nativeResizePreview(scale) {
+  applyIslandScale(scale);
+  requestAnimationFrame(reportIslandLayout);
+}
+
+async function nativeResizeValue(values) {
+  try {
+    if (Number.isFinite(values?.scale)) {
+      await persistSettingsPatch({ islandScale: clamp(Math.round(values.scale), 10, 200) });
+    }
+  } catch (error) {
+    showToast(`灵动岛尺寸保存失败：${error.message}`, "error");
+  } finally {
+    nativeResizeMode(false);
+    renderModelSelectors();
+    requestAnimationFrame(reportIslandLayout);
+  }
+}
+
 function nativeDrag(phase, buffer) {
-  document.body.classList.toggle("island-dragging", phase !== "idle");
+  document.body.classList.toggle("island-dragging", phase === "started" || phase === "dragging");
+  document.body.classList.toggle("island-resizing", phase === "resizing");
   $(buffer ? "#island-buffer" : "#island-expand").classList.toggle("pressed", phase !== "idle");
   if (phase !== "idle") { clearTimeout(hoverExitTimer); clearTimeout(borderHoverTimer); clearTimeout(ringHoverTimer); hidePopover(); }
 }
@@ -1325,8 +1425,10 @@ function positionPopover(event) {
     const height = popover.offsetHeight;
     const rail = $("#quick-island").getBoundingClientRect();
     const top = clamp(rail.top + rail.height / 2 - height / 2, 16, Math.max(16, window.innerHeight - height - 16));
-    popover.style.left = onLeft ? "auto" : "12px";
-    popover.style.right = onLeft ? "12px" : "auto";
+    const left = bridgePopoverLeft({ viewportWidth: innerWidth, popoverWidth: popover.offsetWidth,
+      railLeft: rail.left, railRight: rail.right, onLeft });
+    popover.style.left = `${left}px`;
+    popover.style.right = "auto";
     popover.style.top = `${top}px`;
     popover.style.setProperty("--connector-y", `${clamp(event.clientY - top, 26, height - 26)}px`);
     popover.style.setProperty("--connector-stretch", String(clamp((onLeft ? event.clientX : window.innerWidth - event.clientX) / 84, .72, 1.35)));
@@ -1368,11 +1470,12 @@ function drawIslandBridge(time) {
   const sway = reducedMotion() ? 0 : clamp(-bridgeVelocity.y * .035, -12, 12) + Math.sin(time / (style === "pulse" ? 850 : 1400)) * (style === "ribbon" ? 2.5 : 1);
   const rail = $("#quick-island").getBoundingClientRect();
   const onLeft = document.body.dataset.islandSide === "left";
-  // Use layout dimensions so the connector doesn't follow the popover's reveal transform.
-  const popupX = onLeft ? innerWidth - 12 : 12;
-  const startX = onLeft ? popupX - popover.offsetWidth + 1 : popupX + popover.offsetWidth - 1;
+  // Use the final layout box so the connector ignores the popover's reveal
+  // transform and joins the actual adjacent edges instead of the host window.
+  const popupX = popover.offsetLeft;
+  const startX = onLeft ? popupX - 1 : popupX + popover.offsetWidth + 1;
   const endX = onLeft ? rail.right - 1 : rail.left + 1;
-  const popupY = parseFloat(popover.style.top) || 12;
+  const popupY = popover.offsetTop;
   const startY = clamp(bridgePointer.y, popupY + 30, popupY + popover.offsetHeight - 30);
   const endY = clamp(bridgePointer.y, rail.top + 24, rail.bottom - 24);
   const tension = clamp((bridgePointer.x - Math.min(startX, endX)) / Math.abs(endX - startX), 0, 1);
@@ -1636,8 +1739,8 @@ function renderOverviewRings(model) {
   });
 }
 
-function updateMetricRing(ring, metric) {
-    ring.style.setProperty("--ring-color", metric.health.color);
+function updateMetricRing(ring, metric, ringColor = metric.health.color) {
+    ring.style.setProperty("--ring-color", ringColor);
     $(".ring-value", ring).setAttribute("stroke-dasharray", `${ringProgress(metric.progress)} 100`);
     $(".ring-value", ring).setAttribute("opacity", Number.isFinite(metric.progress) ? "1" : "0");
     $(".ring-peak", ring).setAttribute("stroke-dasharray", `${ringProgress(metric.max)} 100`);
@@ -2222,7 +2325,7 @@ function qualityView() {
     ${verificationStatusMarkup(model)}
     <p class="verification-plan" role="status">${escapeHtml(plan.label)}</p>
     ${availability.guidance ? `<div class="reference-guidance"><p>${escapeHtml(translate(availability.guidance))}</p>${availability.purpose || state.settings.evaluatorId === "knowledge-boundary" && availability.blocked ? `<button class="text-button" data-action="collect-reference">${escapeHtml(translate(availability.purpose ? "采集当前方法参考" : "设置参考模型"))}</button>` : ""}</div>` : ""}
-    ${questionSummary ? `<p class="question-window-summary"><strong>${questionSummary.reviewed ? `已记录 ${questionSummary.reviewed} 次待人工复核` : `${questionSummary.matched} / ${questionSummary.compared} 次答案匹配`}</strong> · ${questionSummary.reviewed ? "不自动判定" : questionSummary.ratio === null ? "--" : (questionSummary.ratio * 100).toFixed(1) + "%"} · ${escapeHtml(formatRange())} · 总请求 ${questionSummary.total} · 失败 ${questionSummary.errors}</p>` : ""}
+    ${questionSummary ? `<p class="question-window-summary"><strong>${questionSummary.reviewed ? `已记录 ${questionSummary.reviewed} 次待人工复核` : `${questionSummary.matched} / ${questionSummary.compared} 次答案匹配`}</strong> · ${questionSummary.reviewed ? "不自动判定" : questionSummary.ratio === null ? "--" : (questionSummary.ratio * 100).toFixed(1) + "%"} · ${questionSummary.assessment ? `${escapeHtml(translate("评价"))}：${escapeHtml(translate(questionSummary.assessment))}` : ""} · ${escapeHtml(formatRange())} · 总请求 ${questionSummary.total} · 失败 ${questionSummary.errors}</p>` : ""}
     ${plan.external || state.settings.evaluatorId === "ztest" ? state.settings.evaluatorId === "bazaarlink-probe" ? bazaarlinkView(model) : ztestView(model) : ""}
     <h3>${escapeHtml(qualityChartOptions(model).label)}</h3><div class="trend-chart">${points.length ? chartSvg([{ points, color: colors.mint }], qualityChartOptions(model)) : '<div class="empty-state">当前范围尚无有效核验趋势</div>'}</div>
     ${selected ? qualityRunReport(selected) : '<div class="empty-state">所选方案尚未核验</div>'}
@@ -2278,7 +2381,7 @@ function qualityRunReport(run, scope = "selected") {
   return `<section class="historical-report" data-report-key="${detailKey}"><h3 class="report-method-name">${escapeHtml(qualityRunMethod(run))}</h3>${legacyNotice}<div class="verification-metrics"><div><span>检测结论</span><strong>${verdict}</strong><small>${escapeHtml(presentationRecheck ? translate(verificationRunLabel(run)) : run.rationale || "未提供")}</small></div><div><span>有效样本</span><strong>${metadata.sampleCount ?? "--"}</strong><small>${escapeHtml(metadata.reasoningEffort || "未记录档位")} · ${escapeHtml(metadata.revision || "未记录基准版本")}</small></div></div>
     ${presentationRecheck ? `<p class="report-notice">已按答案格式归一化复核显示。历史原始判定和回答保留在原始 JSON 中。</p>` : ""}
     ${run.status !== "ok" && requests.some(request => request.upstreamError?.message) ? `<p class="report-notice"><span>上游返回错误</span>：<span translate="no">${escapeHtml(requests.findLast(request => request.upstreamError?.message).upstreamError.message)}</span></p>` : ""}
-    ${metadata.question ? `<section class="question-result"><h3>${escapeHtml(metadata.question.title)}</h3><dl><dt>参考答案</dt><dd>${escapeHtml(metadata.question.answer)}</dd>${metadata.parsedAnswer ? `<dt>解析答案</dt><dd><strong>${escapeHtml(metadata.parsedAnswer)}</strong> · ${metadata.answerMatched === true ? "匹配" : metadata.answerMatched === false ? "不匹配" : "待复核"}</dd>` : ""}</dl>${metadata.actual ? `<details data-detail-key="question-answer-${detailKey}"><summary>查看模型回答${metadata.partialAnswer ? "（未完成）" : ""}</summary><p class="question-prompt">${escapeHtml(metadata.actual)}</p></details>` : ""}${metadata.proof ? `<details data-detail-key="question-proof-${detailKey}" open><summary>理由 / 证明</summary><p class="question-prompt">${escapeHtml(metadata.proof)}</p></details>` : ""}</section>` : ""}
+    ${metadata.question ? `<section class="question-result"><h3>${escapeHtml(metadata.question.title)}</h3><dl><dt>参考答案</dt><dd>${escapeHtml(metadata.question.answer)}</dd>${metadata.parsedAnswer ? `<dt>解析答案</dt><dd><strong>${escapeHtml(metadata.parsedAnswer)}</strong> · ${metadata.answerMatched === true ? "匹配" : metadata.answerMatched === false ? "不匹配" : "待复核"}</dd>` : ""}</dl>${run.evaluator_id === "custom-question" && metadata.match !== "review" && metadata.matched !== null && metadata.matched !== undefined ? `<p class="report-notice"><strong>${escapeHtml(translate("评价"))}</strong>：${escapeHtml(translate(metadata.matched ? "单题表现良好（仅代表本题）" : "单题表现偏低（不代表整体智力）"))}</p>` : ""}${metadata.actual ? `<details data-detail-key="question-answer-${detailKey}"><summary>查看模型回答${metadata.partialAnswer ? "（未完成）" : ""}</summary><p class="question-prompt">${escapeHtml(metadata.actual)}</p></details>` : ""}${metadata.proof ? `<details data-detail-key="question-proof-${detailKey}" open><summary>理由 / 证明</summary><p class="question-prompt">${escapeHtml(metadata.proof)}</p></details>` : ""}</section>` : ""}
     ${Number.isFinite(metadata.jsd) ? `<p>JSD ${metadata.jsd.toFixed(4)}</p>` : ""}
     ${metadata.conditionNotice ? `<p class="report-notice">${escapeHtml(metadata.conditionNotice)}</p>` : ""}
     <dl class="report-facts"><div><dt>检测时间</dt><dd>${escapeHtml(formatTimestamp(run.timestamp, true))}</dd></div><div><dt>方案版本</dt><dd>${escapeHtml(run.evaluator_id)} · ${escapeHtml(run.evaluator_version)}</dd></div><div><dt>请求累计耗时</dt><dd>${duration.length ? formatDuration(duration.reduce((sum, request) => sum + request.durationMs, 0)) : "未提供"}</dd></div><div><dt>总花费</dt><dd>${pricedRequests.length ? formatCost(totalCost) : "待计费"}<small>${pricedRequests.length}/${requests.length} 个请求有价格</small></dd></div><div><dt>平均单次花费</dt><dd>${pricedRequests.length ? formatCost(totalCost / pricedRequests.length) : "待计费"}</dd></div><div><dt>采样进度</dt><dd>${metadata.sampleCount ?? "--"} / ${metadata.plannedSamples ?? metadata.attempts ?? "--"}</dd></div><div><dt>请求尝试</dt><dd>${metadata.requestAttempts ?? metadata.attempts ?? (requests.length || "--")}</dd></div><div><dt>失败 / 重试</dt><dd>${Math.max(metadata.failures?.length || 0, requests.filter(request => request.status === "error").length)}</dd></div></dl>
@@ -2339,7 +2442,7 @@ function settingsView() {
 
 function aboutView() {
   const version = state.config?.version || "0.4.1";
-  return `<article class="panel" data-settings-group="about">${viewHeader("关于 Modivue", "版本与本地运行信息")}<div class="setting-row"><strong>版本</strong><span>Modivue ${escapeHtml(version)}</span></div><div class="setting-row"><div><strong>${translate("应用内更新提示")}</strong><small id="update-status">${translate("尚未检查")}</small></div><div class="setting-actions"><button type="button" class="text-button" data-action="check-updates">${translate("检查更新")}</button><a id="update-link" class="text-button" target="_blank" rel="noreferrer" hidden>${translate("查看 Release")}</a></div></div><div class="setting-row"><strong>运行模式</strong><span>本地模式</span></div><div class="setting-row"><strong>待开发</strong><span>TODO · 四元组上下文情况检测环</span></div><div class="setting-row"><strong>待开发</strong><span>TODO · 指标定时播报</span></div></article>`;
+  return `<article class="panel" data-settings-group="about">${viewHeader("关于 Modivue", "版本与本地运行信息")}<div class="setting-row"><strong>版本</strong><span>Modivue ${escapeHtml(version)}</span></div><div class="setting-row"><div><strong>${translate("应用内更新提示")}</strong><small id="update-status">${translate("尚未检查")}</small></div><div class="setting-actions"><button type="button" class="text-button" data-action="check-updates">${translate("检查更新")}</button><a id="update-link" class="text-button" target="_blank" rel="noreferrer" hidden>${translate("查看 Release")}</a></div></div><div class="setting-row"><strong>运行模式</strong><span>本地模式</span></div></article>`;
 }
 
 function appearancePreview(key, value) {
@@ -2367,9 +2470,14 @@ function customizationView() {
   const metricNames = { quality: "模型核验", cache: "Cache", ttft: "TTFT", balance: "余额" };
   const metricBar = (prefix, title) => `<div class="setting-row metric-check-row"><div><strong>${title}</strong><small>横向选择要显示的环</small></div><div class="metric-check-bar" role="group" aria-label="${title}">${Object.entries(metricNames).map(([metric, label]) => { const key = `${prefix}${metric[0].toUpperCase()}${metric.slice(1)}`; return `<label class="metric-check"><input type="checkbox" name="${key}" ${state.settings[key] ? "checked" : ""}><span>${label}</span></label>`; }).join("")}</div></div>`;
   const sections = [...groups].map(([group, fields]) => {
-    if (group !== "display") return `<section class="customization-group" data-settings-group="${group}"><h4>${labels[group]}</h4>${fields.map(field => `<div class="setting-row"><div><strong>${field.label}</strong>${field.hint ? `<small>${escapeHtml(field.hint)}</small>` : ""}</div>${controls(field)}</div>`).join("")}</section>`;
+    if (group !== "display") {
+      const sizeKeys = new Set(["islandWidth", "islandExpandedWidth", "islandHeight"]);
+      const visibleFields = group === "interaction" ? fields.filter(field => !sizeKeys.has(field.key)) : fields;
+      const sizeEditor = group === "interaction" ? `<div class="island-size-editor" data-settings-group="interaction"><div><strong>${escapeHtml(translate("灵动岛尺寸"))}</strong><small>${escapeHtml(translate("直接拖动任一操作杆，等比例缩放整个灵动岛；高度随内容自动适应。"))}</small></div><button class="text-button" type="button" data-action="island-resize">${escapeHtml(translate("打开灵动岛调节"))}</button></div>` : "";
+      return `<section class="customization-group" data-settings-group="${group}"><h4>${labels[group]}</h4>${sizeEditor}${visibleFields.map(field => `<div class="setting-row"><div><strong>${field.label}</strong>${field.hint ? `<small>${escapeHtml(field.hint)}</small>` : ""}</div>${controls(field)}</div>`).join("")}</section>`;
+    }
     const hiddenMetricKeys = new Set([...Object.keys(metricNames).flatMap(metric => ["normalShow", "focusShow", "overviewShow"].map(prefix => `${prefix}${metric[0].toUpperCase()}${metric.slice(1)}`))]);
-    const rest = fields.filter(field => !hiddenMetricKeys.has(field.key) && !field.key.startsWith("tabShow_"));
+    const rest = fields.filter(field => !hiddenMetricKeys.has(field.key) && !field.key.startsWith("tabShow_") && field.key !== "compactMetric");
     return `<section class="customization-group" data-settings-group="display"><h4>${labels[group]}</h4>${metricBar("focusShow", "专注形态显示环")}${metricBar("overviewShow", "标准形态显示环")}<div class="setting-row metric-check-row"><div><strong>导航标签页</strong><small>概览、模型核验和设置始终保留；隐藏当前页会返回概览</small></div><div class="metric-check-bar" role="group" aria-label="导航标签页">${Object.entries(optionalViews).map(([view, label]) => `<label class="metric-check"><input type="checkbox" name="tabShow_${view}" ${state.settings[`tabShow_${view}`] !== false ? "checked" : ""}><span>${label}</span></label>`).join("")}</div></div>${rest.map(field => `<div class="setting-row"><div><strong>${field.label}</strong>${field.hint ? `<small>${escapeHtml(field.hint)}</small>` : ""}</div>${controls(field)}</div>`).join("")}</section>`;
   }).join("");
   return `<form class="customization-form" id="customization-form">${sections}<div class="customization-actions"><button class="primary-button" type="submit">保存自定义</button><span id="customization-message" role="status"></span></div></form>`;
@@ -2830,25 +2938,43 @@ async function loadEvaluators() {
 
 async function loadAgents() {
   const status = $("#agent-status");
-  try {
-    const agentPayload = await fetchJson("/api/agents");
-    const agents = agentPayload.agents || [];
-    state.supportedAgents = agentPayload.supportedAgents || [];
-    state.agents = agents;
+  let agentPayload;
+  let lastError;
+  // The desktop service can still be binding its local HTTP port when the
+  // WebView starts. Retry that transient boundary instead of replacing a
+  // valid agent snapshot with an empty dashboard.
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      agentPayload = await fetchJson("/api/agents");
+      break;
+    } catch (error) {
+      lastError = error;
+      if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 250 * (attempt + 1)));
+    }
+  }
+  if (!agentPayload) {
     updateModels(state.summaryGroups);
-    const live = agents.filter((agent) => agent.sessionId && !agent.parentSessionId && !agent.endedAt);
-    const passive = live.filter((agent) => agent.baseUrl && !agent.proxyBaseUrl && !isModivueProxyEndpoint(agent.baseUrl));
-    status.className = live.length ? "catalog-status ready" : "catalog-status warning";
-    const capabilityTitle = state.supportedAgents.map((item) => {
-      const installLabel = !item.installed ? "未发现命令" : item.scope === "isolated" ? "已安装（隔离环境）" : "已安装";
-      const stateLabel = item.credentialConfigured && item.modelConfigured ? `${installLabel} · 模型/凭据可解析` : item.modelConfigured ? `${installLabel} · 未检测到独立凭据` : item.configFound ? `${installLabel} · 配置未解析模型` : `${installLabel} · 尚未配置`;
-      const verificationLabel = item.adapterVerification === "PASS" ? " · 隔离适配回归通过" : "";
-      return `${item.label}：${stateLabel}${verificationLabel}`;
-    }).join("\n");
-    status.title = capabilityTitle;
-    status.innerHTML = live.length ? `<span class="agent-count"><span class="status-dot"></span>${live.length} 个 Agent</span>${live.map(agentTag).join(" ")}` : `<span class="status-dot pending-dot"></span>等待运行中的 coding agent`;
-    renderAll({ preserveSettings: true });
-  } catch { state.agents = []; updateModels(state.summaryGroups); status.className = "catalog-status error"; status.innerHTML = `<span class="status-dot pending-dot"></span>Agent 配置读取失败`; }
+    status.className = state.agents.length ? "catalog-status warning" : "catalog-status error";
+    status.title = lastError?.message || "Agent 配置暂时不可用";
+    status.innerHTML = state.agents.length
+      ? `<span class="status-dot pending-dot"></span>Agent 配置暂时不可用，保留上次结果并自动重试`
+      : `<span class="status-dot pending-dot"></span>Agent 配置读取失败，正在自动重试`;
+    return;
+  }
+  const agents = agentPayload.agents || [];
+  state.supportedAgents = agentPayload.supportedAgents || [];
+  state.agents = agents;
+  updateModels(state.summaryGroups);
+  const live = agents.filter((agent) => agent.sessionId && !agent.parentSessionId && !agent.endedAt);
+  status.className = live.length ? "catalog-status ready" : "catalog-status warning";
+  status.title = state.supportedAgents.map((item) => {
+    const installLabel = !item.installed ? "未发现命令" : item.scope === "isolated" ? "已安装（隔离环境）" : "已安装";
+    const stateLabel = item.credentialConfigured && item.modelConfigured ? `${installLabel} · 模型/凭据可解析` : item.modelConfigured ? `${installLabel} · 未检测到独立凭据` : item.configFound ? `${installLabel} · 配置未解析模型` : `${installLabel} · 尚未配置`;
+    const verificationLabel = item.adapterVerification === "PASS" ? " · 隔离适配回归通过" : "";
+    return `${item.label}：${stateLabel}${verificationLabel}`;
+  }).join("\n");
+  status.innerHTML = live.length ? `<span class="agent-count"><span class="status-dot"></span>${live.length} 个 Agent</span>${live.map(agentTag).join(" ")}` : `<span class="status-dot pending-dot"></span>等待运行中的 coding agent`;
+  renderAll({ preserveSettings: true });
 }
 
 async function syncCatalog(force = false) {
@@ -3043,6 +3169,13 @@ function bindEvents() {
       await loadZtest(); renderActiveView(); return;
     }
     if (action === "replay-tour") { startTour(); return; }
+    if (action === "island-resize") {
+      if (desktopMode === "main") desktopMessage({ type: "start-island-resize" });
+      else if (desktopMode === "island") nativeResizeMode(true);
+      else window.open(`${location.origin}/?desktop=island&resize=1`, "modivue-island-resize", "width=320,height=760");
+      showToast("已打开灵动岛尺寸调节，按住顶部横杆或侧面竖杆即可调整", "info");
+      return;
+    }
     if (action === "island-tour") {
       if (desktopMode === "main") desktopMessage({ type: "start-island-tour" });
       else if (desktopMode === "island") startTour();
@@ -3389,8 +3522,7 @@ function applyAppearance() {
   if (Number.isFinite(state.settings.panelRadius)) root.style.setProperty("--panel-radius", `${state.settings.panelRadius}px`);
   const islandOpacity = Number(state.settings.islandOpacity);
   root.style.setProperty("--island-opacity", `${(Number.isFinite(islandOpacity) ? islandOpacity : 94) / 100}`);
-  const islandWidth = Number(state.settings.islandWidth);
-  root.style.setProperty("--island-width", `${Number.isFinite(islandWidth) ? islandWidth : 112}px`);
+  if (!document.body.classList.contains("island-resizing")) applyIslandScale();
   const islandExpandedWidth = Number(state.settings.islandExpandedWidth);
   root.style.setProperty("--island-expanded-width", `${Number.isFinite(islandExpandedWidth) ? islandExpandedWidth : 570}px`);
   root.style.setProperty("--island-duration", `${Number(state.settings.animationDurationMs) || 420}ms`);
@@ -3402,7 +3534,7 @@ function applyAppearance() {
   document.body.dataset.clickThrough = String(Boolean(state.settings.clickThroughIsland));
   if (desktopMode === "island") {
     desktopMessage({ type: "island-interaction", clickThrough: Boolean(state.settings.clickThroughIsland) });
-    desktopMessage({ type: "island-size", width: Number(state.settings.islandWidth), expandedWidth: Number(state.settings.islandExpandedWidth), height: Number(state.settings.islandHeight) });
+    desktopMessage({ type: "island-size", expandedWidth: Number(state.settings.islandExpandedWidth) });
     reportIslandLayout();
   }
   for (const [key, variable] of [["focusOpacity", "--focus-opacity"], ["popoverOpacity", "--popover-opacity"], ["panelOpacity", "--panel-opacity"], ["compactBackingOpacity", "--compact-backing-opacity"], ["compactRingOpacity", "--compact-ring-opacity"]]) {
@@ -3425,7 +3557,7 @@ function applyAppearance() {
 }
 
 const tourSteps = [
-  ["[data-view=overview]", "概览展示当前四元组、核心指标、趋势和告警入口。这里是详细窗口的起点。"],
+  ["[data-view=overview]", "主窗口概览展示当前四元组、核心指标、趋势和告警入口。这里是详细窗口的起点。"],
   ["[data-view=models]", "模型页按四元组查看模型、渠道、推理档位和可用样本。"],
   ["[data-view=routes]", "路由页比较不同渠道的活跃度、核验、Cache、TTFT 和样本量。"],
   ["[data-view=cache]", "Cache 页只使用提供方返回的缓存字段，展示命中率、覆盖率和趋势。"],
@@ -3465,12 +3597,12 @@ function startTour() {
   const title = $("strong", overlay), copy = $("p", overlay), card = $(".spotlight-card", overlay), next = $(".tour-next", overlay);
   const render = () => {
     const [selector, text] = steps[index];
-    const target = document.querySelector(selector);
     if (!islandTour) {
-      const requestedView = target?.dataset?.view;
+      const requestedView = document.querySelector(selector)?.dataset?.view;
       if (requestedView) setView(requestedView);
       else if (index >= 10) setView("overview");
     }
+    const target = document.querySelector(selector);
     if (!target?.getClientRects().length) {
       if (index < steps.length - 1) { index++; prepare(); return; }
       return finish();
@@ -3552,6 +3684,7 @@ async function bootstrap() {
   window.addEventListener("focus", () => { if (desktopMode !== "island") document.body.classList.add("window-focused"); else if (!window.webkit?.messageHandlers?.modivue) nativeFocus(true); });
   window.addEventListener("blur", () => { if (desktopMode !== "island") document.body.classList.remove("window-focused"); else if (!window.webkit?.messageHandlers?.modivue) nativeFocus(false); });
   $("#theme-toggle").textContent = light ? "☾" : "☼"; $("#theme-toggle").setAttribute("aria-pressed", String(light)); bindEvents(); renderAll();
+  const resizeQuery = desktopMode === "island" && new URLSearchParams(location.search).get("resize") === "1";
   if (desktopMode === "island") {
     const island = $("#quick-island");
     if (window.webkit?.messageHandlers?.modivue || window.chrome?.webview) {
@@ -3570,15 +3703,22 @@ async function bootstrap() {
       document.body.addEventListener("pointermove", nativeHover);
     }
     document.body.addEventListener("pointerleave", () => {
+      document.body.classList.remove("island-rail-hover");
       if (hasDesktopBridge()) return;
       hidePopover();
       setIslandHover(false);
     });
   }
-  await loadSettings(); applyAppearance(); await Promise.all([syncCatalog(), loadAgents(), loadConfig(), loadEvaluators(), loadZtest().catch(() => {}), loadCalibration(), loadBalances().catch(() => {}), loadQuestions()]); await refreshObservations();
+  await loadSettings(); applyAppearance();
+  if (resizeQuery) nativeResizeMode(true);
+  // Start the island-first tour as soon as preferences are known. A dedicated
+  // resize window is already an explicit interaction and must not be replaced
+  // by the first-run tour's Compact state.
+  const forceTour = new URLSearchParams(location.search).get("tour") === "1";
+  if (desktopMode === "island" && !resizeQuery && (!state.settings.islandTourSeen || forceTour)) startTour();
+  await Promise.all([syncCatalog(), loadAgents(), loadConfig(), loadEvaluators(), loadZtest().catch(() => {}), loadCalibration(), loadBalances().catch(() => {}), loadQuestions()]); await refreshObservations();
   void checkForUpdates();
-  if (desktopMode === "island" && (!state.settings.islandTourSeen || new URLSearchParams(location.search).get("tour") === "1")) startTour();
-  if (desktopMode === "island" && state.settings.islandTourSeen && !state.settings.mainTourSeen && new URLSearchParams(location.search).get("tour") !== "1") desktopMessage({ type: "request-main-tour" });
+  if (desktopMode === "island" && !resizeQuery && state.settings.islandTourSeen && !state.settings.mainTourSeen && new URLSearchParams(location.search).get("tour") !== "1") desktopMessage({ type: "request-main-tour" });
   if (desktopMode === "main") desktopMessage({ type: "main-ready" });
   if (!desktopMode && !state.settings.mainTourSeen) startTour();
   window.setInterval(async () => { if (document.visibilityState === "visible" || desktopMode === "island") {
@@ -3622,10 +3762,11 @@ let islandScrollDirection = 0;
 function updateIslandEdgeScroll(event) {
   const list = $("#island-models");
   const box = list.getBoundingClientRect();
+  const scale = Number(getComputedStyle($("#quick-island")).getPropertyValue("--island-scale")) || 1;
   const scrollable = islandState.mode === "normal" && list.scrollHeight > list.clientHeight + 1
     && event && event.clientX >= box.left && event.clientX <= box.right;
-  islandScrollDirection = !scrollable ? 0 : event.clientY >= box.top - 10 && event.clientY <= box.top + 12 ? -1
-    : event.clientY >= box.bottom - 12 && event.clientY <= box.bottom + 10 ? 1 : 0;
+  islandScrollDirection = !scrollable ? 0 : event.clientY >= box.top - 10 * scale && event.clientY <= box.top + 12 * scale ? -1
+    : event.clientY >= box.bottom - 12 * scale && event.clientY <= box.bottom + 10 * scale ? 1 : 0;
   if (!islandScrollDirection) { cancelAnimationFrame(islandScrollFrame); islandScrollFrame = null; return false; }
   if (!islandScrollFrame) {
     let previous = performance.now();
@@ -3641,7 +3782,9 @@ function updateIslandEdgeScroll(event) {
 }
 function nativeHover(event) {
   if (desktopMode !== "island") return;
-  if (document.body.classList.contains("island-dragging") || tourCleanup) return;
+  const rail = $("#quick-island").getBoundingClientRect();
+  document.body.classList.toggle("island-rail-hover", Boolean(event && event.clientX >= rail.left && event.clientX <= rail.right && event.clientY >= rail.top && event.clientY <= rail.bottom));
+  if (document.body.classList.contains("island-dragging") || document.body.classList.contains("island-resize-mode") || tourCleanup) return;
   const target = event ? document.elementFromPoint(event.clientX, event.clientY) : null;
   const pointer = event ? { clientX: event.clientX, clientY: event.clientY,
     screenX: event.screenX ?? event.clientX + window.screenX, screenY: event.screenY ?? event.clientY + window.screenY } : null;
@@ -3649,7 +3792,7 @@ function nativeHover(event) {
   // Opening the popover resizes and moves its native host. Client coordinates
   // change with that window; only screen coordinates describe pointer movement.
   lastIslandPointer = pointer;
-  if (stationary) {
+  if (event && stationary && islandState.mode === "focus") {
     // Animated layers can arrive beneath a stationary pointer. Update the
     // metric highlight without treating that animation as a border crossing.
     const ring = islandState.mode === "focus" && target?.closest("[data-focus-metric]")?.querySelector(".ring-metric");
@@ -3659,8 +3802,6 @@ function nativeHover(event) {
     }
     return;
   }
-  clearTimeout(hoverExitTimer);
-  const rail = $("#quick-island").getBoundingClientRect();
   const popup = $("#hover-popover");
   const popupRect = popup.getBoundingClientRect();
   if (updateIslandEdgeScroll(event)) {
@@ -3671,7 +3812,7 @@ function nativeHover(event) {
   const ringTarget = event && islandState.mode !== "focus" && $$("[data-island-model]").find((node) => {
     if (islandState.mode === "compact" && !node.classList.contains("compact-visible")) return false;
     const box = $(".metric-rings", node).getBoundingClientRect();
-    return Math.hypot(event.clientX - box.left - box.width / 2, event.clientY - box.top - box.height / 2) <= box.width / 2 + 6;
+    return Math.hypot(event.clientX - box.left - box.width / 2, event.clientY - box.top - box.height / 2) <= box.width / 2 + box.width / 10;
   });
   const focusTarget = islandState.mode === "focus" ? target?.closest("[data-focus-metric]") : null;
   const inRail = event && event.clientX >= rail.left && event.clientX <= rail.right && event.clientY >= rail.top && event.clientY <= rail.bottom;
@@ -3695,9 +3836,10 @@ function nativeHover(event) {
   if (!ringTarget && !inRail && !target?.closest("#hover-popover") && !inBridge) {
     clearTimeout(borderHoverTimer); borderHoverTimer = null;
     clearTimeout(ringHoverTimer); ringHoverTimer = null; pendingRingId = null;
-    hoverExitTimer = setTimeout(() => { hidePopover(); setIslandHover(false); }, Number(state.settings.collapseDelayMs) || 360);
+    hoverExitTimer ??= setTimeout(() => { hoverExitTimer = null; hidePopover(); setIslandHover(false); }, Number(state.settings.collapseDelayMs) || 360);
     return;
   }
+  clearTimeout(hoverExitTimer); hoverExitTimer = null;
   if (onBorder) {
     clearTimeout(ringHoverTimer); ringHoverTimer = null; pendingRingId = null;
     // A short dwell distinguishes deliberate border focus from crossing the
@@ -3739,5 +3881,5 @@ function setIslandSide(side) {
   requestAnimationFrame(reportIslandLayout);
 }
 
-window.modivue = { aggregate, matchModelName, refresh: refreshObservations, openView: setView, selectModel: selectModelById, nativeHover, nativeFocus, nativeDrag, setIslandSide, reportIslandLayout, startTour, showAllAgents: () => enterIslandState({ type: "border" }) };
+window.modivue = { aggregate, matchModelName, refresh: refreshObservations, openView: setView, selectModel: selectModelById, nativeHover, nativeFocus, nativeDrag, nativeResize, nativeResizeMode, nativeResizeOverlay, nativeResizePreview, nativeResizeValue, setIslandSide, reportIslandLayout, startTour, showAllAgents: () => enterIslandState({ type: "border" }) };
 void bootstrap();

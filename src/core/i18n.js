@@ -1,5 +1,9 @@
 // Source-language keys keep existing Chinese UI copy readable during migration.
 const english = {
+  "灵动岛环中心图标": "Island ring center icon",
+  "极简与普通形态使用模型或对应 Agent 图标；多个 Agent 并列显示，超过四种显示数量。专注形态保持指标图标。": "Silent and normal modes show model or matching Agent icons. Multiple Agents appear together; more than four types show a count. Focus mode keeps metric icons.",
+  "四元组对应的模型": "Model for this target",
+  "四元组对应的 Agent": "Agents for this target",
   "CLIProxyAPI 暂不提供余额": "CLIProxyAPI balance integration is not available yet",
   "CLIProxyAPI 余量查询尚未接入管理 API": "CLIProxyAPI allowance queries are not connected to its management API yet",
   "余额 / 余量查询": "Balance / allowance query",
@@ -289,6 +293,13 @@ const english = {
   "主窗口背景": "Window background", "卡片背景": "Card background", "主窗口文字": "Text color", "主窗口强调色": "Accent color",
   "普通形态背景": "Normal background", "专注形态背景": "Focus background", "悬浮详情背景": "Popover background",
   "灵动岛不透明度": "Island opacity", "主窗口卡片圆角": "Card corner radius", "灵动岛轮廓": "Island shape",
+  "灵动岛整体比例": "Island scale", "环、间距、操作杆一起缩放，高度随内容自动适应": "Scale rings, spacing and handles together; height adapts to content",
+  "灵动岛环配色": "Island ring colors", "阈值配色使用下方各指标的低、中、高值颜色；缺失数值不视为零": "Threshold mode uses each metric's low, medium and high colors below; missing values are not zero",
+  "固定指标色": "Fixed metric colors", "按指标阈值变色": "Metric threshold colors",
+  "直接拖动任一操作杆，等比例缩放整个灵动岛；高度随内容自动适应。": "Drag either handle to scale the entire island proportionally; height adapts to content.",
+  "灵动岛尺寸": "Island size", "灵动岛": "Island", "拖动调节灵动岛宽度": "Drag to adjust island width", "拖动调节灵动岛高度": "Drag to adjust island height", "拖动预览框边缘即可调节；运行中的灵动岛也可长按操作杆调节。": "Drag the preview edge to adjust it; while running, hold an island handle to resize it.",
+  "内容宽度": "Content width", "展开宽度": "Expanded width", "高度": "Height", "打开灵动岛调节": "Open island resizer",
+  "进入调节后直接拖动顶部横杆或侧面竖杆；宽高表示整个可见灵动岛的绝对尺寸。": "In resize mode, drag the top or side handle directly. Width and height are the absolute size of the visible island.",
   "椭圆胶囊": "Pill", "圆角矩形": "Rounded rectangle", "小圆角": "Small corners", "普通形态最多显示目标": "Visible targets",
   "边界滚动速度": "Edge scroll speed", "形态过渡时长": "Transition duration", "普通到专注停留": "Focus dwell time",
   "离开收起延迟": "Collapse delay", "专注形态显示悬浮详情": "Show focus popover", "减少动态效果": "Reduce motion",
@@ -354,6 +365,10 @@ const english = {
   "本轮重试次数已用完；已保留成功探针，下次核验继续未完成项": "Retry allowance used; successful probes are saved and the next verification resumes unfinished probes",
   "拓展窗口（实时灵动岛）会在极简、普通、专注和扩展详情之间平滑切换；侧边拖条可点击或拖动，释放后吸附左右边缘，悬停模型可查看扩展信息。": "The live island transitions between compact, normal, focus and popover states. Click or drag its handles, release to snap to an edge, and hover a model for details.",
   "旧版判定无效": "Old verdict is invalid",
+  "单题表现偏低（不代表整体智力）": "Low performance on this question (not an overall intelligence assessment)",
+  "单题表现一般（仅代表本题）": "Average performance on this question (question-specific only)",
+  "单题表现良好（仅代表本题）": "Good performance on this question (question-specific only)",
+  "评价": "Assessment",
 };
 Object.assign(english, {
   "未指定": "Unspecified",

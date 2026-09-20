@@ -74,6 +74,14 @@ export function verificationRunLabel(run) {
   return "证据不足";
 }
 
+export function questionAssessment(summary) {
+  if (!summary || summary.reviewed || !summary.compared) return summary?.reviewed ? "待人工复核" : "证据不足";
+  const ratio = summary.ratio;
+  if (ratio <= 0.2) return "单题表现偏低（不代表整体智力）";
+  if (ratio >= 0.8) return "单题表现良好（仅代表本题）";
+  return "单题表现一般（仅代表本题）";
+}
+
 export function summarizeVerification(runs = [], preferredMethod = "meow-fingerprint", options = {}) {
   const question = preferredMethod === "custom-question" ? (options.questionSummary && (!options.question || options.questionSummary.conditionsId === questionConditionsId(options.question)) ? options.questionSummary : summarizeQuestionRuns(runs, options)) : null;
   const latest = new Map();
@@ -95,6 +103,7 @@ export function summarizeVerification(runs = [], preferredMethod = "meow-fingerp
   const label = question ? (question.reviewed
     ? `已记录 ${question.reviewed} 次待人工复核`
     : `${question.matched} / ${question.compared} 次答案匹配`) : verificationRunLabel(selected);
+  const assessment = question ? questionAssessment(question) : null;
   const valid = (id, field) => {
     const run = measurements.get(id);
     return run?.status === "ok" && Number.isFinite(run.metadata?.[field]) ? run.metadata[field] : null;
@@ -119,6 +128,6 @@ export function summarizeVerification(runs = [], preferredMethod = "meow-fingerp
       numeric = { value: bazaarlink.declaredMatch, label: "候选模型匹配度", unit: "%", method: "bazaarlink-probe" };
   }
   if (question?.compared) numeric = { value: question.matched, label: "单题匹配次数", unit: "次", method: "custom-question" };
-  return { question, verdict, label, methods, selected, measurement, measuredAt: measurement?.timestamp || null, stale,
+  return { question, verdict, label, assessment, methods, selected, measurement, measuredAt: measurement?.timestamp || null, stale,
     numeric, declaredMatch, matchPercent, jsd, juice, directionScore, directedModel };
 }

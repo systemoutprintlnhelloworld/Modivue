@@ -15,6 +15,8 @@
     "ui:test:menu": "node scripts/host-test.mjs menu",
     "runtime:test": "node scripts/host-test.mjs runtime",
     "cli:test": "node scripts/host-test.mjs cli",
+    "ui:test:island:native": "node scripts/host-test.mjs island-native",
+    "ui:test:island": "node scripts/host-test.mjs island-web",
     "ui:test:web": "node scripts/host-test.mjs web",
     "test:core": "node scripts/core-test.mjs",
     "dev": "node server.mjs",

@@ -85,6 +85,7 @@ do {
         let url = URL(fileURLWithPath: try arg(1))
         let config = NSWorkspace.OpenConfiguration(); config.createsNewApplicationInstance = true
         if args.count > 2 { config.environment = ["MODIVUE_UI_ARTIFACTS": args[2]] }
+        if args.count > 3 { config.environment["MODIVUE_DB"] = args[3] }
         var finished = false
         var launched: NSRunningApplication?; var errorText: String?
         NSWorkspace.shared.openApplication(at: url, configuration: config) { app, error in

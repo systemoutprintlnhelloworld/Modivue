@@ -16,10 +16,15 @@ final class IslandWebView: WKWebView {
     var secondaryDragRect = NSRect.zero
     var onDragMoved: ((NSPoint) -> Void)?
     var onDragEnded: ((NSPoint) -> Void)?
+    var onResizeMoved: ((NSPoint, Bool) -> Void)?
+    var onResizeEnded: ((NSPoint, Bool) -> Void)?
     var onTitleClick: (() -> Void)?
     var onBufferClick: (() -> Void)?
+    var resizeModeActive = false
     private var dragging = false
+    private var resizing = false
     private var pendingDrag = false
+    private var pendingResizeWorkItem: DispatchWorkItem?
     private var dragStartPointer = NSPoint.zero
     private var dragStartOrigin = NSPoint.zero
     private var bufferGesture = false
@@ -47,6 +52,27 @@ final class IslandWebView: WKWebView {
             dragStartPointer = screenPoint(for: event)
             dragStartOrigin = window?.frame.origin ?? .zero
             bufferGesture = secondaryDragRect.contains(local)
+            pendingResizeWorkItem?.cancel()
+            if resizeModeActive {
+                resizing = true
+                dragging = true
+                pendingDrag = false
+                dragPhase = "resizing"
+                (bufferGesture ? NSCursor.resizeLeftRight : NSCursor.resizeUpDown).set()
+                evaluateJavaScript("window.modivue?.nativeResize?.('started', \(bufferGesture))")
+                return
+            }
+            let resize = DispatchWorkItem { [weak self] in
+                guard let self, self.pendingDrag, !self.dragging else { return }
+                self.resizing = true
+                self.dragging = true
+                self.pendingDrag = false
+                self.dragPhase = "resizing"
+                (self.bufferGesture ? NSCursor.resizeLeftRight : NSCursor.resizeUpDown).set()
+                self.evaluateJavaScript("window.modivue?.nativeResize?.('started', \(self.bufferGesture))")
+            }
+            pendingResizeWorkItem = resize
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: resize)
             evaluateJavaScript("window.modivue?.nativeDrag?.('pressed', \(bufferGesture))")
         } else {
             super.mouseDown(with: event)
@@ -55,9 +81,15 @@ final class IslandWebView: WKWebView {
 
     override func mouseDragged(with event: NSEvent) {
         let pointer = screenPoint(for: event)
+        if resizing {
+            evaluateJavaScript("window.modivue?.nativeResize?.('dragging', \(bufferGesture))")
+            onResizeMoved?(NSPoint(x: pointer.x - dragStartPointer.x, y: pointer.y - dragStartPointer.y), bufferGesture)
+            return
+        }
         if pendingDrag && !dragging {
             let distance = hypot(pointer.x - dragStartPointer.x, pointer.y - dragStartPointer.y)
             guard distance >= 4 else { return }
+            pendingResizeWorkItem?.cancel()
             dragging = true
             dragPhase = "started"
         }
@@ -68,6 +100,20 @@ final class IslandWebView: WKWebView {
     }
 
     override func mouseUp(with event: NSEvent) {
+        pendingResizeWorkItem?.cancel()
+        if resizing {
+            let pointer = screenPoint(for: event)
+            onResizeMoved?(NSPoint(x: pointer.x - dragStartPointer.x, y: pointer.y - dragStartPointer.y), bufferGesture)
+            onResizeEnded?(NSPoint(x: pointer.x - dragStartPointer.x, y: pointer.y - dragStartPointer.y), bufferGesture)
+            evaluateJavaScript("window.modivue?.nativeResize?.('idle', \(bufferGesture))")
+            resizing = false
+            dragging = false
+            pendingDrag = false
+            dragPhase = "released"
+            NSCursor.arrow.set()
+            updateHover()
+            return
+        }
         guard dragging else {
             let titleClick = pendingDrag
             pendingDrag = false
@@ -150,11 +196,22 @@ final class ModivueApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNav
     private var islandOnLeft = false
     // Keep the native panel close to the island content. A full-screen
     // transparent WebView can be composited as an opaque black rectangle.
-    private var islandContentHeight: CGFloat = 420
-    private var islandMinHeight: CGFloat = 420
+    private var islandContentHeight: CGFloat = 160
+    private var islandScale: CGFloat = 100
     private var islandWidth: CGFloat = 112
     private var islandExpandedWidth: CGFloat = 570
+    private var islandRailRect = NSRect.zero
+    private var islandExpanded = false
     private var islandTourActive = false
+    private var islandResizeModeActive = false
+    private var islandResizeRestoreFrame = NSRect.zero
+    private var islandResizeRestoreExpanded = false
+    private var islandResizeRestoreSide = false
+    private var islandResizeRestoreIgnoresMouseEvents = false
+    private var resizeStartFrame = NSRect.zero
+    private var resizeStartScale: CGFloat = 100
+    private var resizeValue: CGFloat = 100
+    private var resizeStartRail = NSRect.zero
     private var pendingCollapse: DispatchWorkItem?
     private var pendingMainTour = false
 
@@ -349,8 +406,10 @@ final class ModivueApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNav
         panel.isMovableByWindowBackground = false
         panel.delegate = self
         let view = webView(mode: "island")
-        (view as? IslandWebView)?.onDragMoved = { [weak self] origin in self?.islandWindow?.setFrameOrigin(origin) }
+        (view as? IslandWebView)?.onDragMoved = { [weak self] origin in self?.moveIsland(origin: origin) }
         (view as? IslandWebView)?.onDragEnded = { [weak self] pointer in self?.snapIsland(pointer: pointer) }
+        (view as? IslandWebView)?.onResizeMoved = { [weak self] delta, buffer in self?.resizeIslandBy(delta: delta, buffer: buffer) }
+        (view as? IslandWebView)?.onResizeEnded = { [weak self] _, _ in self?.finishIslandResize() }
         (view as? IslandWebView)?.onTitleClick = { [weak self] in
             self?.pendingView = "overview"
             self?.openDashboard()
@@ -402,26 +461,47 @@ final class ModivueApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNav
     }
 
     private func islandSize(expanded: Bool) -> NSSize {
-        let screenHeight = (NSScreen.main?.visibleFrame.height ?? 720) - 40
-        // The visible rail controls its own height. Reserve transparent space
-        // for history without shifting the model under the pointer.
-        let height = min(islandTourActive ? 760 : max(islandMinHeight, islandContentHeight), screenHeight)
-        return NSSize(width: expanded || islandTourActive ? islandExpandedWidth : islandWidth, height: height)
+        let screenHeight = (islandWindow?.screen ?? NSScreen.main)?.visibleFrame.height ?? 720
+        let height = min(islandTourActive ? 760 : islandContentHeight, screenHeight)
+        let width = expanded || islandTourActive ? max(islandExpandedWidth, islandWidth + 456) : islandWidth
+        return NSSize(width: width, height: height)
+    }
+
+    private func clampedIslandOriginY(_ proposed: CGFloat, panelHeight: CGFloat, visible: NSRect) -> CGFloat {
+        let panelMinimum = visible.minY
+        let panelMaximum = max(panelMinimum, visible.maxY - panelHeight)
+        // The web view reports the visible rail in top-left CSS coordinates.
+        // Convert both rail edges to the panel's bottom-left coordinate space
+        // and clamp the rail itself, not the transparent host window. This
+        // lets the rail reach the top and bottom work-area edges.
+        guard islandRailRect.height > 0, islandRailRect.width > 0,
+              islandRailRect.minY.isFinite, islandRailRect.maxY.isFinite,
+              islandRailRect.maxY <= panelHeight + 2, islandRailRect.minY >= -2 else {
+            return min(max(proposed, panelMinimum), panelMaximum)
+        }
+        let localRailMinY = panelHeight - islandRailRect.maxY
+        let localRailMaxY = panelHeight - islandRailRect.minY
+        let minimum = visible.minY - localRailMinY
+        let maximum = visible.maxY - localRailMaxY
+        guard minimum <= maximum else { return panelMinimum }
+        return min(max(proposed, minimum), maximum)
     }
 
     private func placeIsland(_ panel: NSPanel, size: NSSize) {
         let visible = (panel.screen ?? NSScreen.main)?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
-        panel.setFrame(NSRect(x: visible.maxX - size.width, y: visible.midY - size.height / 2,
+        let y = min(max(visible.minY, visible.midY - size.height / 2), max(visible.minY, visible.maxY - size.height))
+        panel.setFrame(NSRect(x: visible.maxX - size.width, y: y,
             width: size.width, height: size.height), display: true)
     }
 
     private func resizeIsland(expanded: Bool) {
         guard let panel = islandWindow else { return }
+        islandExpanded = expanded
         let oldFrame = panel.frame
         let size = islandSize(expanded: expanded)
         guard oldFrame.size != size else { return }
         let screen = (panel.screen ?? NSScreen.main)?.visibleFrame ?? oldFrame
-        let nextY = min(max(screen.minY, oldFrame.midY - size.height / 2), screen.maxY - size.height)
+        let nextY = clampedIslandOriginY(oldFrame.maxY - size.height, panelHeight: size.height, visible: screen)
         let next = NSRect(x: islandOnLeft ? oldFrame.minX : oldFrame.maxX - size.width, y: nextY,
             width: size.width, height: size.height)
         // The visible rail animates in CSS; resize its transparent host without
@@ -439,12 +519,90 @@ final class ModivueApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNav
         }
     }
 
+    private func resizeIslandBy(delta: NSPoint, buffer: Bool) {
+        guard let panel = islandWindow else { return }
+        if resizeStartFrame == .zero {
+            resizeStartFrame = panel.frame
+            resizeStartRail = islandRailRect
+            resizeStartScale = islandScale
+        }
+        let extent = buffer ? resizeStartRail.width : resizeStartRail.height
+        guard extent > 0 else { return }
+        let change = buffer ? (islandOnLeft ? delta.x : -delta.x) : delta.y
+        let multiplier: CGFloat = islandResizeModeActive ? 2 : 1
+        resizeValue = min(200, max(10, resizeStartScale * (1 + change * multiplier / extent)))
+        // The web layout is the sole owner of content dimensions. Its report
+        // updates the host and both hit regions, including during dragging.
+        islandWebView?.evaluateJavaScript("window.modivue?.nativeResizePreview?.(\(resizeValue))")
+    }
+
+    private func finishIslandResize() {
+        guard resizeStartFrame != .zero else { return }
+        islandWebView?.evaluateJavaScript("window.modivue?.nativeResizeValue?.({scale: \(resizeValue)})")
+        resizeStartFrame = .zero
+        finishIslandResizeMode()
+    }
+
+    private func beginIslandResizeMode() {
+        guard let panel = islandWindow else { return }
+        pendingCollapse?.cancel()
+        if !islandResizeModeActive {
+            islandResizeModeActive = true
+            islandResizeRestoreFrame = panel.frame
+            islandResizeRestoreExpanded = islandExpanded
+            islandResizeRestoreSide = islandOnLeft
+            islandResizeRestoreIgnoresMouseEvents = panel.ignoresMouseEvents
+        }
+        islandExpanded = false
+        panel.ignoresMouseEvents = false
+        (islandWebView as? IslandWebView)?.resizeModeActive = true
+        islandWebView?.evaluateJavaScript("window.modivue?.nativeResizeMode?.(true)")
+        let visible = (panel.screen ?? NSScreen.main)?.visibleFrame ?? panel.frame
+        let size = NSSize(width: min(islandWidth, visible.width),
+            height: min(islandRailRect.height > 0 ? islandRailRect.height : islandContentHeight, visible.height))
+        panel.setFrame(NSRect(x: visible.midX - size.width / 2,
+            y: visible.midY - size.height / 2, width: size.width, height: size.height), display: true)
+        layoutIslandSurface()
+        panel.orderFrontRegardless()
+        mainWebView?.evaluateJavaScript("window.modivue?.nativeResizeOverlay?.(true)")
+    }
+
+    private func finishIslandResizeMode() {
+        guard islandResizeModeActive, let panel = islandWindow else { return }
+        islandResizeModeActive = false
+        (islandWebView as? IslandWebView)?.resizeModeActive = false
+        islandOnLeft = islandResizeRestoreSide
+        islandExpanded = islandResizeRestoreExpanded
+        let visible = NSScreen.screens.first(where: { $0.visibleFrame.intersects(islandResizeRestoreFrame) })?.visibleFrame
+            ?? panel.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? islandResizeRestoreFrame
+        let size = islandSize(expanded: islandResizeRestoreExpanded)
+        let y = clampedIslandOriginY(islandResizeRestoreFrame.maxY - size.height,
+            panelHeight: size.height, visible: visible)
+        let x = islandResizeRestoreSide ? visible.minX : visible.maxX - size.width
+        panel.setFrame(NSRect(x: x, y: y, width: size.width, height: size.height), display: true)
+        layoutIslandSurface()
+        islandResizeRestoreFrame = .zero
+        panel.ignoresMouseEvents = islandResizeRestoreIgnoresMouseEvents
+        islandWebView?.evaluateJavaScript("window.modivue?.nativeResizeMode?.(false)")
+        mainWebView?.evaluateJavaScript("window.modivue?.nativeResizeOverlay?.(false)")
+        DispatchQueue.main.async { [weak self] in
+            self?.islandWebView?.evaluateJavaScript("window.modivue?.reportIslandLayout?.()")
+        }
+    }
+
     private func layoutIslandSurface() {
         guard let panel = islandWindow, let view = islandWebView else { return }
         let width = panel.frame.width
         view.autoresizingMask = []
         view.frame = NSRect(x: 0, y: 0,
             width: width, height: panel.contentView?.bounds.height ?? panel.frame.height)
+    }
+
+    private func moveIsland(origin: NSPoint) {
+        guard let panel = islandWindow else { return }
+        let visible = (panel.screen ?? NSScreen.main)?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
+        let y = clampedIslandOriginY(origin.y, panelHeight: panel.frame.height, visible: visible)
+        panel.setFrameOrigin(NSPoint(x: origin.x, y: y))
     }
 
     private func snapIsland(pointer: NSPoint) {
@@ -464,7 +622,7 @@ final class ModivueApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNav
             view.evaluateJavaScript("window.modivue?.setIslandSide?.('\(islandOnLeft ? "left" : "right")')")
         }
         let origin = NSPoint(x: islandOnLeft ? visible.minX : visible.maxX - panel.frame.width,
-            y: min(max(panel.frame.minY, visible.minY), visible.maxY - panel.frame.height))
+            y: clampedIslandOriginY(panel.frame.minY, panelHeight: panel.frame.height, visible: visible))
         NSAnimationContext.runAnimationGroup { context in
             context.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.36
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
@@ -577,6 +735,7 @@ final class ModivueApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNav
         if type == "ui-evidence", let directory = ProcessInfo.processInfo.environment["MODIVUE_UI_ARTIFACTS"] {
             var evidence = body
             evidence["dragPhase"] = (islandWebView as? IslandWebView)?.dragPhase
+            evidence["windowKey"] = islandWindow?.isKeyWindow ?? false
             evidence["islandSide"] = islandOnLeft ? "left" : "right"
             evidence["recordedAt"] = Date().timeIntervalSince1970
             if let panel = islandWindow {
@@ -584,6 +743,7 @@ final class ModivueApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNav
                     "width": panel.frame.width, "height": panel.frame.height]
             }
             if message.webView === mainWebView, let window = mainWindow, let view = mainWebView {
+                evidence["mainReady"] = mainLoaded
                 evidence["mainWebFrame"] = ["x": view.frame.minX, "y": view.frame.minY, "width": view.frame.width, "height": view.frame.height]
                 evidence["mainContentLayout"] = ["x": window.contentLayoutRect.minX, "y": window.contentLayoutRect.minY, "width": window.contentLayoutRect.width, "height": window.contentLayoutRect.height]
                 evidence["mainAppearance"] = window.effectiveAppearance.name.rawValue
@@ -701,14 +861,15 @@ final class ModivueApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNav
             }
         case "island-interaction":
             if let clickThrough = body["clickThrough"] as? Bool {
-                islandWindow?.ignoresMouseEvents = clickThrough
-                if clickThrough { islandWebView?.evaluateJavaScript("window.modivue?.nativeHover?.(null)") }
+                if islandResizeModeActive { islandResizeRestoreIgnoresMouseEvents = clickThrough }
+                else { islandWindow?.ignoresMouseEvents = clickThrough }
+                if clickThrough && !islandResizeModeActive { islandWebView?.evaluateJavaScript("window.modivue?.nativeHover?.(null)") }
             }
         case "island-size":
-            if let width = body["width"] as? Double, width.isFinite { islandWidth = min(max(80, CGFloat(width)), 320) }
             if let expandedWidth = body["expandedWidth"] as? Double, expandedWidth.isFinite { islandExpandedWidth = min(max(320, CGFloat(expandedWidth)), 900) }
-            if let height = body["height"] as? Double, height.isFinite { islandMinHeight = min(max(160, CGFloat(height)), 1200) }
-            resizeIsland(expanded: (islandWindow?.frame.width ?? 0) > 200)
+            if !islandResizeModeActive, (islandWebView as? IslandWebView)?.dragPhase != "resizing" { resizeIsland(expanded: islandExpanded) }
+        case "start-island-resize":
+            beginIslandResizeMode()
         case "start-island-tour":
             pendingCollapse?.cancel()
             islandTourActive = true
@@ -742,22 +903,47 @@ final class ModivueApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNav
                 }
             }
             if let view = islandWebView as? IslandWebView,
-               let x = body["x"] as? Double, let y = body["y"] as? Double, let width = body["width"] as? Double {
-                view.dragRect = NSRect(x: x, y: view.isFlipped ? y : view.bounds.height - y - 20, width: width, height: 20)
+               let x = body["x"] as? Double, let y = body["y"] as? Double,
+               let width = body["width"] as? Double, let height = body["height"] as? Double {
+                let visualHeight = body["visualHeight"] as? Double ?? height
+                islandRailRect = NSRect(x: x, y: y, width: width, height: visualHeight)
+                if let scale = body["scale"] as? Double, scale.isFinite { islandScale = CGFloat(scale) }
+                if let grip = body["grip"] as? [String: Any], let gx = grip["x"] as? Double,
+                   let gy = grip["y"] as? Double, let gw = grip["width"] as? Double, let gh = grip["height"] as? Double {
+                    view.dragRect = NSIntersectionRect(NSRect(x: gx, y: view.isFlipped ? gy : view.bounds.height - gy - gh,
+                        width: gw, height: gh), view.bounds)
+                }
                 if let buffer = body["buffer"] as? [String: Any], let bx = buffer["x"] as? Double,
                    let by = buffer["y"] as? Double, let bw = buffer["width"] as? Double, let bh = buffer["height"] as? Double {
-                    view.secondaryDragRect = NSRect(x: bx, y: view.isFlipped ? by : view.bounds.height - by - bh, width: bw, height: bh)
+                    let bufferRect = NSRect(x: bx, y: view.isFlipped ? by : view.bounds.height - by - bh,
+                        width: bw, height: bh)
+                    view.secondaryDragRect = NSIntersectionRect(bufferRect, view.bounds)
                 } else { view.secondaryDragRect = .zero }
-                if let reportedHeight = body["height"] as? Double, reportedHeight.isFinite {
-                    let screenHeight = (islandWindow?.screen ?? NSScreen.main)?.visibleFrame.height ?? 720
-                    let nextHeight = min(max(islandMinHeight, CGFloat(reportedHeight) + 32), screenHeight - 40)
-                    if abs(nextHeight - islandContentHeight) > 1 {
+                if height.isFinite, visualHeight.isFinite {
+                    let screen = (islandWindow?.screen ?? NSScreen.main)?.visibleFrame
+                    let nextHeight = min(max(1, CGFloat(height)), screen?.height ?? 720)
+                    islandWidth = CGFloat(width)
+                    if islandResizeModeActive || view.dragPhase == "resizing" {
+                        islandContentHeight = CGFloat(visualHeight)
+                        if let panel = islandWindow, let screen {
+                            let old = panel.frame
+                            let next = NSSize(width: CGFloat(width), height: CGFloat(visualHeight))
+                            if old.size != next {
+                                let x = islandResizeModeActive ? screen.midX - next.width / 2
+                                    : (islandOnLeft ? old.minX : old.maxX - next.width)
+                                let y = islandResizeModeActive ? screen.midY - next.height / 2 : old.maxY - next.height
+                                panel.setFrame(NSRect(x: x, y: y, width: next.width, height: next.height), display: true)
+                                layoutIslandSurface()
+                            }
+                        }
+                    } else if abs(nextHeight - islandContentHeight) > 0.5 || abs((islandWindow?.frame.width ?? CGFloat(width)) - islandSize(expanded: islandExpanded).width) > 0.5 {
                         islandContentHeight = nextHeight
-                        resizeIsland(expanded: (islandWindow?.frame.width ?? 0) > 200)
+                        resizeIsland(expanded: islandExpanded)
                     }
                 }
             }
         case "island-hover":
+            guard !islandResizeModeActive, (islandWebView as? IslandWebView)?.dragPhase != "resizing" else { break }
             pendingCollapse?.cancel()
             if body["expanded"] as? Bool == true {
                 resizeIsland(expanded: true)
@@ -803,7 +989,9 @@ final class ModivueApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNav
                   rail:document.querySelector('#quick-island').getBoundingClientRect().toJSON(),
                   buffer:document.querySelector('#island-buffer').getBoundingClientRect().toJSON(),
                   stage:document.querySelector('.island-stage').getBoundingClientRect().toJSON(),
-                  models:[...document.querySelectorAll('[data-island-model]')].map(el=>({id:el.dataset.identity,label:el.getAttribute('aria-label'),rect:el.getBoundingClientRect().toJSON()})),
+                  models:[...document.querySelectorAll('[data-island-model]')].map(el=>({id:el.dataset.identity,label:el.getAttribute('aria-label'),visible:el.getAttribute('aria-hidden')!=='true',ring:el.querySelector('.metric-rings').getBoundingClientRect().toJSON(),rect:el.getBoundingClientRect().toJSON()})),
+                  grip:document.querySelector('#island-expand').getBoundingClientRect().toJSON(),
+                  resizeMode:document.body.classList.contains('island-resize-mode'),
                   ringCount:document.querySelectorAll('#island-models .ring-value').length,
                   focusCount:document.querySelectorAll('#island-focus .ring-value').length,
                   islandMode:document.body.dataset.islandMode,

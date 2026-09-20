@@ -66,7 +66,7 @@ internal sealed class MonitorContext : ApplicationContext
 {
     private readonly Process service;
     private readonly Form main = new() { Text = "Modivue", Width = 1240, Height = 860, MinimumSize = new(820, 620) };
-    private readonly IslandForm island = new() { Text = "Modivue Island", Width = 112, Height = 420, FormBorderStyle = FormBorderStyle.None,
+    private readonly IslandForm island = new() { Text = "Modivue Island", Width = 112, Height = 160, FormBorderStyle = FormBorderStyle.None,
         ShowInTaskbar = false, TopMost = true, BackColor = Color.Black, TransparencyKey = Color.Black };
     private readonly WebView2 mainWeb = new() { Dock = DockStyle.Fill };
     private readonly WebView2 islandWeb = new() { Dock = DockStyle.Fill, DefaultBackgroundColor = Color.Transparent };
@@ -77,10 +77,15 @@ internal sealed class MonitorContext : ApplicationContext
     private readonly Uri origin;
     private bool mainReady;
     private string? pendingNavigation;
-    private RectangleF rail = new(6, 18, 100, 220), buffer;
-    private float islandWidth = 112, islandExpandedWidth = 570, islandMinHeight = 420;
-    private bool pressed, dragging, expanded, right = true, exiting, ticking, bufferDrag, clickThrough;
+    private RectangleF rail = new(6, 18, 100, 20), islandBounds = new(6, 18, 100, 220), buffer;
+    private float islandWidth = 112, islandExpandedWidth = 570, islandScale = 100, islandContentHeight = 160;
+    private bool pressed, pendingDrag, dragging, resizing, expanded, right = true, exiting, ticking, bufferDrag, clickThrough, hasIslandLayout;
+    private bool islandResizeModeActive, resizeRestoreExpanded, resizeRestoreRight, resizeRestoreClickThrough;
+    private Rectangle resizeRestoreBounds;
     private Point dragStart, windowStart;
+    private float resizeStartScale, resizeValue;
+    private RectangleF resizeStartRail;
+    private long dragPressedAt;
     private Point? snapStart, snapEnd;
     private long snapAt;
     private bool interfaceEnglish = !System.Globalization.CultureInfo.CurrentUICulture.TwoLetterISOLanguageName.Equals("zh", StringComparison.OrdinalIgnoreCase);
@@ -182,38 +187,49 @@ internal sealed class MonitorContext : ApplicationContext
                     UpdateTrayMenu(body.GetProperty("locale").GetString()!);
                     break;
                 case "island-layout":
-                    rail = Rect(body);
-                    rail.Height = 20;
+                    islandBounds = Rect(body);
+                    if (body.TryGetProperty("visualHeight", out var visualHeight) && visualHeight.TryGetSingle(out var visualHeightValue) && float.IsFinite(visualHeightValue)) islandBounds.Height = visualHeightValue;
+                    hasIslandLayout = islandBounds.Width > 0 && islandBounds.Height > 0;
+                    rail = body.TryGetProperty("grip", out var grip) ? Rect(grip) : islandBounds;
+                    if (body.TryGetProperty("scale", out var scaleValue)) islandScale = scaleValue.GetSingle();
+                    islandWidth = islandBounds.Width;
                     if (body.TryGetProperty("buffer", out var b)) buffer = Rect(b);
                     var area = Screen.FromControl(island).WorkingArea;
-                    var newHeight = Math.Min(area.Height, Pixels(Math.Max(islandMinHeight, body.GetProperty("height").GetSingle() + 32)));
-                    var centerY = island.Top + island.Height / 2;
-                    island.Height = newHeight;
-                    island.Top = Math.Clamp(centerY - newHeight / 2, area.Top, area.Bottom - newHeight);
+                    if (!resizing && !islandResizeModeActive) {
+                        var reportedHeight = body.GetProperty("height").GetSingle();
+                        var visibleHeight = body.TryGetProperty("visualHeight", out var visual) && visual.TryGetSingle(out var nextVisualHeight) && float.IsFinite(nextVisualHeight)
+                            ? nextVisualHeight : reportedHeight;
+                        islandContentHeight = Math.Max(1, reportedHeight);
+                        ResizeIslandHost(expanded, area, island.Top + island.Height / 2);
+                    }
+                    if (resizing || islandResizeModeActive) {
+                        islandContentHeight = islandBounds.Height;
+                        var width = Pixels(islandBounds.Width);
+                        var height = Pixels(islandBounds.Height);
+                        var x = islandResizeModeActive ? area.Left + (area.Width - width) / 2 : right ? island.Right - width : island.Left;
+                        var y = islandResizeModeActive ? area.Top + (area.Height - height) / 2 : island.Top;
+                        island.Bounds = new Rectangle(x, y, width, height);
+                    }
                     if (body.TryGetProperty("surfaces", out var surfaces))
                         island.SetSurfaces(surfaces.EnumerateArray().Select(surface =>
                             (Rect(surface), surface.GetProperty("radius").GetSingle())));
                     break;
                 case "island-interaction":
-                    clickThrough = body.GetProperty("clickThrough").GetBoolean();
-                    island.ClickThrough = clickThrough;
-                    var style = GetWindowLongPtr(island.Handle, -20).ToInt64();
-                    SetWindowLongPtr(island.Handle, -20, (nint)(clickThrough ? style | 0x80020 : style & ~0x20));
-                    if (clickThrough) await islandWeb.ExecuteScriptAsync("window.modivue?.nativeHover(null)");
+                    var requestedClickThrough = body.GetProperty("clickThrough").GetBoolean();
+                    if (islandResizeModeActive) resizeRestoreClickThrough = requestedClickThrough;
+                    else SetIslandClickThrough(requestedClickThrough);
+                    if (requestedClickThrough && !islandResizeModeActive) await islandWeb.ExecuteScriptAsync("window.modivue?.nativeHover(null)");
                     break;
                 case "island-size":
-                    if (body.TryGetProperty("width", out var compactWidth) && compactWidth.TryGetSingle(out var nextWidth) && float.IsFinite(nextWidth)) islandWidth = Math.Clamp(nextWidth, 80, 320);
                     if (body.TryGetProperty("expandedWidth", out var expandedWidth) && expandedWidth.TryGetSingle(out var nextExpandedWidth) && float.IsFinite(nextExpandedWidth)) islandExpandedWidth = Math.Clamp(nextExpandedWidth, 320, 900);
-                    if (body.TryGetProperty("height", out var islandHeight) && islandHeight.TryGetSingle(out var nextHeight) && float.IsFinite(nextHeight)) islandMinHeight = Math.Clamp(nextHeight, 160, 1200);
-                    var configuredWidth = Pixels(expanded ? islandExpandedWidth : islandWidth);
-                    if (right) island.Left += island.Width - configuredWidth;
-                    island.Width = configuredWidth;
+                    if (!islandResizeModeActive) ResizeIslandHost(expanded, Screen.FromControl(island).WorkingArea, island.Top + island.Height / 2);
                     break;
                 case "island-hover":
-                    expanded = body.GetProperty("expanded").GetBoolean();
-                    int width = Pixels(expanded ? islandExpandedWidth : islandWidth);
-                    if (right) island.Left += island.Width - width;
-                    island.Width = width; break;
+                    if (!islandResizeModeActive) {
+                        expanded = body.GetProperty("expanded").GetBoolean();
+                        ResizeIslandHost(expanded, Screen.FromControl(island).WorkingArea, island.Top + island.Height / 2);
+                    }
+                    break;
                 case "open-main":
                     pendingNavigation = body.GetRawText();
                     if (main.WindowState == FormWindowState.Minimized) main.WindowState = FormWindowState.Normal;
@@ -223,6 +239,7 @@ internal sealed class MonitorContext : ApplicationContext
                 case "main-ready":
                     if (web == mainWeb) { mainReady = true; await ApplyPendingNavigation(); }
                     break;
+                case "start-island-resize": await BeginIslandResizeMode(); break;
                 case "start-island-tour": island.Show(); await islandWeb.ExecuteScriptAsync("window.modivue?.startTour()"); break;
             }
         };
@@ -256,8 +273,102 @@ internal sealed class MonitorContext : ApplicationContext
 
     private static RectangleF Rect(JsonElement value) => new(value.GetProperty("x").GetSingle(), value.GetProperty("y").GetSingle(), value.GetProperty("width").GetSingle(), value.GetProperty("height").GetSingle());
     private int Pixels(float value) => (int)Math.Round(value * island.DeviceDpi / 96f);
+    private int ClampIslandTop(int proposedTop, Rectangle area)
+    {
+        var panelMinimum = area.Top;
+        var panelMaximum = Math.Max(panelMinimum, area.Bottom - island.Height);
+        if (!hasIslandLayout || islandBounds.Width <= 0 || islandBounds.Height <= 0 || islandBounds.Bottom > island.Height + 2)
+            return Math.Clamp(proposedTop, panelMinimum, panelMaximum);
+        // islandBounds is reported in top-left CSS coordinates. Clamp the
+        // visible rail edges instead of the transparent host form so the rail
+        // can touch both work-area edges.
+        var visualTop = Pixels(islandBounds.Top);
+        var visualBottom = Pixels(islandBounds.Bottom);
+        var minimum = area.Top - visualTop;
+        var maximum = area.Bottom - visualBottom;
+        return minimum <= maximum ? Math.Clamp(proposedTop, minimum, maximum)
+            : Math.Clamp(proposedTop, panelMinimum, panelMaximum);
+    }
+    private void SetIslandClickThrough(bool enabled)
+    {
+        clickThrough = enabled;
+        island.ClickThrough = enabled;
+        var style = GetWindowLongPtr(island.Handle, -20).ToInt64();
+        SetWindowLongPtr(island.Handle, -20, (nint)(enabled ? style | 0x80020 : style & ~0x20));
+    }
+
     private static void OpenExternal(string value) {
         if (Uri.TryCreate(value, UriKind.Absolute, out var uri) && uri.Scheme == "https") Process.Start(new ProcessStartInfo(value) { UseShellExecute = true });
+    }
+
+    private void ResizeIslandHost(bool useExpandedWidth, Rectangle area, int centerY)
+    {
+        var previousTop = island.Top;
+        var width = Pixels(useExpandedWidth ? Math.Max(islandExpandedWidth, islandWidth + 456) : islandWidth);
+        var height = Math.Min(area.Height, Pixels(islandContentHeight));
+        if (right) island.Left = area.Right - width;
+        else island.Left = area.Left;
+        island.Width = width;
+        island.Height = height;
+        var proposedTop = previousTop;
+        island.Top = islandResizeModeActive
+            ? Math.Clamp(proposedTop, area.Top, Math.Max(area.Top, area.Bottom - height))
+            : ClampIslandTop(proposedTop, area);
+    }
+
+    private async Task BeginIslandResizeMode()
+    {
+        if (!islandResizeModeActive) {
+            islandResizeModeActive = true;
+            resizeRestoreBounds = island.Bounds;
+            resizeRestoreExpanded = expanded;
+            resizeRestoreRight = right;
+            resizeRestoreClickThrough = clickThrough;
+        }
+        expanded = false;
+        SetIslandClickThrough(false);
+        await islandWeb.ExecuteScriptAsync("window.modivue?.nativeResizeMode?.(true)");
+        var area = Screen.FromControl(island).WorkingArea;
+        var width = Math.Min(Pixels(islandWidth), area.Width);
+        var height = Math.Min(Pixels(islandBounds.Height > 0 ? islandBounds.Height : islandContentHeight), area.Height);
+        island.Bounds = new Rectangle(area.Left + (area.Width - width) / 2, area.Top + (area.Height - height) / 2, width, height);
+        island.Show(); island.BringToFront();
+        if (mainWeb.CoreWebView2 is not null) await mainWeb.ExecuteScriptAsync("window.modivue?.nativeResizeOverlay?.(true)");
+    }
+
+    private async Task FinishIslandResizeMode()
+    {
+        if (!islandResizeModeActive) return;
+        islandResizeModeActive = false;
+        expanded = resizeRestoreExpanded;
+        right = resizeRestoreRight;
+        var screen = Screen.AllScreens.FirstOrDefault(candidate => candidate.WorkingArea.IntersectsWith(resizeRestoreBounds)) ?? Screen.FromControl(island);
+        var area = screen.WorkingArea;
+        island.Top = resizeRestoreBounds.Top;
+        ResizeIslandHost(expanded, area, resizeRestoreBounds.Top + resizeRestoreBounds.Height / 2);
+        SetIslandClickThrough(resizeRestoreClickThrough);
+        await islandWeb.ExecuteScriptAsync("window.modivue?.nativeResizeMode?.(false)");
+        if (mainWeb.CoreWebView2 is not null) await mainWeb.ExecuteScriptAsync("window.modivue?.nativeResizeOverlay?.(false)");
+    }
+
+    private void ResizeIslandBy(Point pointer)
+    {
+        var dpi = island.DeviceDpi / 96f;
+        var extent = (bufferDrag ? resizeStartRail.Width : resizeStartRail.Height) * dpi;
+        if (extent <= 0) return;
+        var change = bufferDrag ? (right ? dragStart.X - pointer.X : pointer.X - dragStart.X) : dragStart.Y - pointer.Y;
+        resizeValue = Math.Clamp(resizeStartScale * (1 + change * (islandResizeModeActive ? 2 : 1) / extent), 10, 200);
+        _ = islandWeb.ExecuteScriptAsync($"window.modivue?.nativeResizePreview?.({JsonSerializer.Serialize(resizeValue)})");
+    }
+
+    private async Task FinishIslandResize()
+    {
+        await islandWeb.ExecuteScriptAsync($"window.modivue?.nativeResizeValue?.({{ scale: {JsonSerializer.Serialize(resizeValue)} }})");
+        Cursor.Current = Cursors.Default;
+        resizing = false;
+        dragging = false;
+        pendingDrag = false;
+        await FinishIslandResizeMode();
     }
 
     private async Task TickPointer()
@@ -268,19 +379,54 @@ internal sealed class MonitorContext : ApplicationContext
             var point = island.PointToClient(Cursor.Position); float scale = island.DeviceDpi / 96f;
             var css = new PointF(point.X / scale, point.Y / scale);
             bool down = GetAsyncKeyState(1) < 0;
-            if (down && !pressed && (buffer.Contains(css) || new RectangleF(rail.X, rail.Y, rail.Width, 22).Contains(css))) {
-                dragging = true; bufferDrag = buffer.Contains(css); dragStart = Cursor.Position; windowStart = island.Location; snapEnd = null;
-                await islandWeb.ExecuteScriptAsync($"window.modivue?.nativeDrag('dragging',{bufferDrag.ToString().ToLowerInvariant()})");
+            var handle = buffer.Contains(css) || rail.Contains(css);
+            if (down && !pressed && !pendingDrag && !dragging && handle) {
+                bufferDrag = buffer.Contains(css); dragStart = Cursor.Position; windowStart = island.Location; snapEnd = null;
+                if (islandResizeModeActive) {
+                    resizing = true; dragging = true;
+                    resizeStartScale = resizeValue = islandScale; resizeStartRail = islandBounds;
+                    Cursor.Current = bufferDrag ? Cursors.SizeWE : Cursors.SizeNS;
+                    await islandWeb.ExecuteScriptAsync($"window.modivue?.nativeResize('started',{bufferDrag.ToString().ToLowerInvariant()})");
+                } else {
+                    pendingDrag = true;
+                    dragPressedAt = Environment.TickCount64;
+                    await islandWeb.ExecuteScriptAsync($"window.modivue?.nativeDrag('pressed',{bufferDrag.ToString().ToLowerInvariant()})");
+                }
             }
-            if (dragging && down) island.Location = new(windowStart.X + Cursor.Position.X - dragStart.X, windowStart.Y + Cursor.Position.Y - dragStart.Y);
-            if (dragging && !down) {
-                dragging = false;
-                var area = Screen.FromPoint(Cursor.Position).WorkingArea;
-                right = island.Left + island.Width / 2 >= area.Left + area.Width / 2;
-                snapStart = island.Location;
-                snapEnd = new(right ? area.Right - island.Width : area.Left, Math.Clamp(island.Top, area.Top, Math.Max(area.Top, area.Bottom - island.Height)));
-                snapAt = Environment.TickCount64;
-                await islandWeb.ExecuteScriptAsync($"window.modivue?.nativeDrag('idle',{bufferDrag.ToString().ToLowerInvariant()});window.modivue?.setIslandSide('{(right ? "right" : "left")}')");
+            if (pendingDrag && down && !dragging) {
+                var moved = Math.Abs(Cursor.Position.X - dragStart.X) >= 4 || Math.Abs(Cursor.Position.Y - dragStart.Y) >= 4;
+                if (Environment.TickCount64 - dragPressedAt >= 500 && !moved) {
+                    resizing = true; dragging = true; pendingDrag = false;
+                    resizeStartScale = resizeValue = islandScale; resizeStartRail = islandBounds;
+                    Cursor.Current = bufferDrag ? Cursors.SizeWE : Cursors.SizeNS;
+                    await islandWeb.ExecuteScriptAsync($"window.modivue?.nativeResize('started',{bufferDrag.ToString().ToLowerInvariant()})");
+                } else if (moved) {
+                    dragging = true; pendingDrag = false;
+                    await islandWeb.ExecuteScriptAsync($"window.modivue?.nativeDrag('dragging',{bufferDrag.ToString().ToLowerInvariant()})");
+                }
+            }
+            if (dragging && down) {
+                if (resizing) ResizeIslandBy(Cursor.Position);
+                else {
+                    var area = Screen.FromPoint(Cursor.Position).WorkingArea;
+                    var y = ClampIslandTop(windowStart.Y + Cursor.Position.Y - dragStart.Y, area);
+                    island.Location = new(windowStart.X + Cursor.Position.X - dragStart.X, y);
+                }
+            }
+            if ((dragging || pendingDrag) && !down) {
+                if (resizing) {
+                    await FinishIslandResize();
+                    await islandWeb.ExecuteScriptAsync($"window.modivue?.nativeResize('idle',{bufferDrag.ToString().ToLowerInvariant()})");
+                } else if (dragging) {
+                    dragging = false;
+                    var area = Screen.FromPoint(Cursor.Position).WorkingArea;
+                    right = island.Left + island.Width / 2 >= area.Left + area.Width / 2;
+                    snapStart = island.Location;
+                    snapEnd = new(right ? area.Right - island.Width : area.Left, ClampIslandTop(island.Top, area));
+                    snapAt = Environment.TickCount64;
+                    await islandWeb.ExecuteScriptAsync($"window.modivue?.nativeDrag('idle',{bufferDrag.ToString().ToLowerInvariant()});window.modivue?.setIslandSide('{(right ? "right" : "left")}')");
+                }
+                pendingDrag = false;
             }
             if (snapEnd is Point end && snapStart is Point start) {
                 var t = Math.Min(1, (Environment.TickCount64 - snapAt) / 280d); var eased = 1 - Math.Pow(1 - t, 3);
@@ -288,7 +434,7 @@ internal sealed class MonitorContext : ApplicationContext
                 if (t == 1) snapEnd = null;
             }
             pressed = down;
-            if (!dragging) await islandWeb.ExecuteScriptAsync($"window.modivue?.nativeHover({JsonSerializer.Serialize(new { clientX = css.X, clientY = css.Y, screenX = Cursor.Position.X, screenY = Cursor.Position.Y })})");
+            if (!dragging && !pendingDrag) await islandWeb.ExecuteScriptAsync($"window.modivue?.nativeHover({JsonSerializer.Serialize(new { clientX = css.X, clientY = css.Y, screenX = Cursor.Position.X, screenY = Cursor.Position.Y })})");
         } finally { ticking = false; }
     }
 
