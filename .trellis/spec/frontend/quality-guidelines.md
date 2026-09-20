@@ -22,6 +22,10 @@ Questions to answer:
 
 ## Forbidden Patterns
 
+- Do not use a WinForms transparency key or an opaque hit-test backing for the Windows island. They cannot preserve per-pixel alpha at antialiased edges. `IslandWindow` owns native physical-pixel bounds; WPF and `WebView2CompositionControl` own composition.
+- Do not let browser `:hover` alone keep desktop island handles visible. Native pointer messages own `.island-rail-hover`, including leave cleanup.
+- Native island rings use ARIA labels and the existing detail popover rather than SVG `<title>` tooltips. Keep ring creation and incremental updates consistent when title nodes are absent.
+
 <!-- Patterns that should never be used and why -->
 
 (To be filled by the team)

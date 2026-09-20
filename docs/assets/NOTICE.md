@@ -1,6 +1,8 @@
 # 素材来源
 
-- `app-icon.svg` 内嵌仓库现有 `src/data/app-icon.png` 的缩略图，不是重新设计的矢量商标。
+- `app-icon.svg` 和 `src/data/app-mark.svg` 分别使用用户提供的 `files.zip` 中的 `m-icon-512.svg`（黑底）和 `m-mark.svg`（透明底），保留原始 SVG。
+- `src/data/app-icon.png` 由黑底 SVG 渲染为 1024×1024 透明圆角图像；Windows ICO 和 macOS ICNS 使用同一源图。
+- `wordmark.svg` 为 Modivue 字标，`v`、`u`、`e` 依次使用经典三环的蓝色 `#3ba7ff`、绿色 `#14e6c0`、黄色 `#ffc52e`，与软件侧栏一致。
 - `feature-*.svg`、`hero-*.svg` 是 Modivue 文档模板，不是实际界面截图。
 - `download-*.svg` 为文档下载按钮，平台标识仅用于说明下载平台。
 - Claude Code、Codex、Gemini、Qwen、OpenCode、Goose、Pi、Grok、OpenClaw、Cline、DeepSeek Harness badge 复用仓库现有图标，来源与许可证见 [Agent Icons](../../src/data/agent-icons/NOTICE.md)。

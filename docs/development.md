@@ -47,7 +47,8 @@ npm run windows:build
 - 构建使用 Node.js 24+，发布包内含 .NET 8 与 Node。安装器会在缺少 WebView2 时运行 Microsoft 官方 bootstrapper；portable 版会先征求用户同意。
 - portable 根目录只保留 `Modivue.exe` 与 `resources/`；安装器可选开始菜单、桌面快捷方式和登录时自动启动。
 - 数据目录：`%LOCALAPPDATA%/Modivue`。
-- 宿主已交叉编译通过；原生鼠标交互与多 DPI 实机验收尚未完成；尚未配置代码签名。
+- 最低系统为 Windows 10 1809。主窗口使用 WinForms；灵动岛使用 WPF 透明窗口和 WebView2CompositionControl，保留逐像素透明与抗锯齿，不使用色键透明或不透明的鼠标命中底板。
+- Windows 原生启动、透明合成、主题标题栏和余量图标动画已检查；完整鼠标交互与多 DPI 实机验收尚未完成；尚未配置代码签名。
 
 ## UI 测试
 

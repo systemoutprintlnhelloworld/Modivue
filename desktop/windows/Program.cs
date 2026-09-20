@@ -1,11 +1,14 @@
 using System.Diagnostics;
+using System.IO;
 using System.Net;
+using System.Net.Http;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using Microsoft.Win32;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
+using SaveFileDialog = System.Windows.Forms.SaveFileDialog;
 
 namespace Modivue;
 
@@ -20,59 +23,17 @@ internal static class Program
     }
 }
 
-internal sealed class IslandForm : Form
-{
-    public bool ClickThrough { get; set; }
-    private (RectangleF Bounds, float Radius)[] surfaces = [];
-
-    public void SetSurfaces(IEnumerable<(RectangleF Bounds, float Radius)> value)
-    {
-        surfaces = value.ToArray();
-        Invalidate();
-    }
-
-    protected override void OnPaint(PaintEventArgs e)
-    {
-        base.OnPaint(e);
-        // WebView2 draws in a child HWND. A color-key-only parent remains
-        // transparent to native mouse input even under visible web content.
-        // Back the interactive surfaces, leaving the surrounding desktop clear.
-        using var brush = new SolidBrush(Color.FromArgb(20, 24, 32));
-        var scale = DeviceDpi / 96f;
-        e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-        foreach (var (bounds, radius) in surfaces) {
-            var rect = new RectangleF(bounds.X * scale, bounds.Y * scale, bounds.Width * scale, bounds.Height * scale);
-            if (rect.Width <= 0 || rect.Height <= 0) continue;
-            var diameter = Math.Clamp(radius * scale * 2, 0, Math.Min(rect.Width, rect.Height));
-            if (diameter == 0) { e.Graphics.FillRectangle(brush, rect); continue; }
-            using var path = new System.Drawing.Drawing2D.GraphicsPath();
-            path.AddArc(rect.Left, rect.Top, diameter, diameter, 180, 90);
-            path.AddArc(rect.Right - diameter, rect.Top, diameter, diameter, 270, 90);
-            path.AddArc(rect.Right - diameter, rect.Bottom - diameter, diameter, diameter, 0, 90);
-            path.AddArc(rect.Left, rect.Bottom - diameter, diameter, diameter, 90, 90);
-            path.CloseFigure();
-            e.Graphics.FillPath(brush, path);
-        }
-    }
-
-    protected override void WndProc(ref Message message)
-    {
-        const int WM_NCHITTEST = 0x84, HTTRANSPARENT = -1;
-        if (ClickThrough && message.Msg == WM_NCHITTEST) { message.Result = (IntPtr)HTTRANSPARENT; return; }
-        base.WndProc(ref message);
-    }
-}
-
 internal sealed class MonitorContext : ApplicationContext
 {
     private const string StartupRegistryPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
     private const string AppRegistryPath = @"Software\Modivue";
     private readonly Process service;
     private readonly Form main = new() { Text = "Modivue", Width = 1240, Height = 860, MinimumSize = new(820, 620) };
-    private readonly IslandForm island = new() { Text = "Modivue Island", Width = 112, Height = 160, FormBorderStyle = FormBorderStyle.None,
-        ShowInTaskbar = false, TopMost = true, BackColor = Color.Black, TransparencyKey = Color.Black };
+    private readonly IslandWindow island = new();
     private readonly WebView2 mainWeb = new() { Dock = DockStyle.Fill };
-    private readonly WebView2 islandWeb = new() { Dock = DockStyle.Fill, DefaultBackgroundColor = Color.Transparent };
+    private readonly Microsoft.Web.WebView2.Wpf.WebView2CompositionControl islandWeb = new() {
+        DefaultBackgroundColor = Color.Transparent, UseLayoutRounding = false
+    };
     private readonly NotifyIcon tray = new() { Text = "Modivue", Visible = true };
     private readonly ContextMenuStrip trayMenu = new();
     private readonly ToolStripItem menuOpen, menuIsland, menuExit;
@@ -94,16 +55,20 @@ internal sealed class MonitorContext : ApplicationContext
     private long dragPressedAt;
     private Point? snapStart, snapEnd;
     private long snapAt;
+    private bool mainDark = true;
+    private Color mainBackground = Color.FromArgb(17, 20, 26);
     private bool interfaceEnglish = !System.Globalization.CultureInfo.CurrentUICulture.TwoLetterISOLanguageName.Equals("zh", StringComparison.OrdinalIgnoreCase);
     private string Localized(string chinese, string english) => interfaceEnglish ? english : chinese;
     [DllImport("user32.dll")] private static extern short GetAsyncKeyState(int key);
     [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")] private static extern nint GetWindowLongPtr(nint window, int index);
     [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")] private static extern nint SetWindowLongPtr(nint window, int index, nint value);
+    [DllImport("dwmapi.dll")] private static extern int DwmSetWindowAttribute(nint window, int attribute, ref int value, int size);
 
     public MonitorContext(bool background)
     {
         appIcon = Icon.ExtractAssociatedIcon(Application.ExecutablePath) ?? (Icon)SystemIcons.Application.Clone();
-        main.Icon = appIcon; island.Icon = appIcon; tray.Icon = appIcon;
+        main.Icon = appIcon; tray.Icon = appIcon;
+        main.HandleCreated += (_, _) => ApplyMainWindowTheme();
         // Node binds loopback only. The short reservation avoids choosing a fixed user port.
         var listener = new TcpListener(IPAddress.Loopback, 0); listener.Start();
         var port = ((IPEndPoint)listener.LocalEndpoint).Port; listener.Stop();
@@ -118,9 +83,9 @@ internal sealed class MonitorContext : ApplicationContext
             ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Modivue");
         start.Environment["MODIVUE_LANGUAGES"] = System.Globalization.CultureInfo.CurrentUICulture.Name;
         service = Process.Start(start) ?? throw new InvalidOperationException(Localized("无法启动 Modivue 本地服务。", "Cannot start the local Modivue service."));
-        main.Controls.Add(mainWeb); island.Controls.Add(islandWeb);
+        main.Controls.Add(mainWeb); island.Content = islandWeb;
         main.FormClosing += (_, e) => { if (!exiting) { e.Cancel = true; main.Hide(); } };
-        island.FormClosing += (_, e) => { if (!exiting) { e.Cancel = true; island.Hide(); } };
+        island.Closing += (_, e) => { if (!exiting) { e.Cancel = true; island.Hide(); } };
         menuOpen = trayMenu.Items.Add("Modivue", null, (_, _) => { main.Show(); main.Activate(); });
         menuIsland = trayMenu.Items.Add("", null, (_, _) => island.Show());
         menuStartup = new ToolStripMenuItem();
@@ -132,7 +97,7 @@ internal sealed class MonitorContext : ApplicationContext
         pointer.Tick += async (_, _) => await TickPointer();
         if (!background) main.Show();
         island.Show();
-        var area = Screen.PrimaryScreen!.WorkingArea; island.Location = new(area.Right - island.Width, area.Top + 120);
+        var area = Screen.PrimaryScreen!.WorkingArea; island.PixelLocation = new(area.Right - island.PixelBounds.Width, area.Top + 120);
         _ = Initialize();
     }
 
@@ -154,7 +119,10 @@ internal sealed class MonitorContext : ApplicationContext
             var profile = Path.Combine(service.StartInfo.Environment["MODIVUE_DATA_DIR"]!, "WebView2");
             var environment = await CreateWebViewEnvironment(profile);
             if (environment is null) { ExitThread(); return; }
-            await Prepare(mainWeb, environment, "main"); await Prepare(islandWeb, environment, "island");
+            await mainWeb.EnsureCoreWebView2Async(environment);
+            await islandWeb.EnsureCoreWebView2Async(environment);
+            await Prepare(mainWeb.CoreWebView2, "main");
+            await Prepare(islandWeb.CoreWebView2, "island");
             pointer.Start();
             PromptForStartup();
         } catch (Exception error) {
@@ -185,17 +153,16 @@ internal sealed class MonitorContext : ApplicationContext
         }
     }
 
-    private async Task Prepare(WebView2 web, CoreWebView2Environment environment, string mode)
+    private async Task Prepare(CoreWebView2 web, string mode)
     {
-        await web.EnsureCoreWebView2Async(environment);
-        await web.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync($"window.modivueLanguages = {JsonSerializer.Serialize(new[] { System.Globalization.CultureInfo.CurrentUICulture.Name })};");
-        web.CoreWebView2.Settings.IsStatusBarEnabled = false;
-        web.CoreWebView2.NewWindowRequested += (_, e) => { e.Handled = true; OpenExternal(e.Uri); };
-        web.CoreWebView2.NavigationStarting += (_, e) => {
+        await web.AddScriptToExecuteOnDocumentCreatedAsync($"window.modivueLanguages = {JsonSerializer.Serialize(new[] { System.Globalization.CultureInfo.CurrentUICulture.Name })};");
+        web.Settings.IsStatusBarEnabled = false;
+        web.NewWindowRequested += (_, e) => { e.Handled = true; OpenExternal(e.Uri); };
+        web.NavigationStarting += (_, e) => {
             if (!e.Uri.StartsWith(origin.AbsoluteUri, StringComparison.Ordinal)) { e.Cancel = true; OpenExternal(e.Uri); }
-            else if (web == mainWeb) mainReady = false;
+            else if (web == mainWeb.CoreWebView2) mainReady = false;
         };
-        web.CoreWebView2.WebMessageReceived += async (_, e) => {
+        web.WebMessageReceived += async (_, e) => {
             if (!e.Source.StartsWith(origin.AbsoluteUri, StringComparison.Ordinal)) return;
             using var message = JsonDocument.Parse(e.WebMessageAsJson); var body = message.RootElement;
             if (!body.TryGetProperty("type", out var type)) return;
@@ -228,6 +195,15 @@ internal sealed class MonitorContext : ApplicationContext
                 case "locale":
                     UpdateTrayMenu(body.GetProperty("locale").GetString()!);
                     break;
+                case "appearance":
+                    if (web == mainWeb.CoreWebView2) {
+                        mainDark = body.TryGetProperty("dark", out var dark) && dark.GetBoolean();
+                        if (body.TryGetProperty("background", out var background)) {
+                            try { mainBackground = ColorTranslator.FromHtml(background.GetString()!); } catch (Exception) {}
+                        }
+                        ApplyMainWindowTheme();
+                    }
+                    break;
                 case "island-layout":
                     islandBounds = Rect(body);
                     if (body.TryGetProperty("visualHeight", out var visualHeight) && visualHeight.TryGetSingle(out var visualHeightValue) && float.IsFinite(visualHeightValue)) islandBounds.Height = visualHeightValue;
@@ -236,25 +212,20 @@ internal sealed class MonitorContext : ApplicationContext
                     if (body.TryGetProperty("scale", out var scaleValue)) islandScale = scaleValue.GetSingle();
                     islandWidth = islandBounds.Width;
                     if (body.TryGetProperty("buffer", out var b)) buffer = Rect(b);
-                    var area = Screen.FromControl(island).WorkingArea;
+                    var area = Screen.FromHandle(island.Handle).WorkingArea;
                     if (!resizing && !islandResizeModeActive) {
                         var reportedHeight = body.GetProperty("height").GetSingle();
-                        var visibleHeight = body.TryGetProperty("visualHeight", out var visual) && visual.TryGetSingle(out var nextVisualHeight) && float.IsFinite(nextVisualHeight)
-                            ? nextVisualHeight : reportedHeight;
                         islandContentHeight = Math.Max(1, reportedHeight);
-                        ResizeIslandHost(expanded, area, island.Top + island.Height / 2);
+                        ResizeIslandHost(expanded, area);
                     }
                     if (resizing || islandResizeModeActive) {
                         islandContentHeight = islandBounds.Height;
                         var width = Pixels(islandBounds.Width);
                         var height = Pixels(islandBounds.Height);
-                        var x = islandResizeModeActive ? area.Left + (area.Width - width) / 2 : right ? island.Right - width : island.Left;
-                        var y = islandResizeModeActive ? area.Top + (area.Height - height) / 2 : island.Top;
-                        island.Bounds = new Rectangle(x, y, width, height);
+                        var x = islandResizeModeActive ? area.Left + (area.Width - width) / 2 : right ? island.PixelBounds.Right - width : island.PixelBounds.Left;
+                        var y = islandResizeModeActive ? area.Top + (area.Height - height) / 2 : island.PixelTop;
+                        island.PixelBounds = new Rectangle(x, y, width, height);
                     }
-                    if (body.TryGetProperty("surfaces", out var surfaces))
-                        island.SetSurfaces(surfaces.EnumerateArray().Select(surface =>
-                            (Rect(surface), surface.GetProperty("radius").GetSingle())));
                     break;
                 case "island-interaction":
                     var requestedClickThrough = body.GetProperty("clickThrough").GetBoolean();
@@ -264,12 +235,12 @@ internal sealed class MonitorContext : ApplicationContext
                     break;
                 case "island-size":
                     if (body.TryGetProperty("expandedWidth", out var expandedWidth) && expandedWidth.TryGetSingle(out var nextExpandedWidth) && float.IsFinite(nextExpandedWidth)) islandExpandedWidth = Math.Clamp(nextExpandedWidth, 320, 900);
-                    if (!islandResizeModeActive) ResizeIslandHost(expanded, Screen.FromControl(island).WorkingArea, island.Top + island.Height / 2);
+                    if (!islandResizeModeActive) ResizeIslandHost(expanded, Screen.FromHandle(island.Handle).WorkingArea);
                     break;
                 case "island-hover":
                     if (!islandResizeModeActive) {
                         expanded = body.GetProperty("expanded").GetBoolean();
-                        ResizeIslandHost(expanded, Screen.FromControl(island).WorkingArea, island.Top + island.Height / 2);
+                        ResizeIslandHost(expanded, Screen.FromHandle(island.Handle).WorkingArea);
                     }
                     break;
                 case "open-main":
@@ -279,13 +250,13 @@ internal sealed class MonitorContext : ApplicationContext
                     await ApplyPendingNavigation();
                     break;
                 case "main-ready":
-                    if (web == mainWeb) { mainReady = true; await ApplyPendingNavigation(); }
+                    if (web == mainWeb.CoreWebView2) { mainReady = true; await ApplyPendingNavigation(); }
                     break;
                 case "start-island-resize": await BeginIslandResizeMode(); break;
                 case "start-island-tour": island.Show(); await islandWeb.ExecuteScriptAsync("window.modivue?.startTour()"); break;
             }
         };
-        web.Source = new Uri(origin, $"/?desktop={mode}");
+        web.Navigate(new Uri(origin, $"/?desktop={mode}").AbsoluteUri);
     }
 
     private async Task ApplyPendingNavigation()
@@ -298,7 +269,7 @@ internal sealed class MonitorContext : ApplicationContext
         await mainWeb.ExecuteScriptAsync($"void (async () => {{ const target = {navigation}; if (target.modelId) await window.modivue.selectModel(target.modelId); if (target.view) window.modivue.openView(target.view); }})()");
     }
 
-    private static Task<string> Reply(WebView2 web, string requestId, object result)
+    private static Task<string> Reply(CoreWebView2 web, string requestId, object result)
     {
         var payload = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(JsonSerializer.Serialize(result))!;
         payload["requestId"] = JsonSerializer.SerializeToElement(requestId);
@@ -352,13 +323,28 @@ internal sealed class MonitorContext : ApplicationContext
         menuExit.Text = Localized("退出 Modivue", "Quit Modivue");
     }
 
+    private void ApplyMainWindowTheme()
+    {
+        if (!OperatingSystem.IsWindowsVersionAtLeast(10) || !main.IsHandleCreated) return;
+        main.BackColor = mainBackground;
+        var dark = mainDark ? 1 : 0;
+        if (DwmSetWindowAttribute(main.Handle, 20, ref dark, sizeof(int)) != 0)
+            DwmSetWindowAttribute(main.Handle, 19, ref dark, sizeof(int));
+        var caption = mainBackground.R | mainBackground.G << 8 | mainBackground.B << 16;
+        var text = mainDark ? 0x00FFFFFF : 0x00000000;
+        DwmSetWindowAttribute(main.Handle, 34, ref caption, sizeof(int));
+        DwmSetWindowAttribute(main.Handle, 35, ref caption, sizeof(int));
+        DwmSetWindowAttribute(main.Handle, 36, ref text, sizeof(int));
+    }
+
     private static RectangleF Rect(JsonElement value) => new(value.GetProperty("x").GetSingle(), value.GetProperty("y").GetSingle(), value.GetProperty("width").GetSingle(), value.GetProperty("height").GetSingle());
     private int Pixels(float value) => (int)Math.Round(value * island.DeviceDpi / 96f);
-    private int ClampIslandTop(int proposedTop, Rectangle area)
+    private int ClampIslandTop(int proposedTop, Rectangle area, int? height = null)
     {
+        var hostHeight = height ?? island.PixelBounds.Height;
         var panelMinimum = area.Top;
-        var panelMaximum = Math.Max(panelMinimum, area.Bottom - island.Height);
-        if (!hasIslandLayout || islandBounds.Width <= 0 || islandBounds.Height <= 0 || islandBounds.Bottom > island.Height + 2)
+        var panelMaximum = Math.Max(panelMinimum, area.Bottom - hostHeight);
+        if (!hasIslandLayout || islandBounds.Width <= 0 || islandBounds.Height <= 0 || Pixels(islandBounds.Bottom) > hostHeight + 2)
             return Math.Clamp(proposedTop, panelMinimum, panelMaximum);
         // islandBounds is reported in top-left CSS coordinates. Clamp the
         // visible rail edges instead of the transparent host form so the rail
@@ -373,7 +359,6 @@ internal sealed class MonitorContext : ApplicationContext
     private void SetIslandClickThrough(bool enabled)
     {
         clickThrough = enabled;
-        island.ClickThrough = enabled;
         var style = GetWindowLongPtr(island.Handle, -20).ToInt64();
         SetWindowLongPtr(island.Handle, -20, (nint)(enabled ? style | 0x80020 : style & ~0x20));
     }
@@ -382,26 +367,23 @@ internal sealed class MonitorContext : ApplicationContext
         if (Uri.TryCreate(value, UriKind.Absolute, out var uri) && uri.Scheme == "https") Process.Start(new ProcessStartInfo(value) { UseShellExecute = true });
     }
 
-    private void ResizeIslandHost(bool useExpandedWidth, Rectangle area, int centerY)
+    private void ResizeIslandHost(bool useExpandedWidth, Rectangle area)
     {
-        var previousTop = island.Top;
+        var previousTop = island.PixelTop;
         var width = Pixels(useExpandedWidth ? Math.Max(islandExpandedWidth, islandWidth + 456) : islandWidth);
         var height = Math.Min(area.Height, Pixels(islandContentHeight));
-        if (right) island.Left = area.Right - width;
-        else island.Left = area.Left;
-        island.Width = width;
-        island.Height = height;
-        var proposedTop = previousTop;
-        island.Top = islandResizeModeActive
-            ? Math.Clamp(proposedTop, area.Top, Math.Max(area.Top, area.Bottom - height))
-            : ClampIslandTop(proposedTop, area);
+        var x = right ? area.Right - width : area.Left;
+        var y = islandResizeModeActive
+            ? Math.Clamp(previousTop, area.Top, Math.Max(area.Top, area.Bottom - height))
+            : ClampIslandTop(previousTop, area, height);
+        island.PixelBounds = new Rectangle(x, y, width, height);
     }
 
     private async Task BeginIslandResizeMode()
     {
         if (!islandResizeModeActive) {
             islandResizeModeActive = true;
-            resizeRestoreBounds = island.Bounds;
+            resizeRestoreBounds = island.PixelBounds;
             resizeRestoreExpanded = expanded;
             resizeRestoreRight = right;
             resizeRestoreClickThrough = clickThrough;
@@ -409,11 +391,11 @@ internal sealed class MonitorContext : ApplicationContext
         expanded = false;
         SetIslandClickThrough(false);
         await islandWeb.ExecuteScriptAsync("window.modivue?.nativeResizeMode?.(true)");
-        var area = Screen.FromControl(island).WorkingArea;
+        var area = Screen.FromHandle(island.Handle).WorkingArea;
         var width = Math.Min(Pixels(islandWidth), area.Width);
         var height = Math.Min(Pixels(islandBounds.Height > 0 ? islandBounds.Height : islandContentHeight), area.Height);
-        island.Bounds = new Rectangle(area.Left + (area.Width - width) / 2, area.Top + (area.Height - height) / 2, width, height);
-        island.Show(); island.BringToFront();
+        island.PixelBounds = new Rectangle(area.Left + (area.Width - width) / 2, area.Top + (area.Height - height) / 2, width, height);
+        island.Show(); island.Activate();
         if (mainWeb.CoreWebView2 is not null) await mainWeb.ExecuteScriptAsync("window.modivue?.nativeResizeOverlay?.(true)");
     }
 
@@ -423,10 +405,10 @@ internal sealed class MonitorContext : ApplicationContext
         islandResizeModeActive = false;
         expanded = resizeRestoreExpanded;
         right = resizeRestoreRight;
-        var screen = Screen.AllScreens.FirstOrDefault(candidate => candidate.WorkingArea.IntersectsWith(resizeRestoreBounds)) ?? Screen.FromControl(island);
+        var screen = Screen.AllScreens.FirstOrDefault(candidate => candidate.WorkingArea.IntersectsWith(resizeRestoreBounds)) ?? Screen.FromHandle(island.Handle);
         var area = screen.WorkingArea;
-        island.Top = resizeRestoreBounds.Top;
-        ResizeIslandHost(expanded, area, resizeRestoreBounds.Top + resizeRestoreBounds.Height / 2);
+        island.PixelTop = resizeRestoreBounds.Top;
+        ResizeIslandHost(expanded, area);
         SetIslandClickThrough(resizeRestoreClickThrough);
         await islandWeb.ExecuteScriptAsync("window.modivue?.nativeResizeMode?.(false)");
         if (mainWeb.CoreWebView2 is not null) await mainWeb.ExecuteScriptAsync("window.modivue?.nativeResizeOverlay?.(false)");
@@ -454,7 +436,7 @@ internal sealed class MonitorContext : ApplicationContext
 
     private async Task TickPointer()
     {
-        if (ticking || clickThrough || !island.Visible || islandWeb.CoreWebView2 is null) return;
+        if (ticking || clickThrough || !island.IsVisible || islandWeb.CoreWebView2 is null) return;
         ticking = true;
         try {
             var point = island.PointToClient(Cursor.Position); float scale = island.DeviceDpi / 96f;
@@ -462,7 +444,7 @@ internal sealed class MonitorContext : ApplicationContext
             bool down = GetAsyncKeyState(1) < 0;
             var handle = buffer.Contains(css) || rail.Contains(css);
             if (down && !pressed && !pendingDrag && !dragging && handle) {
-                bufferDrag = buffer.Contains(css); dragStart = Cursor.Position; windowStart = island.Location; snapEnd = null;
+                bufferDrag = buffer.Contains(css); dragStart = Cursor.Position; windowStart = island.PixelLocation; snapEnd = null;
                 if (islandResizeModeActive) {
                     resizing = true; dragging = true;
                     resizeStartScale = resizeValue = islandScale; resizeStartRail = islandBounds;
@@ -491,7 +473,7 @@ internal sealed class MonitorContext : ApplicationContext
                 else {
                     var area = Screen.FromPoint(Cursor.Position).WorkingArea;
                     var y = ClampIslandTop(windowStart.Y + Cursor.Position.Y - dragStart.Y, area);
-                    island.Location = new(windowStart.X + Cursor.Position.X - dragStart.X, y);
+                    island.PixelLocation = new(windowStart.X + Cursor.Position.X - dragStart.X, y);
                 }
             }
             if ((dragging || pendingDrag) && !down) {
@@ -501,9 +483,9 @@ internal sealed class MonitorContext : ApplicationContext
                 } else if (dragging) {
                     dragging = false;
                     var area = Screen.FromPoint(Cursor.Position).WorkingArea;
-                    right = island.Left + island.Width / 2 >= area.Left + area.Width / 2;
-                    snapStart = island.Location;
-                    snapEnd = new(right ? area.Right - island.Width : area.Left, ClampIslandTop(island.Top, area));
+                    right = island.PixelBounds.Left + island.PixelBounds.Width / 2 >= area.Left + area.Width / 2;
+                    snapStart = island.PixelLocation;
+                    snapEnd = new(right ? area.Right - island.PixelBounds.Width : area.Left, ClampIslandTop(island.PixelTop, area));
                     snapAt = Environment.TickCount64;
                     await islandWeb.ExecuteScriptAsync($"window.modivue?.nativeDrag('idle',{bufferDrag.ToString().ToLowerInvariant()});window.modivue?.setIslandSide('{(right ? "right" : "left")}')");
                 }
@@ -511,7 +493,7 @@ internal sealed class MonitorContext : ApplicationContext
             }
             if (snapEnd is Point end && snapStart is Point start) {
                 var t = Math.Min(1, (Environment.TickCount64 - snapAt) / 280d); var eased = 1 - Math.Pow(1 - t, 3);
-                island.Location = new((int)(start.X + (end.X - start.X) * eased), (int)(start.Y + (end.Y - start.Y) * eased));
+                island.PixelLocation = new((int)(start.X + (end.X - start.X) * eased), (int)(start.Y + (end.Y - start.Y) * eased));
                 if (t == 1) snapEnd = null;
             }
             pressed = down;
@@ -522,7 +504,7 @@ internal sealed class MonitorContext : ApplicationContext
     protected override void ExitThreadCore()
     {
         exiting = true; pointer.Stop(); pointer.Dispose(); tray.Visible = false; tray.Dispose();
-        main.Dispose(); island.Dispose();
+        main.Dispose(); islandWeb.Dispose(); island.Close();
         if (!service.HasExited) service.Kill(entireProcessTree: true);
         service.Dispose(); appIcon.Dispose(); base.ExitThreadCore();
     }

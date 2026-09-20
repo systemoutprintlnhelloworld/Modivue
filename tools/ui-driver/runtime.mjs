@@ -737,7 +737,7 @@ export async function runRuntimeTest(directory, { browser: withBrowser = false }
         const limitedRail = await island.locator('#quick-island').boundingBox();
         await island.mouse.move(limitedRail.x + 3, limitedRail.y + 20);
         await island.waitForTimeout(450);
-        assert.equal(Math.round((await island.locator('.island-stage').boundingBox()).height),79);
+        assert.equal(Math.round((await island.locator('.island-stage').boundingBox()).height),81);
         const limitedList = await island.locator('#island-models').boundingBox();
         await island.mouse.move(limitedList.x + limitedList.width / 2, limitedList.y + limitedList.height - 3);
         await island.waitForTimeout(650);

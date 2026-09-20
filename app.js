@@ -588,7 +588,16 @@ function verificationActivity(model) {
     const error = model.sessions.find(session => session.error)?.error;
     if (error) return { busy: false, label: "接入待完善", detail: error, target };
     if (model.sessions.some(session => session.probeReady)) return { busy: false, label: "等待渠道匹配", detail: "运行会话与当前渠道配置不一致；现有被动指标仍会继续采集", target };
-    if (model.sessions.some(session => session.credentialAvailable === false)) return { busy: false, label: "仅被动监测", detail: "当前会话未向 Modivue 提供主动核验凭据；现有被动指标仍会继续采集", target };
+    if (model.sessions.some(session => session.credentialAvailable === false)) {
+      const working = model.sessions.some(isAgentWorking);
+      const codexOAuth = model.sessions.some(session => session.host === "codex" && session.baseUrl?.includes("api.openai.com"));
+      const detail = codexOAuth ? (working
+        ? "Agent 正在工作；当前 Codex 官方 OAuth 会话没有可供主动核验的 API Key。订阅余量与被动指标继续采集；主动核验需使用已配置 API Key 的渠道"
+        : "当前 Codex 官方 OAuth 会话没有可供主动核验的 API Key。订阅余量与被动指标继续采集；主动核验需使用已配置 API Key 的渠道")
+        : working ? "Agent 正在工作，但当前会话未向 Modivue 提供主动核验凭据；现有被动指标仍会继续采集"
+        : "当前会话未向 Modivue 提供主动核验凭据；现有被动指标仍会继续采集";
+      return { busy: false, label: "仅被动监测", detail, target };
+    }
     return { busy: false, label: "接入待完善", detail: "当前模型或渠道凭据尚未确定", target };
   }
   if (!target.automaticEligible) return { busy: false, label: "待命", detail: "自动核验仅在 Agent 工作时进行；可手动开始", target };
@@ -950,17 +959,20 @@ function metricSymbol(kind) {
 
 function metricRing(radius, progress, color, label, value, range, minimum, maximum, kind = "quality") {
   const end = ringPoint(radius, progress);
+  // Native transparent windows may not receive the browser's final mouseleave.
+  // Use the existing ring labels/popover there, not a sticky OS tooltip.
+  const title = text => desktopMode === "island" ? "" : `<title>${escapeHtml(text)}</title>`;
   const marker = (percent, name, kind) => {
     const p = ringPoint(radius, percent);
-    return `<circle class="ring-extreme" data-extreme="${kind}" cx="${p.x}" cy="${p.y}" r="1.2" visibility="${Number.isFinite(percent) ? "visible" : "hidden"}"><title>${escapeHtml(name)} · ${escapeHtml(range)}</title></circle>`;
+    return `<circle class="ring-extreme" data-extreme="${kind}" cx="${p.x}" cy="${p.y}" r="1.2" visibility="${Number.isFinite(percent) ? "visible" : "hidden"}" aria-label="${escapeHtml(`${name} · ${range}`)}">${title(`${name} · ${range}`)}</circle>`;
   };
   const low = ringPoint(radius, minimum);
   return `<g class="ring-metric" data-kind="${kind}" style="--ring-color:${color}" tabindex="0" aria-label="${escapeHtml(`${label} ${value}，范围 ${range}`)}">
-    <title>${escapeHtml(`${label} ${value} · ${range}`)}</title><circle class="ring-track" cx="30" cy="30" r="${radius}"/>
+    ${title(`${label} ${value} · ${range}`)}<circle class="ring-track" cx="30" cy="30" r="${radius}"/>
     <circle class="ring-peak" cx="30" cy="30" r="${radius}" pathLength="100" visibility="${maximum > 0 ? "visible" : "hidden"}" stroke-dasharray="${ringProgress(maximum)} 100" transform="rotate(-90 30 30)"/>
     <circle class="ring-value" cx="30" cy="30" r="${radius}" pathLength="100" opacity="${Number.isFinite(progress) ? 1 : 0}" stroke-dasharray="${ringProgress(progress)} 100" transform="rotate(-90 30 30)"/>
     ${marker(minimum, "最小值", "min")}${marker(maximum, "最大值", "max")}
-    <g class="ring-min-icon" transform="translate(${low.x} ${low.y})" visibility="${Number.isFinite(minimum) ? "visible" : "hidden"}"><title>最小值 · ${escapeHtml(range)}</title><circle r="3.1"/><g transform="translate(-2.4 -2.4) scale(.2)">${metricSymbol(kind).replace('<svg ', '<svg width="24" height="24" ')}</g></g>
+    <g class="ring-min-icon" transform="translate(${low.x} ${low.y})" visibility="${Number.isFinite(minimum) ? "visible" : "hidden"}" aria-label="${escapeHtml(`最小值 · ${range}`)}">${title(`最小值 · ${range}`)}<circle r="3.1"/><g transform="translate(-2.4 -2.4) scale(.2)">${metricSymbol(kind).replace('<svg ', '<svg width="24" height="24" ')}</g></g>
     <g class="ring-end-label" transform="translate(${clamp(end.x, 18, 42)} ${clamp(end.y, 8, 52)})"><rect x="-18" y="-6" width="36" height="12" rx="3"/><text text-anchor="middle" dominant-baseline="central">${Number.isFinite(progress) ? escapeHtml(value) : "--"}</text></g></g>`;
 }
 
@@ -1746,21 +1758,23 @@ function updateMetricRing(ring, metric, ringColor = metric.health.color) {
     $(".ring-peak", ring).setAttribute("stroke-dasharray", `${ringProgress(metric.max)} 100`);
     $(".ring-peak", ring).setAttribute("visibility", metric.max > 0 ? "visible" : "hidden");
     ring.setAttribute("aria-label", `${metric.name} ${metric.value} · ${metric.health.label} · ${metric.range}`);
-    $("title", ring).textContent = ring.getAttribute("aria-label");
+    if (desktopMode !== "island") $("title", ring).textContent = ring.getAttribute("aria-label");
     $(".ring-end-label text", ring).textContent = Number.isFinite(metric.progress) ? metric.value : "--";
     const end = ringPoint(metric.radius, metric.progress);
     $(".ring-end-label", ring).setAttribute("transform", `translate(${clamp(end.x, 18, 42)} ${clamp(end.y, 8, 52)})`);
     const low = ringPoint(metric.radius, metric.min);
     $(".ring-min-icon", ring).setAttribute("transform", `translate(${low.x} ${low.y})`);
     $(".ring-min-icon", ring).setAttribute("visibility", Number.isFinite(metric.min) ? "visible" : "hidden");
-    $(".ring-min-icon title", ring).textContent = `最小值 · ${metric.range}`;
+    $(".ring-min-icon", ring).setAttribute("aria-label", `最小值 · ${metric.range}`);
+    if (desktopMode !== "island") $(".ring-min-icon title", ring).textContent = `最小值 · ${metric.range}`;
     for (const [kind, label] of [["min", "最小值"], ["max", "最大值"]]) {
       const marker = $(`[data-extreme="${kind}"]`, ring);
       const point = ringPoint(metric.radius, metric[kind]);
       marker.setAttribute("cx", point.x);
       marker.setAttribute("cy", point.y);
       marker.setAttribute("visibility", Number.isFinite(metric[kind]) ? "visible" : "hidden");
-      $("title", marker).textContent = `${label} · ${metric.range}`;
+      marker.setAttribute("aria-label", `${label} · ${metric.range}`);
+      if (desktopMode !== "island") $("title", marker).textContent = `${label} · ${metric.range}`;
     }
 }
 
@@ -3530,7 +3544,8 @@ function applyAppearance() {
   root.classList.toggle("large-text", state.settings.fontScale > 130);
   if (state.settings.customTextColor) root.style.setProperty("--text", state.settings.textColor);
   root.style.colorScheme = root.classList.contains("light") ? "light" : "dark";
-  if (desktopMode === "main") desktopMessage({ type: "appearance", dark: !root.classList.contains("light"), glass: preset === "glass", background: getComputedStyle(root).getPropertyValue("--bg").trim() });
+  // Native caption colors are opaque; macOS uses the separate glass flag.
+  if (desktopMode === "main") desktopMessage({ type: "appearance", dark: !root.classList.contains("light"), glass: preset === "glass", background: preset === "glass" ? "#141e30" : getComputedStyle(root).getPropertyValue("--bg").trim() });
   document.body.dataset.clickThrough = String(Boolean(state.settings.clickThroughIsland));
   if (desktopMode === "island") {
     desktopMessage({ type: "island-interaction", clickThrough: Boolean(state.settings.clickThroughIsland) });
@@ -3807,7 +3822,9 @@ function nativeHover(event) {
   if (event && stationary && islandState.mode === "focus") {
     // Animated layers can arrive beneath a stationary pointer. Update the
     // metric highlight without treating that animation as a border crossing.
-    const ring = islandState.mode === "focus" && target?.closest("[data-focus-metric]")?.querySelector(".ring-metric");
+    const focusTarget = islandState.mode === "focus" ? target?.closest("[data-focus-metric]") : null;
+    $$(".focus-model").forEach(button => button.classList.toggle("is-hovered", button === focusTarget));
+    const ring = focusTarget?.querySelector(".ring-metric");
     if (ring && !ring.classList.contains("is-hovered")) {
       $$(".ring-metric.is-hovered").forEach(node => node.classList.remove("is-hovered"));
       ring.classList.add("is-hovered");

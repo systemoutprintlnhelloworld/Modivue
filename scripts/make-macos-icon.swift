@@ -3,7 +3,11 @@ import Foundation
 import ImageIO
 import UniformTypeIdentifiers
 
-guard CommandLine.arguments.count == 2 else { fatalError("需要 ICNS 输出路径") }
+guard CommandLine.arguments.count == 3 else { fatalError("需要 PNG 源图和 ICNS 输出路径") }
+guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: CommandLine.arguments[1]) as CFURL, nil),
+    let sourceImage = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+    fatalError("无法读取图标源图")
+}
 let colorSpace = CGColorSpaceCreateDeviceRGB()
 
 func appendBigEndian(_ value: UInt32, to data: inout Data) {
@@ -16,34 +20,8 @@ func pngData(pixels: Int) -> Data {
         bytesPerRow: pixels * 4, space: colorSpace, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
         fatalError("无法创建图标画布")
     }
-    let unit = CGFloat(pixels) / 1024
-    let background = CGGradient(colorsSpace: colorSpace, colors: [
-        CGColor(red: 0.018, green: 0.047, blue: 0.102, alpha: 1),
-        CGColor(red: 0.035, green: 0.106, blue: 0.188, alpha: 1)
-    ] as CFArray, locations: [0, 1])!
-    context.drawLinearGradient(background, start: CGPoint(x: 0, y: pixels), end: CGPoint(x: pixels, y: 0), options: [])
-    context.setLineCap(.round)
-    context.setLineJoin(.round)
-    context.setLineWidth(58 * unit)
-    let center = CGPoint(x: 512 * unit, y: 512 * unit)
-    let radius = 298 * unit
-    for (start, end, color) in [
-        (-82.0, 26.0, CGColor(red: 0.125, green: 0.839, blue: 0.710, alpha: 1)),
-        (38.0, 146.0, CGColor(red: 0.294, green: 0.639, blue: 1, alpha: 1)),
-        (158.0, 266.0, CGColor(red: 0.722, green: 0.518, blue: 1, alpha: 1))
-    ] {
-        context.setStrokeColor(color)
-        context.addArc(center: center, radius: radius, startAngle: start * .pi / 180, endAngle: end * .pi / 180, clockwise: false)
-        context.strokePath()
-    }
-    context.setLineWidth(62 * unit)
-    context.setStrokeColor(CGColor(red: 0.855, green: 0.957, blue: 1, alpha: 1))
-    context.move(to: CGPoint(x: 348 * unit, y: 382 * unit))
-    context.addLine(to: CGPoint(x: 348 * unit, y: 642 * unit))
-    context.addLine(to: CGPoint(x: 512 * unit, y: 492 * unit))
-    context.addLine(to: CGPoint(x: 676 * unit, y: 642 * unit))
-    context.addLine(to: CGPoint(x: 676 * unit, y: 382 * unit))
-    context.strokePath()
+    context.interpolationQuality = .high
+    context.draw(sourceImage, in: CGRect(x: 0, y: 0, width: pixels, height: pixels))
     guard let image = context.makeImage() else { fatalError("无法生成图标图像") }
     let encoded = NSMutableData()
     guard let destination = CGImageDestinationCreateWithData(encoded, UTType.png.identifier as CFString, 1, nil) else {
@@ -65,4 +43,4 @@ for (type, pixels) in [("icp4", 16), ("icp5", 32), ("icp6", 64), ("ic07", 128), 
 var icon = Data("icns".utf8)
 appendBigEndian(UInt32(body.count + 8), to: &icon)
 icon.append(body)
-try icon.write(to: URL(fileURLWithPath: CommandLine.arguments[1]), options: .atomic)
+try icon.write(to: URL(fileURLWithPath: CommandLine.arguments[2]), options: .atomic)

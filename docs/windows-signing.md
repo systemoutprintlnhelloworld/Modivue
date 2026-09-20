@@ -22,7 +22,7 @@
 
 **Description**
 
-> Modivue is a desktop application for developers using coding agents through API providers and gateways. It reads local agent configuration and session evidence, displays activity in a floating island, and opens a dashboard for cache usage, time to first token, balances, and model-verification reports. Its Windows host uses WinForms and WebView2 with a bundled Node.js service listening only on loopback. Release artifacts are built from this public repository by GitHub Actions.
+> Modivue is a desktop application for developers using coding agents through API providers and gateways. It reads local agent configuration and session evidence, displays activity in a floating island, and opens a dashboard for cache usage, time to first token, balances, and model-verification reports. Its Windows host uses WinForms for the dashboard and WPF with WebView2CompositionControl for the transparent island, with a bundled Node.js service listening only on loopback. Release artifacts are built from this public repository by GitHub Actions.
 
 **Reputation**
 

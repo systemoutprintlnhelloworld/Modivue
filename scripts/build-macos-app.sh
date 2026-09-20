@@ -24,7 +24,7 @@ if [ -d "$APP_BUNDLE" ]; then chmod -R u+w "$APP_BUNDLE"; fi
 mkdir -p "$CONTENTS/MacOS" "$RESOURCES/runtime" "$RESOURCES/lib" "$APP_RESOURCES/src/core" "$APP_RESOURCES/cli" "$APP_RESOURCES/node_modules"
 swiftc -parse-as-library -O -framework AppKit -framework WebKit "$PROJECT_ROOT/desktop/ModivueApp.swift" -o "$CONTENTS/MacOS/Modivue"
 swiftc -O -framework CoreGraphics -framework ImageIO -framework UniformTypeIdentifiers "$PROJECT_ROOT/scripts/make-macos-icon.swift" -o "$PROJECT_ROOT/dist/.modivue-icon-builder"
-"$PROJECT_ROOT/dist/.modivue-icon-builder" "$RESOURCES/Modivue.icns"
+"$PROJECT_ROOT/dist/.modivue-icon-builder" "$PROJECT_ROOT/src/data/app-icon.png" "$RESOURCES/Modivue.icns"
 chmod u+w "$PROJECT_ROOT/dist/.modivue-icon-builder"
 cp "$PROJECT_ROOT/desktop/Info.plist" "$CONTENTS/Info.plist"
 cp "$NODE_EXECUTABLE" "$RESOURCES/runtime/node"

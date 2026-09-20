@@ -28,10 +28,14 @@ button { border: 0; color: inherit; cursor: pointer; }
 .app-shell { display: flex; min-height: 100vh; }
 .sidebar { width: 236px; flex: 0 0 236px; padding: 28px 16px 20px; border-right: 1px solid var(--line); background: rgba(4, 13, 30, .56); backdrop-filter: blur(22px); display: flex; flex-direction: column; }
 .brand { display: flex; gap: 11px; align-items: center; padding: 0 11px 31px; }
-.brand-mark { display: grid; place-items: center; width: 32px; height: 32px; border: 1px solid rgba(20, 230, 192, .5); border-radius: 10px; color: var(--mint); background: rgba(20, 230, 192, .1); box-shadow: 0 0 28px rgba(20, 230, 192, .23); overflow: hidden; }
-.brand-mark .app-icon { width: 32px; height: 32px; border-radius: 9px; box-shadow: none; }
+.brand-mark { display: grid; place-items: center; flex: 0 0 36px; width: 36px; height: 36px; }
+.brand-mark img { display: block; width: 36px; height: 36px; object-fit: contain; }
 .brand strong { display: block; font-size: calc(16px * var(--font-scale, 1)); letter-spacing: 0; }
-.brand span { display: block; margin-top: 3px; color: var(--muted); font-size: calc(10px * var(--font-scale, 1)); }
+.brand-subtitle { display: block; margin-top: 3px; color: var(--muted); font-size: calc(10px * var(--font-scale, 1)); }
+.brand-name { font-weight: 800; }
+.brand-v { color: #3ba7ff; }
+.brand-u { color: #14e6c0; }
+.brand-e { color: #ffc52e; }
 .workspace-label { padding: 0 13px 10px; color: var(--subtle); text-transform: uppercase; font-size: calc(10px * var(--font-scale, 1)); font-weight: 700; letter-spacing: 0; }
 .workspace-label.second { margin-top: 28px; }
 .nav-list { display: grid; gap: 5px; }
@@ -797,6 +801,7 @@ body[data-island-mode="focus"] .focus-model[data-focus-metric="cache"]:is(:hover
 body[data-island-mode="focus"] .focus-model[data-focus-metric="ttft"]:is(:hover, .is-hovered) .focus-metric-icon path { animation: response-spark 1.8s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
 body[data-island-mode="focus"] .focus-model[data-focus-metric="balance"]:is(:hover, .is-hovered) .focus-metric-icon path { animation: wallet-flow 1.7s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
 body[data-island-mode="focus"] .focus-model[data-focus-metric="balance"]:is(:hover, .is-hovered) .focus-metric-icon circle { animation: wallet-dot 1.7s ease-in-out infinite; }
+body[data-island-mode="focus"] .focus-model[data-focus-metric^="quota"]:is(:hover, .is-hovered) .focus-metric-icon path { animation: quota-tick 1.8s steps(12, end) infinite; transform-box: view-box; transform-origin: 12px 12px; }
 body[data-island-mode="focus"] #island-focus .focus-model:is(:hover, .is-hovered) .ring-track { animation: focus-ring-arrive 1.2s ease-out; }
 body[data-island-mode="focus"] #island-focus .focus-model:is(:hover, .is-hovered) .ring-value { animation: focus-ring-arrive 1.2s ease-out; }
 @keyframes thought-spark { 0%,100% { transform: scale(.85); opacity: .5; } 45% { transform: scale(1.12); opacity: 1; } }
@@ -804,6 +809,7 @@ body[data-island-mode="focus"] #island-focus .focus-model:is(:hover, .is-hovered
 @keyframes response-spark { 0%,100% { transform: scale(.9); fill: transparent; } 40% { transform: scale(1.08); fill: currentColor; filter: drop-shadow(0 0 2px currentColor); } }
 @keyframes wallet-flow { 0%,100% { transform: translateX(0); opacity: .72; } 50% { transform: translateX(-1.5px); opacity: 1; filter: drop-shadow(0 0 3px currentColor); } }
 @keyframes wallet-dot { 0%,100% { transform: scale(.8); opacity: .55; } 50% { transform: scale(1.4); opacity: 1; } }
+@keyframes quota-tick { to { transform: rotate(360deg); } }
 @keyframes focus-ring-arrive { 0% { stroke-width: 3; filter: drop-shadow(0 0 1px var(--ring-color)); } 35% { stroke-width: 4.5; filter: drop-shadow(0 0 5px var(--ring-color)); } 100% { stroke-width: 3; filter: drop-shadow(0 0 1px var(--ring-color)); } }
 @media (prefers-reduced-motion: reduce) {
   .focus-metric-icon *, .ring-track, .ring-value, .island-idle-glyph * { animation: none !important; }
@@ -1338,8 +1344,6 @@ body.desktop-island #quick-island .island-grip,
 body.desktop-island #quick-island #island-buffer { opacity: 0; transition: opacity .18s ease; }
 body.desktop-island.island-rail-hover #quick-island .island-grip,
 body.desktop-island.island-rail-hover #quick-island #island-buffer,
-body.desktop-island #quick-island:hover .island-grip,
-body.desktop-island #quick-island:hover #island-buffer,
 body.desktop-island #quick-island .island-grip:focus-visible,
 body.desktop-island #quick-island #island-buffer:focus-visible,
 body.desktop-island #quick-island .pressed,

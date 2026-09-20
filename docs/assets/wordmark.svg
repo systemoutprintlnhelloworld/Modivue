@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="192" height="48" viewBox="0 0 192 48" role="img" aria-label="Modivue">
+  <style>
+    .name { fill: #1a2029; }
+    @media (prefers-color-scheme: dark) { .name { fill: #f5f7fa; } }
+  </style>
+  <text x="2" y="36" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="36" font-weight="800" letter-spacing="-.8"><tspan class="name">Modi</tspan><tspan fill="#3ba7ff">v</tspan><tspan fill="#14e6c0">u</tspan><tspan fill="#ffc52e">e</tspan></text>
+</svg>

@@ -44,6 +44,8 @@ npm run windows:build
 
 Builds require Node.js 24 or later and package .NET 8 and Node. When WebView2 is missing, setup runs Microsoft's official bootstrapper; the portable app asks before running it. The portable root contains only `Modivue.exe` and `resources/`. Inno Setup offers Start menu, desktop, and sign-in startup options and installs for the current user. Data is stored in `%LOCALAPPDATA%/Modivue`. Native mouse interaction and multi-DPI validation remain separate from build success. An installer can still be unsigned.
 
+The minimum Windows version is Windows 10 1809. The main window uses WinForms; the island uses a transparent WPF window and WebView2CompositionControl for per-pixel alpha and antialiased edges, without color-key transparency or an opaque hit-test backing. Native launch, transparency, themed captions, and quota icon animation have been checked on Windows. Full mouse-interaction and multi-DPI acceptance remain incomplete.
+
 ## UI checks
 
 macOS GUI checks require WindowServer, Accessibility, event posting, and screen-recording permission. Use the dedicated Herdr test pane, not a pane running someone else's program:

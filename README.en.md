@@ -6,7 +6,7 @@
   <img src="docs/assets/video.gif" width="100%" alt="Modivue: your Vibe Coding Dynamic Island">
 </picture>
 
-<h1><img src="docs/assets/app-icon.svg" width="48" height="48" align="absmiddle" alt=""> Modivue</h1>
+<h1><img src="docs/assets/app-icon.svg" width="48" height="48" align="absmiddle" alt=""> <img src="docs/assets/wordmark.svg" width="192" height="48" align="absmiddle" alt="Modivue"></h1>
 
 **Your Vibe Coding Dynamic Island**<br>
 Balance or subscription quota · cache hits · time to first token · model verification, visible at a glance with records kept on your machine
@@ -108,7 +108,7 @@ Metrics are separated by **model × channel × key group × reasoning effort**. 
 | Platform | Package | Installation |
 |---|---|---|
 | macOS Apple Silicon | `Modivue-macos-arm64.zip` | Unzip and move `Modivue.app` to Applications. No Intel package is currently provided. |
-| Windows 10/11 x64, preview | `Modivue-windows-x64-setup.exe` | Run the installer. A portable ZIP is also provided. Setup installs WebView2 from Microsoft when missing; the portable app asks first. |
+| Windows 10 1809+/11 x64, preview | `Modivue-windows-x64-setup.exe` | Run the installer. A portable ZIP is also provided. Setup installs WebView2 from Microsoft when missing; the portable app asks first. |
 | CLI | Source files in `cli/` | Node.js 24 or later. Reads the desktop app's shared local database. |
 
 ### Before opening for the first time

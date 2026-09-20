@@ -7,7 +7,7 @@
   <img src="docs/assets/video.gif" width="100%" alt="Modivue：你的 Vibe Coding 灵动岛">
 </picture>
 
-<h1><img src="docs/assets/app-icon.svg" width="48" height="48" align="absmiddle" alt=""> Modivue</h1>
+<h1><img src="docs/assets/app-icon.svg" width="48" height="48" align="absmiddle" alt=""> <img src="docs/assets/wordmark.svg" width="192" height="48" align="absmiddle" alt="Modivue"></h1>
 
 **你的 Vibe Coding 灵动岛**<br>
 余额或订阅余量 · 缓存命中 · 首字延迟 · 模型核验，悬浮一眼看清，数据只留在本机
@@ -111,7 +111,7 @@
 | 平台 | 下载包 | 安装 |
 |---|---|---|
 | macOS Apple Silicon | `Modivue-macos-arm64.zip` | 解压，把 `Modivue.app` 拖进"应用程序"。暂无 Intel 版 |
-| Windows 10/11 x64（预览） | `Modivue-windows-x64-setup.exe` | 运行安装器。Release 同时提供 portable ZIP；缺少 WebView2 时安装器会从 Microsoft 安装，portable 版会先征求同意 |
+| Windows 10 1809+/11 x64（预览） | `Modivue-windows-x64-setup.exe` | 运行安装器。Release 同时提供 portable ZIP；缺少 WebView2 时安装器会从 Microsoft 安装，portable 版会先征求同意 |
 | 命令行 | 源码 `cli/` | Node.js 24+，读取桌面端共享的本地数据库 |
 
 ### 首次打开前请读
