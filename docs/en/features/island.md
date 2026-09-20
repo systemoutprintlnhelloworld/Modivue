@@ -10,20 +10,22 @@ The Dynamic Island is a vertical panel at the screen edge. It stays compact whil
 
 | State | Entry | Content |
 |---|---|---|
-| Minimal | Default | Compact model rings; the displayed metric is configurable. Drag grips and Settings are hidden. |
+| Minimal | Default | Compact model rings. Each ring can show balance, quota, or another configured metric. Drag grips and Settings are hidden. |
 | Normal | Pointer enters the panel | Monitored targets, with drag grips and Settings available. |
 | Focus | Hover a model ring | Selected metric rings and a detail card. |
 | Idle | No active targets | A status indicator. |
 
 ## Focus details
 
-The configurable rings cover **verification, cache, TTFT, and balance**. The adjacent detail card includes model, channel, short key fingerprint, reasoning effort, associated agents and states, metric values and recent trends, balance, performance sample count, and verification cost.
+The configurable rings cover **verification, cache, TTFT, and an available balance or quota**. The adjacent detail card includes model, channel, short key fingerprint, reasoning effort, associated agents and states, metric values and recent trends, balance or quota, performance sample count, and verification cost.
 
 Missing ring values appear as `--`; read the detail card for the full state. A configured channel is not proof of a live session's outbound connection; see [proxy diagnostics](../proxy.md#confirming-a-provider-switch).
 
 ## Balance ring baseline
 
 The first valid balance establishes the full-ring reference. A top-up above that reference keeps the ring full. Reset the baseline in Settings when required.
+
+Subscription quotas do not use this baseline. They show the remaining percentage and reset time recorded by Codex.
 
 ## Interaction
 

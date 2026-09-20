@@ -9,7 +9,7 @@
 
 ## 命令行工具
 
-需要 Node.js 22.5+。默认直接读取与桌面端共享的 SQLite，不需要知道桌面端的动态端口。
+需要 Node.js 24+。默认直接读取与桌面端共享的 SQLite，不需要知道桌面端的动态端口。
 
 ```bash
 node cli/modivue.mjs status                              # 当前状态

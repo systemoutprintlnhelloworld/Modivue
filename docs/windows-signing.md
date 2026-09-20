@@ -1,6 +1,6 @@
 # Windows 代码签名申请准备
 
-状态（2026-09-18）：维护者已同意项目原创代码采用 MIT。尚未向 SignPath 提交申请，尚未取得批准、账户、证书或签名产物。维护者已要求恢复 Windows 下载入口；在签名完成前，发布包必须明确标记为未签名。
+状态（2026-09-19）：公开仓库已采用 MIT，Windows 下载入口已恢复。尚未向 SignPath 提交申请，也尚未取得批准、账户、证书或签名产物；在签名完成前，发布包必须明确标记为未签名。
 
 ## 申请表草稿
 
@@ -34,7 +34,7 @@
 
 ## 提交前仍需完成
 
-- 把根目录 `LICENSE` 与修复代码推送到公开仓库。MIT 不替代第三方组件的许可，也不授予商标权；需要核对打包内容与已有 NOTICE。
+- 提交申请前确认公开仓库 `main` 上的 `LICENSE`、README、下载入口和最新 Windows 构建说明一致。MIT 不替代第三方组件的许可，也不授予商标权；还要核对打包内容与已有 NOTICE。
 - 维护者本人填写姓名、联系邮箱，完成 reCAPTCHA，并阅读、同意行为规范与个人数据处理条款。不需要把身份证件、邮箱密码或私钥发给开发助手。
 - 开启 GitHub 与 SignPath 的多因素认证，确认代码作者、审阅者与发布审批人。可以由同一维护者承担，但不能虚构额外审阅者。
 - 如实说明当前项目规模、下载已恢复且 Windows 包仍未签名。SignPath 要求可核验信誉；MIT 许可证不保证获批。
@@ -53,7 +53,7 @@
 
 签名证明发布者与文件完整性，不保证立即消除所有 SmartScreen 信誉提示。微软 Artifact Signing 的个人 Public Trust 申请当前只面向美国、加拿大；若维护者不在支持地区，不应填写虚假地区信息。
 
-资料读取日期：2026-09-18。
+资料读取日期：2026-09-19。
 - [SignPath 申请表](https://signpath.org/apply)
 - [SignPath 条件与代码签名政策](https://signpath.org/terms)
 - [Microsoft Artifact Signing 前提](https://learn.microsoft.com/en-us/azure/artifact-signing/quickstart#prerequisites)

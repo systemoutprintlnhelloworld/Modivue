@@ -4,7 +4,7 @@
 
 所有截图和录屏都使用**演示数据**，发布前逐项检查：
 
-- 不出现真实渠道域名、供应商名称、Key 指纹和真实余额；
+- 不出现真实渠道域名、中转站名称、Key 指纹和真实余额；
 - 没有截图工具水印；
 - 没有文字选中高亮，不是滚动拼接的长图；
 - 同一组图片尺寸一致。
@@ -17,6 +17,8 @@
 | 横幅静态图（可选） | `docs/assets/hero-banner.png` | 1280×640 | 横幅首帧，用作 Social preview 和减少动效时的替代图 |
 | 主演示 | `docs/assets/main-demo.gif` | 宽 1200 左右 | 极简态 → 移入展开 → 悬停单环详情 → 移开收回 |
 | 交互总览 | `docs/assets/interaction-overview.jpg` | 16:9 | 各状态总览；需把 "IQ" 改为"模型核验"并补上余额环 |
+| 灵动岛章节 | `docs/assets/island-main.png` | 宽 1200 左右 | 灵动岛界面 |
+| 模型核验章节 | `docs/assets/model-verification-main.png` | 宽 1200 左右 | 模型核验主界面 |
 
 ## 功能宫格缩略图（16:9）
 
@@ -26,7 +28,7 @@
 | `docs/assets/features/island.png` | 灵动岛专注态与详情卡片 | [island.md](features/island.md) |
 | `docs/assets/features/agents.png` | Agent 列表：已打开 / 待命 | [agents.md](features/agents.md) |
 | `docs/assets/features/verification.png` | 核验方法选择或核验报告 | [verification.md](features/verification.md) |
-| `docs/assets/features/cost.png` | 核验费用与供应商余额 | [cost.md](features/cost.md) |
+| `docs/assets/features/cost.png` | 核验费用、中转站余额与订阅余量 | [cost.md](features/cost.md) |
 | `docs/assets/features/calibration.png` | 可信 API 对照或校准档案导入 | [calibration.md](features/calibration.md) |
 | `docs/assets/features/settings.png` | 设置页（检测或通知分类） | [settings.md](features/settings.md) |
 | `docs/assets/features/layout.png` | 拖动区块的录屏（GIF） | [overview.md#布局](features/overview.md#布局) |
