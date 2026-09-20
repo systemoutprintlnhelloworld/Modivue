@@ -3703,6 +3703,7 @@ async function bootstrap() {
       document.body.addEventListener("pointermove", nativeHover);
     }
     document.body.addEventListener("pointerleave", () => {
+      clearTimeout(railHoverTimer); railHoverTimer = null;
       document.body.classList.remove("island-rail-hover");
       if (hasDesktopBridge()) return;
       hidePopover();
@@ -3753,6 +3754,7 @@ async function bootstrap() {
 }
 
 let hoverExitTimer;
+let railHoverTimer;
 let borderHoverTimer;
 let ringHoverTimer;
 let pendingRingId = null;
@@ -3783,7 +3785,17 @@ function updateIslandEdgeScroll(event) {
 function nativeHover(event) {
   if (desktopMode !== "island") return;
   const rail = $("#quick-island").getBoundingClientRect();
-  document.body.classList.toggle("island-rail-hover", Boolean(event && event.clientX >= rail.left && event.clientX <= rail.right && event.clientY >= rail.top && event.clientY <= rail.bottom));
+  const overRail = Boolean(event && event.clientX >= rail.left && event.clientX <= rail.right && event.clientY >= rail.top && event.clientY <= rail.bottom);
+  document.body.classList.toggle("island-rail-hover", overRail);
+  clearTimeout(railHoverTimer);
+  // Native hosts poll the pointer, but a WebView can stop receiving the last
+  // sample while its host window is resized or moved. Do not leave the visible
+  // rods stuck on screen until the next hover. A short watchdog is safe because
+  // the next native sample re-arms it immediately.
+  if (overRail) railHoverTimer = setTimeout(() => {
+    document.body.classList.remove("island-rail-hover");
+    railHoverTimer = null;
+  }, 220);
   if (document.body.classList.contains("island-dragging") || document.body.classList.contains("island-resize-mode") || tourCleanup) return;
   const target = event ? document.elementFromPoint(event.clientX, event.clientY) : null;
   const pointer = event ? { clientX: event.clientX, clientY: event.clientY,
