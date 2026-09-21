@@ -380,6 +380,7 @@ export async function probeState() {
     .map(job => ({ targetId: job.target.id, evaluatorId: "bazaarlink-probe", phase: job.status === "polling-error" ? "retrying" : "sampling", startedAt: job.startedAt,
       completed: job.progress?.completed || 0, total: job.progress?.total || null }));
   return { enabled: settings.probeEnabled, targets, running: Boolean(batch), verification: [...pendingVerifications.values()].map(job => ({ ...job, phase: "queued" })).concat([...qualityProgress.values()], [...suspendedVerifications.values()], remote), lastRunAt, nextRunAt, usage: probeUsageToday(),
+    schedulerPausedReason: process.env.MODIVUE_UI_ARTIFACTS ? "当前为隔离验证实例，定时核验已暂停；请启动正常版本" : null,
     verificationIntervalMinutes: settings.verificationIntervalMinutes,
     intervalMinutes: settings.probeIntervalMinutes, dailyLimit: settings.probeDailyLimit, maxOutputTokens: settings.probeMaxOutputTokens,
     conditionsId: `probe:custom:${createHash("sha256").update(JSON.stringify({ instruction: settings.probeInstruction, maxOutputTokens: settings.probeMaxOutputTokens })).digest("hex").slice(0, 12)}` };

@@ -359,7 +359,7 @@ async function routeRequest(request, response) {
       if (!available) { patch.hlwySource = "public"; notice = "尚无合格的 HLWY 可信分布，已改用公共分布。请先采集至少 50 个同条件参考答案。"; }
     }
     const settings = updateSettings(patch);
-    if (Object.keys(patch).some((key) => key.startsWith("probe") && before[key] !== settings[key])) {
+    if (Object.keys(patch).some((key) => (key.startsWith("probe") || key === "verificationIntervalMinutes") && before[key] !== settings[key])) {
       scheduleProbes({ immediate: settings.probeEnabled && !before.probeEnabled });
     }
     response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" }).end(JSON.stringify({ settings, notice, probe: await probeState() }));

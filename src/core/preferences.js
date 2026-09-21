@@ -61,6 +61,7 @@ export const preferenceFields = [
     ["compactRingOpacity", "极简空环不透明度", 72, 0]
   ].map(([key, label, value, min]) => ({ key, label, group: "appearance", min, max: 100, unit: "%", value })),
   { key: "islandCenterIcon", label: "灵动岛环中心图标", hint: "极简与普通形态使用模型或对应 Agent 图标；多个 Agent 并列显示，超过四种显示数量。专注形态保持指标图标。", group: "display", options: { model: "四元组对应的模型", agents: "四元组对应的 Agent" }, value: "model" },
+  { key: "fundsDisplay", label: "余额 / 余量显示", hint: "自动按渠道选择：官方 OAuth 与 CPA 显示订阅余量，其他渠道显示余额；缺失数据不互相替代。", group: "display", options: { auto: "跟随渠道", balance: "渠道余额", quota: "订阅余量" }, value: "auto" },
   { key: "compactMetric", label: "极简形态环指标", group: "display",
     options: { quality: "模型核验", cache: "Cache", ttft: "TTFT", balance: "余额", none: "仅模型图标" }, value: "quality" },
   ...["quality", "cache", "ttft", "balance"].map(metric => ({ key: `normalShow${metric[0].toUpperCase()}${metric.slice(1)}`, label: `普通形态显示${{ quality: "模型核验", cache: "Cache", ttft: "TTFT", balance: "余额" }[metric]}环`, group: "display", type: "boolean", value: metric === "quality" })),
@@ -70,7 +71,7 @@ export const preferenceFields = [
   { key: "bridgeStyle", label: "连接线动态风格", hint: "悬浮详情与灵动岛之间的连接线", group: "display", options: { ribbon: "柔和丝带", flow: "水流", pulse: "呼吸脉冲" }, value: "flow" },
   ...["focus", "detail", "popover"].flatMap(surface => ["quality", "cache", "ttft", ...(surface === "focus" ? ["balance"] : [])].map(metric => ({
     key: `${surface}Show${metric[0].toUpperCase()}${metric.slice(1)}`, group: "display", type: "boolean", value: surface === "focus" && metric === "balance" ? false : true,
-    label: `${{ focus: "专注", detail: "详细窗口", popover: "扩展详情" }[surface]}显示${{ quality: "模型核验", cache: "Cache", ttft: "TTFT", balance: "余额" }[metric]}` }))),
+    label: `${{ focus: "专注", detail: "详细窗口", popover: "扩展详情" }[surface]}显示${{ quality: "模型核验", cache: "Cache", ttft: "TTFT", balance: "余额 / 余量" }[metric]}` }))),
   ...["Endpoint", "KeyGroup", "Reasoning", "Agents"].map(info => ({ key: `show${info}`, group: "display", type: "boolean", value: true,
     label: `扩展详情显示${{ Endpoint: "渠道", KeyGroup: "Key 分组", Reasoning: "推理档位", Agents: "Agent 状态" }[info]}` })),
   ...["quality", "cache", "ttft"].flatMap(metric => [

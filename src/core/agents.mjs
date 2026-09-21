@@ -52,7 +52,7 @@ function agentEndpoint(value, protocol, env) {
   return unpackLocalProxyBaseUrl(baseUrl, protocol, env) || { baseUrl };
 }
 
-export async function agentConnections(env = process.env, home = homedir(), cwd = process.cwd()) {
+export async function agentConnections(env = process.env, home = homedir(), cwd = process.cwd(), { codexProvider = null } = {}) {
   const agents = [];
   const claudeDirectory = env.CLAUDE_CONFIG_DIR || join(home, ".claude");
   const configPath = join(claudeDirectory, "settings.json");
@@ -87,20 +87,21 @@ export async function agentConnections(env = process.env, home = homedir(), cwd 
       ...(projectConfig.value.model ? { model: projectConfig.value.model } : {}),
       ...(projectConfig.value.model_provider ? { model_provider: projectConfig.value.model_provider } : {}),
       tui: { ...config.value.tui, ...profileFile.value.tui, ...projectConfig.value.tui } };
-    const providerId = base.model_provider || "openai";
+    const configuredProvider = base.model_provider || "openai";
+    const providerId = codexProvider || configuredProvider;
     const provider = Object.assign({}, ...[config, profileFile, projectConfig]
       .map(file => file.value.model_providers?.[providerId] || {}));
     const wireApi = provider.wire_api || "responses";
     // Subscription OAuth credentials require the host's own authenticated transport.
     const apiKey = provider.experimental_bearer_token || (provider.env_key ? env[provider.env_key]
-      : provider.requires_openai_auth === true || providerId === "openai"
+      : providerId === configuredProvider && (provider.requires_openai_auth === true || providerId === "openai")
         ? env.CODEX_API_KEY || env.OPENAI_API_KEY || auth.value.OPENAI_API_KEY : null) || null;
     const configurationError = config.error || profileError || projectConfig.error || (!apiKey && auth.error)
       || (!["chat", "responses"].includes(wireApi) ? "Codex provider wire_api 无效" : null);
     const projectPath = join(cwd, ".codex", "config.toml");
     const projectConnection = projectConfig.found && Boolean(projectConfig.value.model
       || projectConfig.value.model_provider || projectConfig.value.model_providers?.[providerId]);
-    const configuredBaseUrl = provider.base_url || env.OPENAI_BASE_URL
+    const configuredBaseUrl = provider.base_url || (providerId === configuredProvider ? env.OPENAI_BASE_URL : null)
       || (providerId === "openai" ? "https://api.openai.com/v1" : null);
     const connection = agentEndpoint(configuredBaseUrl, "openai", env);
     agents.push({ id: "codex", label: "Codex", configPath: projectConnection
@@ -251,10 +252,13 @@ async function detectAgentsFresh(actualEnv, actualHome, actualCwd, cacheKey) {
   const configured = await agentConnections(actualEnv, actualHome, actualCwd);
   const byHost = new Map(configured.map((agent) => [agent.id, agent]));
   const claudeConnection = byHost.get("claude-code");
+  // Read generic process rows first. A live thread's provider-specific route
+  // must replace a resume process's global config, never the other way around.
+  const processes = await genericRuntimeSessions(actualEnv, actualHome, actualCwd);
   const live = [
     ...await claudeTranscriptSessions(actualHome, claudeConnection),
     ...await codexRuntimeSessions(byHost.get("codex")?.runtimeDirectory || actualEnv.CODEX_HOME || join(actualHome, ".codex"), byHost.get("codex"), actualEnv, actualHome),
-    ...await genericRuntimeSessions(actualEnv, actualHome, actualCwd)
+    ...processes
   ].map((session) => {
     // Process-specific config reads can fail when the host cannot expose the
     // process working directory (notably packaged macOS/Windows hosts). Keep
@@ -262,6 +266,7 @@ async function detectAgentsFresh(actualEnv, actualHome, actualCwd, cacheKey) {
     // never invent a model when the static adapter has none.
     if (session.model && session.baseUrl) return session;
     const connection = byHost.get(session.host);
+    if (session.metadata?.modelProvider && session.metadata.modelProvider !== connection?.provider) return session;
     if (!connection?.model || !connection.baseUrl) return session;
     return enrichRuntimeSession({ ...session, model: session.model || connection.model,
       baseUrl: session.baseUrl || connection.baseUrl, protocol: session.protocol || connection.protocol,
@@ -649,9 +654,8 @@ async function codexRuntimeSessions(directory, connection, env = process.env, ho
         const updatedAt = Number(row.updated_at_ms);
         const ownerPid = lockOwners.get(join(lockDirectory, `${row.id}.lock`)) || null;
         const runtimeEnv = { ...env, ...await readProcessConfigEnvironment(ownerPid) };
-        const runtimeConnection = ownerPid
-          ? (await agentConnections(runtimeEnv, home, row.cwd || home)).find(item => item.id === "codex") || connection
-          : connection;
+        const runtimeConnection = (await agentConnections(runtimeEnv, home, row.cwd || home, { codexProvider: row.model_provider }))
+          .find(item => item.id === "codex");
         if (runtimeConnection) sessionConnections.set(`codex:${row.id}`, runtimeConnection);
         // The shared app-server keeps writer locks after a visible CLI has
         // closed. Only an unfinished turn makes the lock a live-session

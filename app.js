@@ -452,7 +452,17 @@ function fresherQuota(current, candidate) {
   return current;
 }
 
+function fundsKind(model) {
+  const mode = state.settings.fundsDisplay || "auto";
+  if (mode !== "auto") return mode;
+  const balance = balanceForModel(model);
+  const officialOAuth = model?.sessions?.some(session => session.host === "codex"
+    && session.provider === "openai" && session.credentialAvailable === false);
+  return officialOAuth || balance?.framework === "cliproxyapi" ? "quota" : "balance";
+}
+
 function modelQuota(model) {
+  if (fundsKind(model) !== "quota") return null;
   if (!model?.quota?.windows?.length) return null;
   const now = Date.now();
   const windows = model.quota.windows.filter((window) => Date.parse(window.resetsAt) > now);
@@ -582,7 +592,6 @@ function verificationActivity(model) {
     return { busy: true, label, detail: `${count} · 已用 ${elapsed} 秒 · ${job.phase === "retrying" ? "请求未完成，按退避间隔重试" : job.phase === "spacing" ? "等待下一次采样" : "正在等待模型回答"}`, job };
   }
   if (job) return { busy: true, label: "已排队", detail: target?.pauseReason || "等待当前核验结束", job };
-  if (target?.pauseReason) return { busy: false, label: "等待空闲", detail: target.pauseReason, target };
   if (!model?.sessions?.length) return { busy: false, label: "未核验", detail: "当前没有运行会话" };
   if (!target) {
     const error = model.sessions.find(session => session.error)?.error;
@@ -600,8 +609,10 @@ function verificationActivity(model) {
     }
     return { busy: false, label: "接入待完善", detail: "当前模型或渠道凭据尚未确定", target };
   }
+  if (state.probe?.schedulerPausedReason) return { busy: false, label: "定时核验已暂停", detail: state.probe.schedulerPausedReason, target };
+  if (!state.probe?.enabled || state.settings.probeStrategy === "manual") return { busy: false, label: "自动核验关闭", detail: "可在模型核验页开启自动核验；立即核验只运行一次", target };
+  if (target?.pauseReason) return { busy: false, label: "等待空闲", detail: target.pauseReason, target };
   if (!target.automaticEligible) return { busy: false, label: "待命", detail: "自动核验仅在 Agent 工作时进行；可手动开始", target };
-  if (!state.probe?.enabled) return { busy: false, label: "自动核验关闭", detail: "可以手动核验当前会话", target };
   const lastRun = model?.verification?.selected;
   const detail = lastRun?.status === "unsupported" ? lastRun.rationale
     : state.probe.nextRunAt ? `下次检查 ${formatTimestamp(state.probe.nextRunAt, true)}` : "等待调度";
@@ -1251,7 +1262,7 @@ function modelMetrics(model, includeBalance = false) {
     { kind: "cache", name: "Cache", value: formatPercent(model?.cacheRate), progress: Number.isFinite(model?.cacheRate) ? model.cacheRate * 100 : null, health: metricHealth("cache", Number.isFinite(model?.cacheRate) ? model.cacheRate * 100 : null), range: metricRange(model, "cache"), min: Number.isFinite(model?.cacheStats?.min) ? model.cacheStats.min * 100 : null, max: Number.isFinite(model?.cacheStats?.max) ? model.cacheStats.max * 100 : null },
     { kind: "ttft", name: "TTFT", value: formatDuration(model?.ttftMs), progress: ttftScore(model?.ttftMs), health: metricHealth("ttft", model?.ttftMs), range: metricRange(model, "ttft"), min: ttftScore(model?.ttftStats?.min), max: ttftScore(model?.ttftStats?.max) }
   ];
-  if (includeBalance && !modelQuota(model) && balance?.balanceSupported !== false) {
+  if (includeBalance && fundsKind(model) === "balance" && balance?.balanceSupported !== false) {
     const health = metricHealth("cache", balance?.status === "ok" && balance.ratio != null ? balance.ratio * 100 : null);
     metrics.push({ kind: "balance", name: "余额", value: balanceText(balance), progress: balance?.status === "ok" && balance.ratio != null ? balance.ratio * 100 : null,
       health: { ...health, label: `${translate("余额健康")}：${translate(health.label)}` },
@@ -1273,8 +1284,8 @@ function quotaMetrics(model) {
 
 function focusedMetrics(model) {
   return [...modelMetrics(model, true), ...quotaMetrics(model)]
-    .filter(metric => metric.kind.startsWith("quota")
-      || state.settings[`focusShow${metric.kind[0].toUpperCase()}${metric.kind.slice(1)}`] !== false);
+    .filter(metric => state.settings[metric.kind.startsWith("quota") ? "focusShowBalance"
+      : `focusShow${metric.kind[0].toUpperCase()}${metric.kind.slice(1)}`] !== false);
 }
 
 function renderFocusedMetrics() {
@@ -1531,7 +1542,7 @@ function showModelHistoryPopover(event, model) {
     ${popoverTrend("模型核验", qualityValue(model), health[0].label, quality, health[0].color, { unavailable: "等待采样", maximum: qualityChartOptions(model).maximum })}
     ${popoverTrend("Cache", formatPercent(model.cacheRate), health[1].label, cache, health[1].color, { unavailable: "无缓存字段" })}
     ${popoverTrend("TTFT", formatDuration(model.ttftMs), health[2].label, ttft, health[2].color, { unavailable: "等待有效响应", rawTtft: true })}
-  </div>${verificationStatusMarkup(model)}<div class="popover-foot">${modelQuota(model) || balanceForModel(model)?.balanceSupported === false ? "" : `<span class="popover-finance-balance"><small>${translate("渠道余额")}</small>${balanceBadge(model)}</span>`}<span class="popover-finance-samples"><small>${translate("性能样本")}</small>${model.sampleCount}</span><span class="popover-finance-cost" title="已知费用请求 ${cost.known}/${cost.requests}"><small>${translate("核验费用")}</small>${cost.known ? formatCost(cost.total) : "--"}</span></div>`;
+  </div>${verificationStatusMarkup(model)}<div class="popover-foot">${fundsKind(model) === "quota" || balanceForModel(model)?.balanceSupported === false ? "" : `<span class="popover-finance-balance"><small>${translate("渠道余额")}</small>${balanceBadge(model)}</span>`}<span class="popover-finance-samples"><small>${translate("性能样本")}</small>${model.sampleCount}</span><span class="popover-finance-cost" title="已知费用请求 ${cost.known}/${cost.requests}"><small>${translate("核验费用")}</small>${cost.known ? formatCost(cost.total) : "--"}</span></div>`;
   $$("[data-popover-metric]", popover).forEach(button => { button.onclick = () => openMetric(model, button.dataset.popoverMetric); });
   }
   positionPopover(event);
@@ -2322,6 +2333,7 @@ function qualityView() {
   const activity = verificationActivity(model);
   const plan = verificationPlan(model);
   const action = `<div class="verification-actions">
+    <button type="button" class="text-button" data-action="toggle-auto-quality" aria-pressed="${Boolean(state.probe?.enabled && state.settings.probeStrategy !== "manual")}" ${plan.external ? "hidden" : ""}>${state.probe?.enabled && state.settings.probeStrategy !== "manual" ? "关闭自动核验" : "开启自动核验"}</button>
     ${!plan.external && (activity.busy || activity.job?.phase === "paused") ? `<button class="text-button" data-action="${activity.job?.phase === "paused" ? "resume" : "pause"}-quality">${activity.job?.phase === "paused" ? "继续核验" : "暂停核验"}</button><button class="text-button" data-action="stop-quality">终止核验</button>` : ""}
     <button type="button" class="text-button" data-action="priority-quality" ${plan.external || !state.probe?.targets?.some(target => target.id === model?.id) || plan.blocked || activity.busy && activity.job?.phase !== "queued" ? "disabled" : ""}>插队核验</button>
     <button class="text-button" data-action="export-quality" ${!qualityRunsForModel(model).length ? "disabled" : ""}>导出报告</button>
@@ -2337,6 +2349,7 @@ function qualityView() {
     ${state.settings.evaluatorId === "custom-question" ? `<label class="report-picker">当前题目<select id="quality-question-select">${state.questions.map(question => `<option ${question.builtIn ? "" : 'translate="no"'} value="${escapeHtml(question.id)}" ${question.id === state.settings.defaultQuestionId ? "selected" : ""}>${escapeHtml(question.title)}</option>`).join("")}</select></label>` : ""}
     ${verification.stale ? `<p class="report-notice">环形指标保留 ${escapeHtml(formatTimestamp(verification.measuredAt, true))} 的有效结果；最新一次检测未完成，详情如下。</p>` : ""}
     ${verificationStatusMarkup(model)}
+    ${!plan.external ? `<p class="verification-plan">${escapeHtml(translate("自动核验轮次间隔"))}：${state.settings.verificationIntervalMinutes} ${escapeHtml(translate("分钟"))} · ${escapeHtml(translate("全局开关；开启后会消耗可核验渠道额度；手动核验不改变开关"))}</p>` : ""}
     <p class="verification-plan" role="status">${escapeHtml(plan.label)}</p>
     ${availability.guidance ? `<div class="reference-guidance"><p>${escapeHtml(translate(availability.guidance))}</p>${availability.purpose || state.settings.evaluatorId === "knowledge-boundary" && availability.blocked ? `<button class="text-button" data-action="collect-reference">${escapeHtml(translate(availability.purpose ? "采集当前方法参考" : "设置参考模型"))}</button>` : ""}</div>` : ""}
     ${questionSummary ? `<p class="question-window-summary"><strong>${questionSummary.reviewed ? `已记录 ${questionSummary.reviewed} 次待人工复核` : `${questionSummary.matched} / ${questionSummary.compared} 次答案匹配`}</strong> · ${questionSummary.reviewed ? "不自动判定" : questionSummary.ratio === null ? "--" : (questionSummary.ratio * 100).toFixed(1) + "%"} · ${questionSummary.assessment ? `${escapeHtml(translate("评价"))}：${escapeHtml(translate(questionSummary.assessment))}` : ""} · ${escapeHtml(formatRange())} · 总请求 ${questionSummary.total} · 失败 ${questionSummary.errors}</p>` : ""}
@@ -2451,7 +2464,7 @@ function settingsView() {
     const route = routeId === "default" ? "" : `/${routeId}`;
     return `<div><span>${escapeHtml(protocol)} · ${escapeHtml(routeId)}</span><code>http://${escapeHtml(config?.host || "127.0.0.1")}:${escapeHtml(config?.port || "4173")}/proxy/${escapeHtml(protocol)}${escapeHtml(route)}/v1</code></div>`;
   })).join("") || `<div><span>OpenAI 默认路径</span><code>http://${escapeHtml(config?.host || "127.0.0.1")}:${escapeHtml(config?.port || "4173")}/proxy/openai/v1</code></div><div><span>Anthropic 默认路径</span><code>http://${escapeHtml(config?.host || "127.0.0.1")}:${escapeHtml(config?.port || "4173")}/proxy/anthropic/v1</code></div>`;
-  return `<form class="settings-form" id="settings-form"><div class="view-columns"><article class="panel">${viewHeader("监测设置", "主动探测会调用提供方并产生 token 消耗。", `<button class="primary-button" type="submit"><span>✓</span>保存设置</button>`)}<div class="setting-row"><div><strong>主动探测</strong><small>关闭后仍会记录经过本地代理的真实调用</small></div>${switchControl("probeEnabled", settings.probeEnabled, settings.probeEnabled ? "已开启" : "已关闭")}</div><div class="setting-row"><div><strong>主动探测间隔</strong><small>性能探测及检查核验是否到期的频率；单问题不另发性能探测，核验不会早于每轮间隔</small></div><select class="setting-control" name="probeIntervalMinutes"><option value="1">1 分钟</option><option value="5">5 分钟</option><option value="15">15 分钟</option><option value="30">30 分钟</option><option value="60">1 小时</option><option value="180">3 小时</option><option value="360">6 小时</option></select></div><div class="setting-row"><div><strong>探测指令</strong><small>用于主动探测；修改后作为独立条件统计</small></div><input class="setting-control setting-text" name="probeInstruction" maxlength="2000" value="${escapeHtml(settings.probeInstruction)}"></div><div class="setting-row"><div><strong>默认时间范围</strong><small>下次加载工作台使用此范围</small></div><select class="setting-control" name="defaultHours"><option value="1">最近 1 小时</option><option value="6">最近 6 小时</option><option value="24">最近 24 小时</option><option value="168">最近 7 天</option></select></div><div class="setting-row"><div><strong>系统通知</strong><small>桌面端使用系统通知；网页端使用浏览器通知权限</small><button type="button" class="text-button" data-action="test-notification">发送测试通知</button></div>${switchControl("notifications", settings.notifications, settings.notifications ? "已开启" : "已关闭")}</div></article><article class="panel">${viewHeader("阈值与预算", probe?.running ? "主动探测正在运行" : probe?.enabled ? "主动探测已排期" : "主动探测已关闭")}<div class="setting-row"><div><strong>TTFT 告警阈值</strong><small>1–120000 ms</small></div><label class="number-control"><input type="number" name="ttftThresholdMs" min="1" max="120000" step="1" value="${settings.ttftThresholdMs}"><span>ms</span></label></div><div class="setting-row"><div><strong>Cache 告警阈值</strong><small>低于该命中率时告警</small></div><label class="number-control"><input type="number" name="cacheThresholdPercent" min="0" max="100" step="1" value="${Math.round(settings.cacheThreshold * 100)}"><span>%</span></label></div><div class="setting-row"><div><strong>每日探测上限</strong><small>今日已用 ${formatInteger(probe?.usage?.requests || 0)} 次</small></div><label class="number-control"><input type="number" name="probeDailyLimit" min="1" max="10000" step="1" value="${settings.probeDailyLimit}"><span>次</span></label></div><div class="setting-row"><div><strong>探测输出上限</strong><small>控制单次主动探测成本</small></div><label class="number-control"><input type="number" name="probeMaxOutputTokens" min="8" max="4096" step="1" value="${settings.probeMaxOutputTokens}"><span>token</span></label></div><div class="setting-row"><div><strong>连续偏离次数</strong><small>达到次数后生成核验告警</small></div><label class="number-control"><input type="number" name="qualityConsecutive" min="1" max="20" step="1" value="${settings.qualityConsecutive}"><span>次</span></label></div></article></div><article class="panel endpoint-panel">${viewHeader("本地代理", "Coding agent 通过同一个本地端口进入不同协议路径。")}<div class="endpoint-grid">${routeEndpoints}<div><span>已去重探测目标</span><strong>${formatInteger(probe?.targets?.length || 0)}</strong></div><div><span>下次主动探测</span><strong>${probe?.nextRunAt ? formatTimestamp(probe.nextRunAt, true) : "未排期"}</strong></div></div></article></form>`;
+  return `<form class="settings-form" id="settings-form"><div class="view-columns"><article class="panel">${viewHeader("监测设置", "主动探测会调用提供方并产生 token 消耗。", `<button class="primary-button" type="submit"><span>✓</span>保存设置</button>`)}<div class="setting-row"><div><strong>自动核验与主动探测</strong><small>按轮次间隔检测；关闭后仍采集被动指标</small></div>${switchControl("probeEnabled", settings.probeEnabled, settings.probeEnabled ? "已开启" : "已关闭")}</div><div class="setting-row"><div><strong>主动探测间隔</strong><small>性能探测及检查核验是否到期的频率；单问题不另发性能探测，核验不会早于每轮间隔</small></div><select class="setting-control" name="probeIntervalMinutes"><option value="1">1 分钟</option><option value="5">5 分钟</option><option value="15">15 分钟</option><option value="30">30 分钟</option><option value="60">1 小时</option><option value="180">3 小时</option><option value="360">6 小时</option></select></div><div class="setting-row"><div><strong>探测指令</strong><small>用于主动探测；修改后作为独立条件统计</small></div><input class="setting-control setting-text" name="probeInstruction" maxlength="2000" value="${escapeHtml(settings.probeInstruction)}"></div><div class="setting-row"><div><strong>默认时间范围</strong><small>下次加载工作台使用此范围</small></div><select class="setting-control" name="defaultHours"><option value="1">最近 1 小时</option><option value="6">最近 6 小时</option><option value="24">最近 24 小时</option><option value="168">最近 7 天</option></select></div><div class="setting-row"><div><strong>系统通知</strong><small>桌面端使用系统通知；网页端使用浏览器通知权限</small><button type="button" class="text-button" data-action="test-notification">发送测试通知</button></div>${switchControl("notifications", settings.notifications, settings.notifications ? "已开启" : "已关闭")}</div></article><article class="panel">${viewHeader("阈值与预算", probe?.running ? "主动探测正在运行" : probe?.enabled ? "主动探测已排期" : "主动探测已关闭")}<div class="setting-row"><div><strong>TTFT 告警阈值</strong><small>1–120000 ms</small></div><label class="number-control"><input type="number" name="ttftThresholdMs" min="1" max="120000" step="1" value="${settings.ttftThresholdMs}"><span>ms</span></label></div><div class="setting-row"><div><strong>Cache 告警阈值</strong><small>低于该命中率时告警</small></div><label class="number-control"><input type="number" name="cacheThresholdPercent" min="0" max="100" step="1" value="${Math.round(settings.cacheThreshold * 100)}"><span>%</span></label></div><div class="setting-row"><div><strong>每日探测上限</strong><small>今日已用 ${formatInteger(probe?.usage?.requests || 0)} 次</small></div><label class="number-control"><input type="number" name="probeDailyLimit" min="1" max="10000" step="1" value="${settings.probeDailyLimit}"><span>次</span></label></div><div class="setting-row"><div><strong>探测输出上限</strong><small>控制单次主动探测成本</small></div><label class="number-control"><input type="number" name="probeMaxOutputTokens" min="8" max="4096" step="1" value="${settings.probeMaxOutputTokens}"><span>token</span></label></div><div class="setting-row"><div><strong>连续偏离次数</strong><small>达到次数后生成核验告警</small></div><label class="number-control"><input type="number" name="qualityConsecutive" min="1" max="20" step="1" value="${settings.qualityConsecutive}"><span>次</span></label></div></article></div><article class="panel endpoint-panel">${viewHeader("本地代理", "Coding agent 通过同一个本地端口进入不同协议路径。")}<div class="endpoint-grid">${routeEndpoints}<div><span>已去重探测目标</span><strong>${formatInteger(probe?.targets?.length || 0)}</strong></div><div><span>下次主动探测</span><strong>${probe?.nextRunAt ? formatTimestamp(probe.nextRunAt, true) : "未排期"}</strong></div></div></article></form>`;
 }
 
 function aboutView() {
@@ -2514,7 +2527,7 @@ function mountSettingsNavigation() {
   section.className = "panel method-settings-panel"; section.dataset.settingsGroup = "verification";
   section.innerHTML = viewHeader("核验方式与采样", "选择方案后只显示相关设置。", '<button type="submit" class="primary-button">保存设置</button>');
   form.prepend(section);
-  for (const name of ["evaluatorId", "meowTier", "verificationSamples", "defaultQuestionId", "verificationIntervalMinutes", "verificationRequestDelaySeconds"]) {
+  for (const name of ["probeEnabled", "evaluatorId", "meowTier", "verificationSamples", "defaultQuestionId", "verificationIntervalMinutes", "verificationRequestDelaySeconds"]) {
     const row = form.elements[name]?.closest(".setting-row"); if (row) section.append(row);
   }
   // Keep form controls mounted: changing tabs or searching must not discard drafts.
@@ -3316,6 +3329,17 @@ function bindEvents() {
         await refreshObservations({ quiet: true });
       } catch (error) { showToast(`操作失败：${error.message}`, "error"); }
     }
+    if (action === "toggle-auto-quality") {
+      const enabled = !(state.probe?.enabled && state.settings.probeStrategy !== "manual");
+      const button = event.target.closest("button");
+      button.disabled = true;
+      try {
+        await persistSettingsPatch({ probeEnabled: enabled, ...(enabled && state.settings.probeStrategy === "manual" ? { probeStrategy: "adaptive" } : {}) });
+        showToast(enabled ? "自动核验已开启" : "自动核验已关闭", "success");
+      } catch (error) { showToast(error.message, "error"); }
+      finally { button.disabled = false; }
+      return;
+    }
     if (action === "run-quality") await runQuality();
     if (action === "export-distribution") {
       const runs = qualityRunsForModel(selectedModel());
@@ -3846,7 +3870,11 @@ function nativeHover(event) {
   const focusTarget = islandState.mode === "focus" ? target?.closest("[data-focus-metric]") : null;
   const inRail = event && event.clientX >= rail.left && event.clientX <= rail.right && event.clientY >= rail.top && event.clientY <= rail.bottom;
   $$(".focus-model").forEach(button => button.classList.toggle("is-hovered", button === focusTarget));
-  const onBorder = Boolean(inRail && (!ringTarget && !focusTarget || target?.closest("#island-buffer")));
+  // Focus mode changes only at its drag handles, not while crossing the footer
+  // to reach Settings or moving through gaps between metric buttons.
+  const modeHandle = target?.closest("#island-buffer, .island-grip");
+  const onBorder = Boolean(inRail && !target?.closest("#island-settings")
+    && (islandState.mode === "focus" ? modeHandle : !ringTarget && !focusTarget || modeHandle));
   const explicitBufferTarget = Boolean(target?.closest("#island-buffer"));
   // Moving layers must not turn a ring-edge dwell into another mode change.
   // Re-arm only after deliberate pointer movement; leaving and the buffer

@@ -50,3 +50,20 @@
 - 完整 runtime 驱动已完成浏览器阶段及英文覆盖；随后在 `runtime.mjs:1058` 的受控请求启动等待失败（39 !== 40）。用例等待 2 秒，Windows fresh Agent 扫描实测 2473/2596 毫秒。未放宽该断言，整套 runtime 标为 FAIL。现有布局断言从 79 更新为远端已实现的 81。
 - UNTESTED：macOS 原生运行与多 DPI 原生完整交互。双平台构建由推送后的 CI 检查，不能代替原生运行验收。
 - 本地交付：`dist/Modivue-windows-x64-integrated/Modivue.exe` 与同名 ZIP。验证数据与截图保存在 `.local/`，不上传用户数据或凭据。
+
+## 2026-09-21 余额切换与调度反馈
+
+- 余额和订阅余量可明确选择；自动模式按真实渠道选取，普通中转站不因 rollout 中存在订阅字段而被强制切成余量。
+- 核验页直接提供自动核验开关和轮次间隔说明，复用现有设置与调度；手动运行不隐式开启持续请求。隔离验证实例必须说明定时调度暂停。
+- focus 设置按钮及底部操作区不触发模式折叠；顶部和侧边操作杆保留切换。
+- Codex 会话使用记录中的 provider 解析所属渠道；全局渠道切换不得把旧会话的指标或凭据归到新渠道。不移除请求前的渠道一致性检查。
+- 修改边界为 `app.js`、显示配置与翻译、Agent 渠道解析、已有调度状态及设置变更通知；不重写核验框架，不增加测试文件，不在验证期间调用付费上游。
+- 反馈发生在上一轮带 `MODIVUE_UI_ARTIFACTS` 的隔离实例。日常实例必须移除验证环境标志，不擅自开启自动计费。
+- OAuth/CPA 替代路径查官方资料，区分被动 Cache、真实 TTFT 与独立核验，不用轮次耗时伪造 TTFT。
+- 实测确认：旧实例同时因验证环境跳过了真实余额渠道发现。新代码只读验证后，`gpt-6-astra` 保留 `openai` / 官方地址、无主动 Key、仍有被动 Cache；中转站会话保留 `custom` 地址与自己的凭据，不再混用。
+- 交互验证：自动开关开/关保存、余额与两种余量环切换、focus 设置停留/点击均通过，0 个页面错误；现有灵动岛回归 141 PASS。证据 `.local/funds-focus-interaction/` 与 `.local/funds-focus-regression/`。
+- 用户已同意替换隔离实例，保留现有数据并保持自动核验关闭。正常版本为 `dist/Modivue-windows-x64-followup/Modivue.exe`。
+- 已关闭用户批准替换的旧隔离实例，将当前数据库通过 SQLite backup 迁入 `%LOCALAPPDATA%/Modivue`；原正常数据与当前会话快照均保存在 `.local/normal-instance-handoff-20260921/`。旧正常历史只备份，不与当前会话数据库混合。
+- 正常原生启动后的只读接口确认：自动核验关闭、无隔离暂停原因、无核验任务；真实中转站余额为 `ok`。保留用户 `focusShowBalance=false`，需在显示设置勾选“专注显示余额 / 余量”才显示对应环。
+- 收尾同步远端 `2985c54`（v0.4.12，仅版本号），保留本轮修复并重新构建 Windows 原生宿主。JS/i18n/core 与专项交互通过；之前完整 runtime 的 Windows 时序失败未在本轮复跑，不声明完整运行回归通过。
+- 替代方式研究：[Codex App Server](https://learn.chatgpt.com/docs/app-server) 支持由 Codex 管理 ChatGPT OAuth 和独立 thread/turn，但 Modivue 尚未接入；其 Agent 输出耗时不能混作原始模型 TTFT。[CPA 配置](https://help.router-for.me/configuration/basic) 使用自己的服务地址和客户端 `api-keys`，不需要把上游 OAuth token 当 API Key，也不能把 Management Key 当调用 Key。本轮未新增传输适配、未发付费请求。
